@@ -1,0 +1,35 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath('com.android.tools.build:gradle')
+    classpath('com.facebook.react:react-native-gradle-plugin')
+    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+  }
+}
+
+// react-native-b4a and react-native-bare-kit both declare
+// `classpath 'com.android.tools.build:gradle:+'`, which resolves to an AGP
+// alpha that requires Gradle 9 and fails this project's Gradle 8.x build.
+// Pin their buildscript classpath to the AGP the app module already uses;
+// remove once those packages pin their own selector upstream.
+subprojects {
+  buildscript.configurations.matching { it.name == 'classpath' }.configureEach {
+    resolutionStrategy.force 'com.android.tools.build:gradle:8.11.0'
+  }
+}
+
+allprojects {
+  repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://www.jitpack.io' }
+  }
+}
+
+apply plugin: "expo-root-project"
+apply plugin: "com.facebook.react.rootproject"

@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Generated Bare worklet bundle — rebuilt by `npm run bundle:backend`
+app/app.bundle.mjs
+
+# Build output
+dist/
+web-build/
+coverage/
+*.apk
+*.aab
+android/build/
+android/app/build/
+android/.gradle/
+android/.kotlin/
+android/app/.cxx/
+
+# Local machine config
+android/local.properties
+.expo/
+.env
+.env.*
+
+# Signing material
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Runtime scratch (CLI test harness)
+.peardrop-cli-data/
+.peardrop-cli-downloads/
+scripts/.peardrop-cli-data/
+scripts/.peardrop-cli-downloads/
+
+# Logs and stray backups
+*.log
+*.orig.*
+*.corrupted.*
+
+# iOS (not currently checked in; native project is Android-only)
+ios/Pods/
+ios/build/
+
+# OS / editor
+.DS_Store

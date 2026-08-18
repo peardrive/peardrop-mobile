@@ -1,0 +1,10 @@
+Hey! This is a sample text file from your PearDrop demo.
+You can preview text files right inside the app — tap Preview.
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do
+eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim
+ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut
+aliquip ex ea commodo consequat.
+
+Swap this out for anything you like — PearDrop doesn't care what's
+inside, it just moves the bytes.

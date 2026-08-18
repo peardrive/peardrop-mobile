@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "PearDrop",
+    "slug": "peardrop-mobile",
+    "version": "0.1.0",
+    "newArchEnabled": true,
+    "orientation": "portrait",
+    "scheme": "peardrop.mobile",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": ["**/*", "assets/demo/**/*"],
+    "icon": "./assets/images/icon.png",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f2238"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.peardrop.mobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#0f2238"
+      },
+      "package": "com.peardrop.mobile"
+    },
+    "plugins": [
+      [
+        "expo-router"
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow PearDrop to use the camera for scanning share QR codes."
+        }
+      ],
+      [
+        "expo-notifications"
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 29
+          }
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-video"
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow PearDrop to access your photos so you can share them."
+        }
+      ]
+    ]
+  }
+}
