@@ -90,11 +90,15 @@ export function subscribeDevMode(listener: Listener): () => void {
 /**
  * React hook for dev-mode state. Returns `{ enabled, toggle }`.
  *
- * Hard-locked to `enabled: false` for release, overriding any stored flag.
- * The hook and storage helpers remain so the `devMode ? a : b` ternaries
- * across the app keep compiling and collapse to the user-mode branch.
+ * Hard-locked to `enabled: false` for
+ * the release candidate. The Settings toggle that flipped this is gone,
+ * the TestBed entry point is gone, and a user with the AsyncStorage flag
+ * set to "true" sees the polished user-mode UI regardless. The hook + storage helpers stay in the codebase so the
+ * `devMode ? a : b` ternaries scattered through HomeScreen, TransferCard,
+ * ShareLinkFlowContext, AccountScreen all keep compiling and collapse to
+ * the user-mode branch at runtime.
  *
- * To re-enable for development, flip `RELEASE_LOCKED` to `false` below.
+ * To re-enable for development: flip `RELEASE_LOCKED` to `false` below.
  * Don't ship a build with it false.
  */
 const RELEASE_LOCKED = true;

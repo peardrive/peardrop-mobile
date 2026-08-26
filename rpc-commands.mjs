@@ -14,5 +14,5 @@ export const RPC_DRIVES_REMOVE = 29;
 export const RPC_DRIVES_CHECK_FILES = 30;
 export const RPC_TEST_FAKE_UPLOAD = 31;
 export const RPC_REFRESH_SWARM = 32;
-/** Pushes the RN-side debugging flag down into the Bare worklet. */
+/** Push the RN-side debugging flag down into the Bare worklet. */
 export const RPC_SET_DEBUG_LOGGING = 33;

@@ -1,11 +1,18 @@
-// Proof-of-concept: round-trip a 5 MB file through Hyperdrive with streaming
-// on both ends, verifying byte-for-byte fidelity.
+// Round-trip a 5 MB file through Hyperdrive
+// using streaming on both ends, verifying byte-for-byte fidelity.
 //
-// Runs under Node, not Bare — bare-fs needs the Bare global. What it exercises
-// is the pipe contract between Hyperdrive's streams and a Node fs stream;
-// Hyperdrive uses streamx directly and bare-fs uses streamx via bare-stream,
-// so the same Readable/Writable conventions apply on both. It does not prove
-// out bare-fs's own stream implementation.
+// Runs under Node (bare-fs needs the Bare global and can't run here). The
+// substrate this proves out is the **pipe contract** between Hyperdrive's
+// streams and a Node-style fs stream — Hyperdrive uses streamx directly,
+// bare-fs uses streamx via bare-stream. Both Node and bare-fs stream
+// surfaces expose the same Readable/Writable conventions (pipe, 'data',
+// 'end', 'error', 'close'/'finish', backpressure via .write() return) so
+// what works here under Node should map cleanly to bare-fs under Bare.
+//
+// What this DOESN'T prove: bare-fs's stream impl specifically. We accept
+// that residual risk on the basis that bare-fs uses the same streamx
+// underlying class as Hyperdrive, and the non-streaming bare-fs methods
+// already work in the engine.
 //
 // Run: node backend/__poc__/stream-poc.mjs
 

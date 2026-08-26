@@ -1,8 +1,13 @@
-// Tripwire for Hyperdrive's stream contract. The engine pipes bare-fs streams
-// through hyperdrive.createReadStream / createWriteStream; this exercises the
-// same pipe pattern with Node's `fs`, since Jest can't load bare-fs. It catches
-// Hyperdrive-side contract breakage; bare-fs ↔ Hyperdrive interop is only
-// covered by the phone test and backend/__poc__/stream-poc.mjs.
+// Tripwire for Hyperdrive's stream contract. The
+// engine pipes bare-fs streams through hyperdrive.createReadStream /
+// createWriteStream; this test exercises the same pipe pattern with
+// Node's `fs` (Jest can't load bare-fs — it needs the Bare global), so
+// it catches Hyperdrive-side contract breakage on every CI run. The
+// deeper bare-fs ↔ Hyperdrive interop is covered by manual phone-test
+// (and the `backend/__poc__/stream-poc.mjs` deep-dive tool).
+//
+// One test, one MB, byte-for-byte verification. Sequential pipe pattern
+// that mirrors what the engine does.
 
 import { createReadStream, createWriteStream, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";

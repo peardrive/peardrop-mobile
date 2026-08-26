@@ -9,8 +9,9 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  * Shared across both swipeable lists (Share bundles, Receive downloaded
  * files): seeing the peek on either list counts as discovery for both.
  *
- * AsyncStorage rather than RNFS because it's a single boolean and survives
- * reinstalls more reliably. Same pattern as devModeStorage.
+ * Built on AsyncStorage rather than RNFS because it's a single boolean
+ * and survives reinstalls more reliably (matches the devModeStorage
+ * pattern).
  */
 
 const STORAGE_KEY = "peardrop.has-seen-swipe-hint";

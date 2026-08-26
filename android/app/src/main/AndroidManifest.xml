@@ -44,6 +44,22 @@
     </intent>
   </queries>
   <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false">
+    <!--
+      Notification small icon + accent. Hand-written to match
+      exactly what expo-notifications' config plugin emits at prebuild
+      (plugin/build/withNotificationsAndroid.js) so a future regeneration
+      produces the same four entries rather than a diff:
+        NOTIFICATION_ICON       = 'notification_icon'       -> @drawable/…
+        NOTIFICATION_ICON_COLOR = 'notification_icon_color' -> @color/…
+      The plugin writes both the FCM and the expo-local key for each,
+      so all four are listed even though this app has no FCM.
+      Mirrored in app.json's expo-notifications plugin entry — same
+      belt-and-braces pattern used for the peardrop:// scheme.
+    -->
+    <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/notification_icon"/>
+    <meta-data android:name="expo.modules.notifications.default_notification_icon" android:resource="@drawable/notification_icon"/>
+    <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@color/notification_icon_color"/>
+    <meta-data android:name="expo.modules.notifications.default_notification_color" android:resource="@color/notification_icon_color"/>
     <meta-data android:name="expo.modules.updates.ENABLED" android:value="false"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_CHECK_ON_LAUNCH" android:value="ALWAYS"/>
     <meta-data android:name="expo.modules.updates.EXPO_UPDATES_LAUNCH_WAIT_MS" android:value="0"/>
@@ -57,6 +73,20 @@
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="peardrop.mobile"/>
+        <!--
+          The share-link scheme the engine actually mints
+          (`peardrop://<64-hex>`, hyperdrive-engine.mjs createShareLink).
+          `peardrop.mobile` stays first and untouched — expo-router and the
+          dev client resolve their root URL from it. Android matches an
+          intent against ANY <data> scheme in the filter, so listing both
+          here needs no second intent-filter.
+
+          BROWSABLE means any web page can fire a peardrop:// URL at us, so
+          the RN side treats these links as untrusted: strictly validated at
+          the boundary and always routed to the confirm-first share preview,
+          never to a download.
+        -->
+        <data android:scheme="peardrop"/>
       </intent-filter>
     </activity>
   </application>

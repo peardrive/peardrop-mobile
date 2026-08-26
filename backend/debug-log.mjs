@@ -1,16 +1,22 @@
 // Backend-side (Bare worklet) logging.
 //
-// The worklet deliberately does not write the log file — two realms appending
-// to one path with no lock produces interleaved, torn lines. Lines ship over
-// the RPC event channel as {type:"log", level, tag, msg, at} and the RN side
-// hands them to the single file writer (src/lib/debugLog.ts).
+// The worklet does NOT write the log file. Two realms appending to one
+// path with no lock produces interleaved, torn lines. Instead every line
+// is shipped over the existing RPC event channel as
+// `{type:"log", level, tag, msg, at}`; BackendProvider on the RN side
+// hands it to the single file writer (src/lib/debugLog.ts).
 //
-// Gated by a flag pushed down from RN. Off by default, and `blog` returns
-// before doing any string work, so instrumenting a hot loop costs one boolean
-// test per call.
+// This supersedes the vestigial `{type:"debug", where, msg}` member of the
+// BackendEvent union, which was declared in src/state/types.ts but never
+// emitted and never handled.
 //
-// Imports nothing from the engine — in particular not engine-errors.mjs,
-// which imports this module.
+// Gated by a flag pushed down from RN (RPC_SET_DEBUG_LOGGING). Off by
+// default and off means off: `blog` returns before it does any string
+// work, so instrumenting a hot loop costs one boolean test per call.
+//
+// Import-safety: this module imports nothing from the engine (in
+// particular not engine-errors.mjs, which imports *this*), so there is no
+// cycle.
 
 let emitLog = () => {};
 let enabled = false;
@@ -59,7 +65,8 @@ export const berror = (tag, msg) => blog("error", tag, msg);
 
 /**
  * Render a structured EngineError (or any thrown value) preserving
- * category / cause / detail rather than flattening to `.message`.
+ * category / cause / detail rather than flattening to `.message`. The
+ * whole point of the fix.
  */
 export function describeError(err) {
   if (err == null) return "";
@@ -86,7 +93,13 @@ export function describeError(err) {
   return parts.join(" ");
 }
 
-/** Record a deliberately swallowed `catch {}` without changing its behaviour. */
+/**
+ * Log a best-effort `catch {}` that would otherwise be a blind spot.
+ *
+ * The engine is full of legitimate swallowed catches (cleanup steps,
+ * manifest saves, socket teardown). Each is correct and each was
+ * invisible. `swallowed()` keeps the behaviour and records the fact.
+ */
 export function swallowed(tag, what, err) {
   if (!enabled) return;
   blog("warn", tag, `swallowed: ${what} — ${describeError(err)}`);

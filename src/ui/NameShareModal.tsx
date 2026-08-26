@@ -24,9 +24,13 @@ export type NameShareModalProps = {
   onCancel: () => void;
   /** Fires with the trimmed name once the user taps Share. */
   onConfirm: (name: string) => void;
-  // Copy overrides, so the same one-field prompt can serve the debug-log
-  // export without share-specific wording. Defaults reproduce the share
-  // behaviour, leaving existing call sites unchanged.
+  // -------------------------------------------------------------------
+  // Optional copy overrides so the same one-field prompt can
+  // serve the debug-log export ("label this log") without shipping
+  // share-specific wording there. Every default below reproduces the
+  // original share behaviour exactly, so existing call sites are
+  // unchanged.
+  // -------------------------------------------------------------------
   title?: string;
   subtitle?: string;
   placeholder?: string;

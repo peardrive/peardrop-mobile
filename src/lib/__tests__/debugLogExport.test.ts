@@ -1,7 +1,7 @@
 import { runExportFlow, runManualReset, type ExportDeps } from "../debugLogExport";
 
 /**
- * The guarantee this module exists to enforce.
+ * The guarantee this whole module exists to enforce.
  *
  * Android's share sheet resolves on dismissal and reports neither the
  * chosen target nor a cancel — so "the export succeeded" is not knowable.

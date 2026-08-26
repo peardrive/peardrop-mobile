@@ -38,8 +38,8 @@ export type IconName =
   | "folder-outline";
 
 /**
- * Emoji-based icon, for code paths that want a glyph. Prefer `fileIconName`
- * (Ionicons) for new rendering.
+ * Emoji-based icon kept for any code path that still wants a glyph.
+ * Prefer `fileIconName` (Ionicons) for new rendering.
  */
 export function fileIcon(name: string): string {
   const ext = fileExt(name);
@@ -52,8 +52,9 @@ export function fileIcon(name: string): string {
 }
 
 /**
- * Ionicons content-aware icon — the single source of truth for what icon a
- * file gets across the app. Multi-file bundles call `bundleIconName()`.
+ * Ionicons-based content-aware icon. The single source of truth
+ * for what icon a given file/bundle gets across the app. Multi-file bundles
+ * call `bundleIconName()` instead (a folder, regardless of origin).
  */
 export function fileIconName(name: string): IconName {
   const ext = fileExt(name);
@@ -91,7 +92,10 @@ export function previewModeFor(name: string): PreviewMode {
  *   "no-extension-here-very-long-name" → "no-extension-here-very-l…"
  *
  * If the file has no extension, the ellipsis goes at the end. If maxLen is
- * shorter than 3+ext, returns the unchanged name.
+ * shorter than 3+ext, returns the unchanged name (caller would have already
+ * known not to truncate that aggressively).
+ *
+ * Used on the Share-tab bundle cards.
  */
 export function truncateMiddle(name: string, maxLen: number = 28): string {
   const s = String(name || "");

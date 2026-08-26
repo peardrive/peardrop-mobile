@@ -1,9 +1,11 @@
-// Pure formatting + size-cap math for the debug logging subsystem.
-// Deliberately RN-free (no react-native, no react-native-fs, no expo-*) so
-// Jest can exercise it under `testEnvironment: "node"`.
+// Pure formatting + size-cap math for the debug logging
+// subsystem. Deliberately RN-free (no react-native, no react-native-fs,
+// no expo-*) so Jest can exercise it under `testEnvironment: "node"` —
+// see jest.config.js, which only picks up `.ts` under src/.
 //
-// What a log line looks like and when the file rotates is decided here; the
-// side-effecting writer (src/lib/debugLog.ts) supplies the filesystem.
+// Everything that decides *what a log line looks like* or *when the file
+// rotates* lives here. The side-effecting writer (src/lib/debugLog.ts)
+// imports these and supplies the filesystem.
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -84,9 +86,10 @@ export function clampEntry(line: string, max = MAX_ENTRY_BYTES): string {
 }
 
 /**
- * Serialize an arbitrary value for the message field. Structured engine errors
- * ({category, cause, detail}) must survive as structure — flattening them to
- * `String(err.message)` discards the taxonomy.
+ * Serialize an arbitrary value for the message field. Structured engine
+ * errors ({category, cause, detail}) must survive as structure — the whole
+ * point is that they are not flattened to
+ * `String(err.message)`.
  */
 export function stringifyDetail(value: unknown): string {
   if (value == null) return "";
@@ -191,8 +194,10 @@ export function buildLogFilename(label: string, date: Date | number): string {
 }
 
 /**
- * Header prepended to an export bundle: context that isn't in any individual
- * line, plus a plain statement that the contents are unscrubbed.
+ * Header prepended to an export bundle. Gives whoever reads the file the
+ * context that isn't in any individual line, and states plainly that the
+ * contents are unscrubbed (raw logs ship by decision — see the
+ * privacy note in the sprint summary).
  */
 export function buildBundleHeader(
   label: string,

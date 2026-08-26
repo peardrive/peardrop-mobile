@@ -4,6 +4,7 @@ import {
   formatRate,
   clampPercent,
   formatRelativeOrDate,
+  formatSimulateDelay,
 } from "../format";
 
 describe("formatBytes", () => {
@@ -102,5 +103,24 @@ describe("formatRelativeOrDate", () => {
 
   it("clamps negative diffs (future-stamp clock skew) to 'Just now'", () => {
     expect(formatRelativeOrDate(NOW + 5_000, NOW)).toBe("Just now");
+  });
+});
+
+describe("formatSimulateDelay", () => {
+  it("renders the three offered delays as the Settings label shows them", () => {
+    expect(formatSimulateDelay(15_000)).toBe("15s");
+    expect(formatSimulateDelay(60_000)).toBe("1min");
+    expect(formatSimulateDelay(180_000)).toBe("3min");
+  });
+
+  it("keeps sub-minute values in seconds", () => {
+    expect(formatSimulateDelay(1_000)).toBe("1s");
+    expect(formatSimulateDelay(59_000)).toBe("59s");
+  });
+
+  it("guards non-finite and non-positive input", () => {
+    expect(formatSimulateDelay(0)).toBe("0s");
+    expect(formatSimulateDelay(-5_000)).toBe("0s");
+    expect(formatSimulateDelay(Number.NaN)).toBe("0s");
   });
 });

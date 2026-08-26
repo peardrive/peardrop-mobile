@@ -25,17 +25,21 @@ type Props = {
    * Background color for the moving "front" surface. Must be opaque so the
    * red delete backer doesn't bleed through gaps in row content. Defaults
    * to `theme.bg` — the only AppTheme color guaranteed to be fully opaque
-   * across all themes. Not `theme.card` — that's translucent in most themes,
-   * which lets the row's red `theme.danger` background bleed through at rest.
-   * Pass an explicit color when the row's parent has a different backdrop.
+   * across all 10 themes. `theme.card` is translucent — alpha 0.05–0.08 —
+   * in 8 of 10 themes, which lets the row's red `theme.danger` background
+   * bleed through at rest. Pass an explicit color when the row's parent has
+   * a different backdrop and you want the front to match.
    */
   frontBackground?: string;
   /**
-   * One-shot peek animation for the swipe-discoverability cue. On transition
-   * to true the row slides left, holds, and slides back, then calls
-   * `onPeekDone` so the parent can clear the trigger and persist the "seen"
-   * flag. PanResponder is unaffected — peek snaps to 0 before any user
-   * gesture can race it.
+   * One-shot peek animation for the swipe-discoverability cue.
+   * When this transitions to true, the row slides ~30 px left over 400 ms,
+   * holds 200 ms, then slides back over 400 ms — total ~1000 ms. Calls
+   * `onPeekDone` when the sequence finishes so the parent can clear the
+   * trigger and persist the "seen" flag. Subsequent transitions to true
+   * after that are no-ops in the parent (the AsyncStorage flag prevents
+   * re-firing). PanResponder is unaffected — peek snaps cleanly to 0
+   * before any user gesture can race it.
    */
   peek?: boolean;
   onPeekDone?: () => void;
@@ -82,8 +86,10 @@ export default function SwipeableRow({
   const frontBg = frontBackground ?? theme.bg;
   const translateX = useRef(new Animated.Value(0)).current;
   const offsetRef = useRef(0);
-  // Drives translateX through a one-shot out-hold-back sequence. `running` is
-  // tracked so a re-render with peek still true doesn't re-trigger it.
+  // Peek animation. Drives translateX through a one-shot
+  // -30 → hold → 0 sequence. We track `running` so a re-render with
+  // peek still true (e.g., parent re-renders before clearing) doesn't
+  // re-trigger.
   const peekRunning = useRef(false);
 
   const commit = () => {

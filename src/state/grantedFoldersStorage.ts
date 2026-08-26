@@ -10,15 +10,16 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  * Each one still costs exactly one folder-picker dialog and no manifest
  * permission.
  *
- * Supersedes the single-URI `downloadsGrantStorage`; its key is migrated in
- * on first read so nobody re-grants a folder they already granted.
+ * This module replaces the single-URI `downloadsGrantStorage` from
+ * The legacy key is migrated in on first read so nobody has to
+ * re-grant a folder they already granted.
  *
  * Same AsyncStorage pattern as [`pickerHintStorage`](pickerHintStorage.ts):
  * value cached in memory for the session, best-effort persist.
  */
 
 const STORAGE_KEY = "peardrop.granted-folder-uris";
-/** The superseded single-folder key. Read once, then folded into the list. */
+/** Legacy single-folder key. Read once, then folded into the list. */
 const LEGACY_KEY = "peardrop.downloads-tree-uri";
 
 let cache: string[] | undefined;

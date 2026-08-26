@@ -38,8 +38,9 @@ export type ReceivedShare = {
   firstSeenAt: number;
   lastUpdatedAt: number;
   files: ReceivedShareFile[];
-  /** Organizational flags. Older records on disk return undefined here;
-   *  readers treat absent values as `false`. */
+  /** Organizational flags. Records loaded from disk that
+   *  predate this sprint return undefined here — readers treat absent
+   *  values as `false`. */
   isPinned?: boolean;
   isFavorite?: boolean;
 };
@@ -332,9 +333,9 @@ export async function deleteShare(shareKey: string): Promise<ReceivedShare[]> {
   return next;
 }
 
-/** Flip a share's pin flag. Deliberately does not touch `lastUpdatedAt` —
- *  pinning is metadata, not new content, and moving it would reorder the
- *  recency sort within the pinned group. */
+/** Flip a share's pin flag. Updates lastUpdatedAt? No — pinning
+ *  is meta, not new content; `lastUpdatedAt` should not move (otherwise
+ *  pinning would reorder the recency sort within the pinned group). */
 export async function setSharePinned(
   shareKey: string,
   pinned: boolean,

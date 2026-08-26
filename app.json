@@ -5,7 +5,7 @@
     "version": "0.1.0",
     "newArchEnabled": true,
     "orientation": "portrait",
-    "scheme": "peardrop.mobile",
+    "scheme": ["peardrop.mobile", "peardrop"],
     "userInterfaceStyle": "automatic",
     "assetBundlePatterns": ["**/*", "assets/demo/**/*"],
     "icon": "./assets/images/icon.png",
@@ -36,7 +36,11 @@
         }
       ],
       [
-        "expo-notifications"
+        "expo-notifications",
+        {
+          "icon": "./assets/images/adaptive-icon.png",
+          "color": "#a8cf3a"
+        }
       ],
       [
         "expo-build-properties",

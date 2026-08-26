@@ -45,8 +45,8 @@ export type BottomSheetProps = {
  * Uses `theme.bg` for the sheet background — the only token that is
  * guaranteed opaque across every theme (many themes' `theme.card` is a
  * translucent rgba, which would let the underlying UI bleed through the
- * sheet body — the exact bug that surfaced in Send/Receive/Kebab on
- * v5.)
+ * sheet body — the exact bug that surfaced in Send/Receive/Kebab.)
+ * The same applies to any sheet body.
  */
 export default function BottomSheet({
   visible,

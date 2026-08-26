@@ -62,9 +62,11 @@ export async function pickFolder(): Promise<PickedDirectory | null> {
   try {
     return await Directory.pickDirectoryAsync();
   } catch (err: unknown) {
-    // A substring probe on the message alone misses the thrown-code form,
-    // which turns a back-out into a red error toast. isPickerCancellation
-    // checks the documented codes first.
+    // Was a bare `message.includes("cancel")` probe, which misses
+    // the thrown-code form entirely. `isPickerCancellation` checks the
+    // documented error codes first and keeps the substring probe as a
+    // fallback, so a back-out returns null instead of propagating as an
+    // error the caller surfaces in red.
     if (isPickerCancellation(err)) return null;
     throw err;
   }
@@ -111,8 +113,9 @@ async function walk(
 // destination file. The new File API's `bytes()` / `open()` paths both go
 // through `javaFile` and OOM on media-sized SAF sources.
 //
-// Exported so the in-app file picker can materialize SAF rows under the same
-// constraint rather than re-deriving it.
+// Exported so the in-app file picker can materialize the SAF
+// rows a user checks in the Downloads section. Same constraint, same
+// copy semantics — worth sharing rather than re-deriving.
 export async function materializeUriToCache(
   sourceUri: string,
   leafFileName: string,

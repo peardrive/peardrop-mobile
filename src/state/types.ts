@@ -7,10 +7,11 @@ export type BackendEvent =
   | { type: "error"; message: string }
   | { type: "debug"; where?: string; msg?: string }
   /**
-   * A log line from the Bare worklet realm. The worklet never writes the log
-   * file itself — two realms appending to one path tears — so it ships lines
-   * here and BackendProvider feeds the single RN-side writer. Supersedes the
-   * vestigial `debug` member above, which is declared but never emitted.
+   * A log line from the Bare worklet realm. The worklet never
+   * writes the log file itself (two realms appending to one path tears);
+   * it ships lines here and BackendProvider feeds the single RN-side
+   * writer. Supersedes the vestigial `debug` member above, which was
+   * declared but never emitted or handled.
    */
   | {
       type: "log";
@@ -60,10 +61,22 @@ export type BackendEvent =
   | { type: "peer-disconnected"; driveId?: string; peerId?: string }
   | { type: "download-peer-disconnected"; driveId?: string }
   /**
-   * Emitted when a peer-supplied key fails the path-traversal guard. Typed
-   * here so a security-relevant event can't be silently discarded.
+   * The engine emits this when a peer-supplied key fails the
+   * path-traversal guard. It must stay in this union and stay handled:
+   * absent from either, a security-relevant
+   * event was silently discarded. Now typed and logged.
    */
-  | { type: "peer-rejected"; driveId?: string; cause?: string; key?: string };
+  | { type: "peer-rejected"; driveId?: string; cause?: string; key?: string }
+  /**
+   * Worklet liveness heartbeat. Emitted by backend.mjs on a 2 s
+   * interval while the debug-logging flag is on, and by nothing else.
+   *
+   * `n` is a monotonic counter within one enable→disable run; `at` is the
+   * WORKLET's own `Date.now()`. Both fields matter: the RN handler stamps
+   * its own receive time alongside them, and worklet-stamps-continuous +
+   * receive-times-bunched is a different answer from worklet-stamps-gapped.
+   */
+  | { type: "worklet-tick"; n?: number; at?: number };
 
 export type DriveFileEntry = {
   name: string;
@@ -118,7 +131,7 @@ export type OpenLinkResult = {
   shareName?: string | null;
   totalBytes?: number;
   hasManifest?: boolean;
-  /** D5.1: set when the share's manifest declares more files than the
+  /** Set when the share's manifest declares more files than the
    *  1000-entry cap allows. UI may surface a "shown N of M" hint. */
   truncated?: { available: number; shown: number };
 };
@@ -159,18 +172,21 @@ export type TransferSummary = {
   /** True only on explicit upload-complete (never implied by percent ≥ 100). */
   completed: boolean;
   /**
-   * True once at least one upload-progress event has been processed. Lets the
-   * UI distinguish "connected but no flow yet" from "data is moving" without
-   * trusting the engine's percent, and gates the stall detector so it doesn't
-   * fire on a legitimately slow start.
+   * True once at least one upload-progress event has been
+   * processed for this transfer. Lets the UI distinguish "connected but
+   * no flow yet" from "data is moving" without trusting the engine's
+   * unreliable `socket.bytesWritten`-based percent. Also gates the stall
+   * detector so it doesn't fire on legitimately-slow start-of-transfer.
    */
   progressEverReceived: boolean;
   /**
-   * True when a previously-progressing received transfer has gone idle past
-   * the stall threshold. Fires the "couldn't finish" toast once, then stays
-   * true so it doesn't re-fire while the user lingers on the stuck card.
-   * Hosted transfers don't use this — the same detector flips them straight
-   * to `completed: true`.
+   * True when a received transfer that was previously
+   * progressing has had no events for >30 s. Triggers the "Couldn't
+   * finish the download — the other side may have disconnected." toast
+   * in ReceiveScreen exactly once, then stays true so the toast doesn't
+   * re-fire if the user lingers on the same stuck card. Hosted transfers
+   * don't use this flag — they're flipped straight to `completed: true`
+   * by the same stall detector.
    */
   stalled: boolean;
   lastEventAt: number;

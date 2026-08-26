@@ -8,6 +8,7 @@ import OnboardingCarousel, {
 } from "../ui/OnboardingCarousel";
 import { markOnboardingComplete } from "../state/onboardingStorage";
 import { useAppTheme } from "../state/ThemeContext";
+import { openIntentGate } from "../lib/pendingIntents";
 
 type Nav = NativeStackNavigationProp<{
   Main: undefined;
@@ -45,6 +46,11 @@ export default function OnboardingScreen() {
   const onFinish = useCallback(() => {
     void markOnboardingComplete();
     nav.reset({ index: 0, routes: [{ name: "Main" }] });
+    // The other half of the launch-flow gate. A link tapped by
+    // a first-run user is held through the whole of onboarding rather
+    // than dropped or allowed to interrupt it; releasing here means it
+    // surfaces on Main, the moment the user actually arrives.
+    openIntentGate();
   }, [nav]);
 
   return (

@@ -45,7 +45,7 @@ export type ReceiveSheetProps = {
 };
 
 /**
- * v5 Receive: centered modal card with the camera preview in a bordered
+ * Receive: centered modal card with the camera preview in a bordered
  * square. Presented via a middle-of-screen dialog over a dim scrim (per
  * design). Paste-link row lives beneath the square with a green "Paste"
  * button that pulls from clipboard. The polish-round removal of

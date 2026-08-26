@@ -56,6 +56,8 @@ import {
   log as debugLog,
 } from "../lib/debugLog";
 import { subscribeDebugLogging } from "./debugLogStorage";
+import { runReceivedReconcile } from "./reconcileReceivedRunner";
+import type { EngineDriveLike } from "../lib/reconcileReceived";
 import { addSent } from "./statsStorage";
 import { haptics } from "../lib/haptics";
 import { notifyTransferComplete } from "../lib/notifications";
@@ -125,6 +127,13 @@ const BackendContext = createContext<BackendAPI | null>(null);
  */
 const DRIVE_ORIGIN_SET_MAX = 64;
 
+/**
+ * Cadence of the RN-side control heartbeat. Deliberately the
+ * same 2 s as the worklet's own tick (backend/backend.mjs) so the two
+ * streams are read side by side without mental arithmetic.
+ */
+const RN_HEARTBEAT_INTERVAL_MS = 2000;
+
 function rememberDriveOrigin(set: Set<string>, driveId: string): void {
   if (!driveId) return;
   if (set.has(driveId)) return;
@@ -163,9 +172,11 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
 
   const logId = useRef(0);
   /**
-   * Feeds both the dev-facing in-memory ring (120 lines, no timestamps, gone
-   * on restart) and the file writer, so every call site in this file gets
-   * timestamps and persistence without changing.
+   * The existing in-memory ring (120 lines, no timestamps, no
+   * levels, gone on restart) stays exactly as it was for the dev-facing
+   * `logs` array — and now also fans out to the file writer. That single
+   * wrap gave all ~25 pre-existing call sites in this file real timestamps
+   * and persistence for free.
    */
   const appendLog = useCallback((line: string) => {
     const id = ++logId.current;
@@ -283,6 +294,42 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     return invoke(rpcRef.current, RPC_HYPERDRIVE_ABORT, driveId ? { driveId } : {});
   }, []);
 
+  /**
+   * Recover received files the engine wrote to disk but RN never
+   * recorded. Fetches the drive list fresh rather than reading the `drives`
+   * state, so a resume that races the state update still reconciles against
+   * the engine's current truth.
+   *
+   * Event-driven on purpose. RN's `setInterval` is frozen for the
+   * whole of a backgrounded window, so a polling reconcile would only ever
+   * run when the app was already in the foreground — exactly when the
+   * foreground transition has already fired.
+   */
+  const reconcileReceived = useCallback(
+    async (reason: string) => {
+      try {
+        const obj = await invoke(
+          rpcRef.current,
+          RPC_DRIVES_LIST,
+          {} as Record<string, never>
+        );
+        if (!obj?.ok || !Array.isArray(obj.drives)) return;
+        const recovered = await runReceivedReconcile(
+          obj.drives as EngineDriveLike[],
+          reason
+        );
+        // The Received list subscribes to receivedFilesStorage, so the
+        // back-fill propagates through `broadcastChange()` without any
+        // extra refresh here.
+        if (recovered > 0) appendLog(`Recovered ${recovered} received file(s).`);
+      } catch {
+        // runReceivedReconcile already logs its own failures; a failure to
+        // even fetch the drive list is not worth a second error line.
+      }
+    },
+    [appendLog]
+  );
+
   const refreshSwarm = useCallback(async () => {
     try {
       await invoke(rpcRef.current, RPC_REFRESH_SWARM, {} as Record<string, never>);
@@ -388,11 +435,56 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
             if (!req.data) return;
             const evt = JSON.parse(b4a.toString(req.data as unknown as Uint8Array)) as BackendEvent;
 
-            // Log lines from the Bare worklet, handled first: the highest-
-            // frequency event type once debugging is on, and it must never
-            // fall through into the UI state machine.
+            // Log lines from the Bare worklet. Handled first —
+            // it's the highest-frequency event type once debugging is on,
+            // and it must never fall through into the UI state machine.
             if (evt.type === "log") {
               logFromBackend(evt);
+              return;
+            }
+            // Worklet liveness heartbeat. Handled next to `log`
+            // for the same reason — high frequency while debugging is on,
+            // and it must never reach the UI state machine. No state is
+            // touched and no render is triggered; the log line IS the
+            // product.
+            //
+            // Two clocks on one line, deliberately. `worklet-at` is the
+            // worklet's own stamp at emit; `rn-at` is ours at receive. A
+            // gap in `worklet-at` means the engine stopped. Continuous
+            // `worklet-at` values arriving with bunched `rn-at` values
+            // means the engine kept running and the IPC queued — a
+            // different answer, and indistinguishable with one clock.
+            //
+            // Gated on `__DEV__`. The `return` sits OUTSIDE the
+            // gate so a release build still swallows the event rather than
+            // letting it fall through the UI state machine — the engine
+            // keeps emitting ticks whenever debug logging is on, including
+            // in release (see the report's "still shipping" note).
+            if (evt.type === "worklet-tick") {
+              if (__DEV__) {
+                debugLog(
+                  "info",
+                  "rn.heartbeat",
+                  `worklet n=${evt.n ?? "?"} worklet-at=${evt.at ?? "?"} rn-at=${Date.now()}`
+                );
+              // RN's setInterval
+              // is driven by the Choreographer, which Android halts while
+              // the app is backgrounded — debugLog's own 1 s flush timer
+              // included. Entries then sit in memory until foreground, and
+              // an OS kill during the background window destroys exactly
+              // the evidence this probe exists to collect.
+              //
+              // A timer cannot fix a frozen-timer problem. This callback is
+              // native-driven and demonstrably still runs while
+              // backgrounded, so it is the only 2 s clock available — drive
+              // the drain from it. Foreground is left alone: the existing
+              // flush timer already covers it, and flushing per tick there
+              // would be pure churn.
+                // This forced a disk write every 2 s while
+                // backgrounded. Diagnostic only — it must not reach users,
+                // so it lives inside the __DEV__ gate.
+                if (AppState.currentState !== "active") void flushDebugLog();
+              }
               return;
             }
             if (evt.type === "listening") {
@@ -434,11 +526,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                   // Completion must come from an explicit upload-complete
                   // event so the UI can safely clamp at 99 until then.
                   completed: prev.completed,
-                  // Flipped on the first progress event so the UI can tell
-                  // "connected but no data flowing" from "data is moving".
-                  // The engine's percent alone is unreliable on hosted
-                  // transfers — UDX sockets don't expose `bytesWritten` like
-                  // Node net.Socket, so the counter often reads 0 forever.
+                  // Flip on first progress event. The UI uses
+                  // this to distinguish "connected but no data flowing"
+                  // from "data is moving" — the engine's percent itself
+                  // is unreliable on hosted transfers because UDX sockets
+                  // don't expose `bytesWritten` like Node net.Socket, so
+                  // the tracker's bytes-counter often reads 0 forever.
                   progressEverReceived: true,
                   lastEventAt: Date.now(),
                 }));
@@ -524,8 +617,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "drive-hydrated") {
-              // Hydration spans both active and inactive drives and either
-              // origin; the state field decides which set it belongs in.
+              // Hydration now spans both active and inactive
+              // drives, and either origin. The state field tells us which
+              // set the drive belongs in.
               appendLog(`Drive hydrated: ${evt.shareLink || evt.driveId || ""}`);
               if (evt.driveId) {
                 const driveId = evt.driveId;
@@ -662,6 +756,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "peer-rejected") {
+              // A path-traversal rejection must not vanish silently.
               appendLog(
                 `Peer rejected a file (${evt.cause ?? "unknown"})${evt.driveId ? ` on ${evt.driveId}` : ""}`
               );
@@ -730,10 +825,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     nextPeersConnected === 0;
 
                   if (shouldFinalize) {
-                    // Heuristic: last peer left and at least one was seen,
-                    // so the transfer probably finished. Logged because when
-                    // the heuristic is wrong it surfaces as "it said Sent but
-                    // nothing arrived".
+                    // SILENT WATCHDOG #1. This jumps a
+                    // hosted transfer straight to 100% on a heuristic —
+                    // "last peer left and we'd seen at least one, so it
+                    // probably finished". When it's wrong the user reports
+                    // "it said Sent but nothing arrived" — this line is
+                    // what explains it in the log.
                     debugLog(
                       "warn",
                       "rn.watchdog",
@@ -780,15 +877,22 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         setReady(true);
         setStatus("ready");
         appendLog("Worklet ready; starting LISTEN…");
-        // The worklet boots with debug logging off; push the persisted flag
-        // down now, and on every change, so both realms are instrumented
-        // symmetrically from the first event.
+        // The worklet boots with debug logging off. Push the
+        // persisted flag down now, and on every later change, so backend
+        // instrumentation matches the RN side from the first event.
         void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
           enabled: debugEnabledRef.current,
+          // The worklet realm has no `__DEV__`, so the heartbeat's dev-only
+          // gate is pushed down from here. `enabled` stays user-facing.
+          heartbeat: __DEV__,
         }).catch(() => {});
         sendOneWay(rpcRef.current, RPC_LISTEN);
         await refreshStatus();
         await refreshDrives();
+        // Boot-time recovery. Runs after refreshDrives so the
+        // engine has hydrated its manifest and DRIVES_LIST reports real
+        // localFiles rather than an empty pre-hydration list.
+        await reconcileReceived("boot");
       } catch (err: unknown) {
         setStatus("boot error");
         appendErrorLog(
@@ -809,38 +913,122 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       workletRef.current = null;
       rpcRef.current = null;
     };
-  }, [appendLog, appendErrorLog, refreshDrives, refreshStatus, upsertTransfer]);
+    // `reconcileReceived` is stable (its only dep, appendLog, is a
+    // `useCallback(…, [])`), so listing it cannot retrigger this effect —
+    // which matters here, because a retrigger would tear down and restart
+    // the worklet.
+  }, [
+    appendLog,
+    appendErrorLog,
+    refreshDrives,
+    refreshStatus,
+    upsertTransfer,
+    reconcileReceived,
+  ]);
 
   /**
-   * The debug-logging lifecycle lives here because this provider spans the
-   * whole app. `initDebugLog()` is idempotent and, while the flag is off,
-   * costs one subscription — no timer, no buffer, no file handle.
+   * Own the debug-logging lifecycle from the one provider that
+   * spans the whole app. `initDebugLog()` is idempotent and, while the
+   * flag is off, costs exactly one subscription — no timer, no buffer, no
+   * file handle. Every flag change is mirrored into the worklet so the two
+   * realms are never instrumented asymmetrically.
    */
   useEffect(() => {
     initDebugLog();
     return subscribeDebugLogging((enabled) => {
       debugEnabledRef.current = enabled;
       if (!rpcRef.current) return;
-      void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, { enabled }).catch(() => {});
+      void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
+        enabled,
+        heartbeat: __DEV__,
+      }).catch(() => {});
     });
   }, []);
 
-  // Stall detector. Hosted transfers can sit in "Sending…" forever because the
-  // receiver keeps seeding the drive back into the swarm, so socket "close"
-  // never fires on the sender and the peer-disconnect safety net above never
-  // triggers. Received transfers can stall mid-download if the sender drops
-  // without a clean disconnect. After one upload-progress event and then no
-  // events past the threshold: hosted → completed=true, received →
-  // stalled=true so the UI can offer a dismissible "couldn't finish".
+  /**
+   * The RN-side CONTROL heartbeat. Same 2 s cadence as the
+   * worklet's, talks to nothing, and that is the whole point.
+   *
+   * Without it a worklet-tick gap is ambiguous: the worklet may have been
+   * suspended, or Android may have frozen/throttled the RN JS thread so
+   * that nothing on this side ran to receive the ticks. Those look
+   * identical from the worklet stream alone. This interval runs on the
+   * same JS thread and the same timer machinery as the receive handler, so
+   * if it gaps too, the RN side stopped and the worklet stream says
+   * nothing about the worklet.
+   *
+   * It also indirectly reports on the log writer: debugLog's flush timer
+   * is another setInterval on this thread, so a gap here means the flush
+   * timer gapped as well.
+   *
+   * Gated on the debug-logging flag — no timer at all while debugging
+   * is off. `subscribeDebugLogging` replays the current value on
+   * subscribe, so the initial state is handled without a separate read.
+   *
+   * Additionally gated on `__DEV__`, and the gate sits ABOVE the
+   * `subscribeDebugLogging` call deliberately — in a release build this
+   * registers no listener at all, not merely a listener that declines to
+   * start a timer. "Off means genuinely off", as the debug-logging
+   * subsystem already requires of itself.
+   */
+  useEffect(() => {
+    if (!__DEV__) return;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let n = 0;
+
+    const stop = () => {
+      if (!timer) return;
+      clearInterval(timer);
+      timer = null;
+    };
+    const start = () => {
+      if (timer) return;
+      n = 0;
+      timer = setInterval(() => {
+        debugLog("info", "rn.heartbeat.control", `rn n=${++n} rn-at=${Date.now()}`);
+      }, RN_HEARTBEAT_INTERVAL_MS);
+    };
+
+    const unsubscribe = subscribeDebugLogging((enabled) => {
+      stop();
+      if (enabled) start();
+    });
+
+    return () => {
+      unsubscribe();
+      stop();
+    };
+  }, []);
+
+  // Stall detector. Hosted transfers can stay in
+  // "Sending…" forever because the receiver continues seeding the drive
+  // back into the swarm — `socket.on("close")` never fires on the
+  // sender's side, so the existing peer-disconnect safety net at line
+  // ~435-461 never triggers. Received transfers can stall mid-download
+  // if the sender drops without a clean disconnect.
   //
-  // AppState-driven swarm refresh:
-  //  - background → active: one immediate refresh, so a returning user sees
-  //    announces propagate quickly.
-  //  - while active: a heartbeat keeps DHT presence fresh. Short enough to
-  //    feel responsive after a Wi-Fi roam, long enough not to trip throttling
-  //    on aggressive battery-saver OSes.
-  //  - active → background: clear the interval. The OS may suspend the app
-  //    anyway, and a resumed app catches up on the next active transition.
+  // Once a transfer has had at least one upload-progress event AND no
+  // further events for >30 s, we treat it as done:
+  //  - hosted → mark completed=true (the sender did their part; auto-clear
+  //    kicks in 12 s after that, leaving "Sent" briefly
+  //    visible).
+  //  - received → keep completed=false but set `stalled=true` so the UI
+  //    can surface a "couldn't finish" toast and let the user dismiss.
+  //
+  // Runs at 5 s cadence — enough granularity for the 30 s threshold
+  // without burning CPU. The interval lives independently of the worklet
+  // boot effect so it survives across re-renders.
+  // AppState-driven swarm refresh.
+  //  - On background → active: fire one immediate refresh so a returning user
+  //    sees announces propagate quickly.
+  //  - While active: a 90 s heartbeat keeps DHT presence fresh without
+  //    burning battery in the background. 90 s is a starting point — short
+  //    enough to feel responsive after Wi-Fi roams, long enough that it
+  //    won't trigger throttling on aggressive battery-saver OSes (HyperOS).
+  //    Tunable; revisit if real-world testing shows peers dropping faster.
+  //  - On active → background: clear the interval. Background tick adds
+  //    nothing because the OS may suspend us anyway, and a freshly-resumed
+  //    app will catch up on the next active transition.
   useEffect(() => {
     if (!ready) return;
     let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -865,6 +1053,11 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     const onChange = (next: AppStateStatus) => {
       if (next === "active") {
         void refreshSwarm();
+        // The foreground transition is the moment to recover
+        // anything the engine finished while we were away — including a
+        // download whose RN-side write never completed because the process
+        // was killed mid-chain.
+        void reconcileReceived("foreground");
         startInterval();
       } else {
         stopInterval();
@@ -875,7 +1068,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       stopInterval();
       sub.remove();
     };
-  }, [ready, refreshSwarm]);
+  }, [ready, refreshSwarm, reconcileReceived]);
 
   useEffect(() => {
     const STALL_MS = 30_000;
@@ -887,9 +1080,10 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
           if (t.completed) return t;
           if (!t.progressEverReceived) return t;
           if (now - t.lastEventAt < STALL_MS) return t;
-          // After the idle threshold a hosted transfer declares itself
-          // complete and a received one flips to "stalled". Logged: both are
-          // prime suspects in "said Sent but nothing arrived".
+          // SILENT WATCHDOG #2. After 30 s of no events a
+          // hosted transfer silently declares itself complete and a
+          // received one silently flips to "stalled". Both were invisible;
+          // both are prime suspects in "said Sent but nothing arrived".
           const idleMs = now - t.lastEventAt;
           if (t.origin === "hosted") {
             mutated = true;
@@ -918,6 +1112,109 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     }, 5_000);
     return () => clearInterval(intervalId);
   }, []);
+
+  /**
+   * The suspend probe — lifecycle diagnostics only.
+   *
+   * bare-kit registers a module-scope AppState listener
+   * (node_modules/react-native-bare-kit/index.js:332) that calls `suspend()`
+   * on background. This records what actually happens: every AppState
+   * transition and every worklet suspend/resume event, with timestamps and
+   * a sequence number. React Native does not contractually define listener
+   * invocation order, so the seq numbers are how the real order is
+   * recovered rather than assumed.
+   *
+   * Do not add a counter-`resume()` on the background transition. Measured
+   * on device, it makes no difference in either direction: the freeze comes
+   * from the OS process freezer, which `resume()` does not affect.
+   *
+   * Now gated on `__DEV__` instead of a persisted toggle. In a
+   * release build `__DEV__` is statically false, so the body below is
+   * unreachable and stripped — no AppState listener, no worklet event
+   * subscriptions, no storage read.
+   */
+  useEffect(() => {
+    if (!__DEV__) return;
+    if (!ready) return;
+
+    let appStateSub: { remove: () => void } | null = null;
+    let onWorkletSuspend: (() => void) | null = null;
+    let onWorkletResume: (() => void) | null = null;
+    let seq = 0;
+    let lastState: AppStateStatus = AppState.currentState;
+
+    const stamp = () => `seq=${++seq} at=${Date.now()}`;
+
+    // `suspended` is a real getter on the worklet but isn't in bare-kit's
+    // .d.ts, so read it defensively rather than casting the whole object.
+    const suspendedFlag = (): string => {
+      const v = (workletRef.current as unknown as { suspended?: boolean } | null)
+        ?.suspended;
+      return typeof v === "boolean" ? String(v) : "?";
+    };
+
+    const disarm = () => {
+      if (appStateSub) {
+        appStateSub.remove();
+        appStateSub = null;
+      }
+      const worklet = workletRef.current;
+      if (worklet && onWorkletSuspend) {
+        try {
+          worklet.off("suspend", onWorkletSuspend);
+        } catch {}
+      }
+      if (worklet && onWorkletResume) {
+        try {
+          worklet.off("resume", onWorkletResume);
+        } catch {}
+      }
+      onWorkletSuspend = null;
+      onWorkletResume = null;
+    };
+
+    const arm = () => {
+      const worklet = workletRef.current;
+      debugLog(
+        "warn",
+        "rn.probe",
+        `probe armed ${stamp()} appstate=${lastState} worklet=${worklet ? "present" : "null"}`,
+      );
+
+      onWorkletSuspend = () => {
+        debugLog("warn", "rn.probe", `worklet event=suspend ${stamp()}`);
+      };
+      onWorkletResume = () => {
+        debugLog("warn", "rn.probe", `worklet event=resume ${stamp()}`);
+      };
+      if (worklet) {
+        try {
+          worklet.on("suspend", onWorkletSuspend);
+          worklet.on("resume", onWorkletResume);
+        } catch {
+          debugLog("error", "rn.probe", `worklet event subscribe failed ${stamp()}`);
+        }
+      }
+
+      // Observe only — the transition line below is the whole payload.
+      const onChange = (next: AppStateStatus) => {
+        const prev = lastState;
+        lastState = next;
+        debugLog(
+          "warn",
+          "rn.probe",
+          `appstate ${prev} -> ${next} ${stamp()} suspended=${suspendedFlag()}`,
+        );
+      };
+      appStateSub = AppState.addEventListener("change", onChange);
+    };
+
+    arm();
+
+    return () => {
+      disarm();
+    };
+  }, [ready]);
 
   const value = useMemo<BackendAPI>(
     () => ({

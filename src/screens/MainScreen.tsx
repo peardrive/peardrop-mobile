@@ -29,6 +29,7 @@ import RNFS from "react-native-fs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { log as debugLog, logStructuredError } from "../lib/debugLog";
+import { ensurePermission as ensureNotificationPermission } from "../lib/notifications";
 
 import {
   pickFolder,
@@ -115,8 +116,9 @@ import FolderContentsModal, {
 import NameShareModal from "../ui/NameShareModal";
 import FilePickerSheet from "../ui/FilePickerSheet";
 
-// One-shot LayoutAnimation init for Android; no-op on iOS. Must sit after the
-// import block so `import/first` doesn't flag it.
+// Enable LayoutAnimation on Android. Standard one-shot init; the
+// flag is no-op on iOS where LayoutAnimation works out of the box. Must
+// run after the import block so `import/first` doesn't flag it.
 if (
   Platform.OS === "android" &&
   UIManager.setLayoutAnimationEnabledExperimental
@@ -130,19 +132,19 @@ type DriveRow = DriveRecord & {
   primaryFile?: DriveLocalFile;
   /** True when files.length > 1. Bundles expand on tap; single files preview. */
   isBundle?: boolean;
-  /** Present for synthesized received-share rows. When set, list flattening
-   *  reads child file states from here (with isDownloaded flags) instead of
-   *  the engine's `files` + `localFiles` join. */
+  /** Present for synthesized received-share rows. When set, the
+   *  list-flattening logic reads child file states from here (with isDownloaded
+   *  flags) instead of from the engine's `files` + `localFiles` join. */
   share?: ReceivedShare;
-  /** Organizational flags, sourced from the share's own record (received) or
-   *  hostedShareFlagsStorage (hosted). */
+  /** Organizational flags. Sourced from the share's own record
+   *  (received) or from hostedShareFlagsStorage (hosted). */
   isPinned?: boolean;
   isFavorite?: boolean;
 };
 
-/** Flattened list item — drives the FlatList. Bundles don't expand inline;
- *  folder contents open in FolderContentsModal. The discriminated shape is
- *  kept so the renderer signature stays stable. */
+/** Flattened list item — drives the FlatList. Bundles do not expand
+ *  inline; folder contents open in FolderContentsModal instead. Kept the
+ *  ListItem discriminated shape so the renderer signature stays stable. */
 type ListItem = { kind: "drive"; drive: DriveRow };
 /** File descriptor used to build the folder-contents modal's row list. */
 type FolderModalChild = {
@@ -159,8 +161,8 @@ type FolderModalChild = {
 type PreviewState = {
   file: DriveLocalFile;
   mode: PreviewMode;
-  /** Parent drive id (or share synth id) so the preview menu can route
-   *  "Show QR" back to the right drive record. */
+  /** Parent drive id (or share synth id) so the preview's
+   *  three-dots menu can route "Show QR" back to the right drive record. */
   parentDriveId?: string;
 };
 
@@ -204,7 +206,7 @@ function normalizeLocalPath(uri: string): string {
   }
 }
 
-// Match "uuid.ext" or "uuid" — v5 fix so received shares whose filenames are
+// Match "uuid.ext" or "uuid" so received shares whose filenames are
 // synthesized as UUIDs by the peer don't display the raw hex to the user.
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.[^.]+)?$/i;
@@ -260,7 +262,7 @@ function driveIconName(d: DriveRecord): IconName {
 function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     root: { flex: 1, backgroundColor: theme.bg },
-    // v5 multi-select header: replaces TopTabs + ListToolbar while active.
+    // Multi-select header: replaces TopTabs + ListToolbar while active.
     selectionHeader: {
       flexDirection: "row",
       alignItems: "center",
@@ -318,8 +320,8 @@ function createStyles(theme: AppTheme) {
       borderColor: theme.bg,
     },
     rowMain: { flex: 1, minWidth: 0 },
-    // Name and optional pin marker side by side: the text shrinks, the pin
-    // stays anchored at the end.
+    // Name + optional pin marker side-by-side. Text shrinks
+    // (numberOfLines={1}) and the pin icon stays anchored at the end.
     rowNameLine: { flexDirection: "row", alignItems: "center", minWidth: 0 },
     rowName: { color: theme.text, fontSize: 14, fontWeight: "500", flexShrink: 1 },
     rowPinMark: { marginLeft: 6 },
@@ -460,7 +462,8 @@ function createStyles(theme: AppTheme) {
     audioScrubberFill: { height: "100%", backgroundColor: theme.primary },
     audioTimeRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
     audioTimeText: { color: theme.muted, fontSize: 11, fontVariant: ["tabular-nums"] },
-    // Fullscreen takeover: black background, chrome floating over the media.
+    // Fullscreen takeover styles. Pure black background,
+    // chrome floats over the media via absolute positioning.
     fsRoot: { flex: 1, backgroundColor: "#000" },
     fsMediaWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
     fsVideo: { width: "100%", height: "100%" },
@@ -473,8 +476,9 @@ function createStyles(theme: AppTheme) {
       top: 0,
       left: 0,
       right: 0,
-      // Horizontal padding keeps the back arrow off the screen edge; the top
-      // inset is applied at render time so the icon clears the status bar.
+      // Extra horizontal padding so the back arrow sits inboard,
+      // not flush with the screen edge. Top inset added at render-time
+      // via useSafeAreaInsets so the icon clears the status bar.
       paddingHorizontal: 12,
       paddingBottom: 16,
       flexDirection: "row",
@@ -486,8 +490,8 @@ function createStyles(theme: AppTheme) {
       zIndex: 10,
     },
     fsTopBtn: {
-      // Oversized touch target, with padding so the icon isn't hard against
-      // the edge.
+      // Bigger touch target — was 44; bumped to 48 with extra
+      // visual padding so the icon doesn't sit hard against the edge.
       width: 48,
       height: 48,
       alignItems: "center",
@@ -499,8 +503,9 @@ function createStyles(theme: AppTheme) {
       marginTop: 12,
     },
     fsShareBtn: {
-      // Fixed width so "Share it" and "Stop sharing" don't resize when
-      // toggled; sized for the longer label.
+      // Fixed width so "Share it" and "Stop sharing" don't
+      // visually shift in size when toggled. Width chosen to comfortably
+      // fit the longer label ("Stop sharing") with breathing room.
       width: 200,
       flexDirection: "row",
       alignItems: "center",
@@ -669,10 +674,13 @@ export default function MainScreen() {
 
   const [pickerSheet, setPickerSheet] = useState<PickerSheet>(null);
 
-  // One-time educational toast on the first picker back-out. Some Android
-  // pickers, Google Drive especially, expose no obvious back button; the OS
-  // picker can't be modified, but the gesture can be taught once on return.
-  // The flag is persisted; Settings → "Show picker hint again" resets it.
+  // First time the user opens a
+  // picker and backs out without selecting anything, show a one-time
+  // educational toast. Some Android pickers (Google Drive especially) don't
+  // expose an obvious back button — users got stuck repeatedly. We can't add
+  // UI to the OS picker itself, but we can teach the gesture once on return.
+  // Flag persisted in AsyncStorage so it never fires again after the first
+  // appearance; Settings → "Show picker hint again" resets it.
   const maybeShowPickerBackHint = useCallback(() => {
     void getPickerBackHintSeen().then((seen) => {
       if (seen) return;
@@ -681,14 +689,16 @@ export default function MainScreen() {
     });
   }, [showToast]);
 
-  // The single exit path for every non-selected picker outcome. Restores the
-  // Send sheet so a cancel lands the user where they were, emits at most one
-  // plain toast, and never falls through into share creation. The decision
-  // logic lives in `lib/pickerResult` so it's testable without the picker.
+  // The single exit path for every non-selected picker outcome.
+  // Restores the Send sheet the picker was launched from so a cancel lands
+  // the user exactly where they were, emits at most one plain toast, and
+  // never falls through into share creation. Decision logic lives in
+  // `lib/pickerResult` so it's testable without the native picker.
   const handlePickerExit = useCallback(
     (outcome: PickerOutcome, labels: { empty: string }) => {
-      // One line covers cancel/empty across all four picker entry points,
-      // since every non-selected outcome funnels through here.
+      // Every non-selected pick outcome funnels through
+      // here, so one line covers cancel/empty across all four picker
+      // entry points (files, folder, photos, in-app).
       debugLog("info", "rn.pick", `picker exit: ${outcome.kind}`);
       const plan = pickerExitPlan(outcome, labels);
       if (plan.reopenSendSheet) setPickerSheet("share-files");
@@ -698,8 +708,8 @@ export default function MainScreen() {
     [showToast, maybeShowPickerBackHint],
   );
 
-  // PearDrop's own file-selection screen: the primary path for "Files", with
-  // the OS document picker as the escape hatch behind it.
+  // PearDrop's own file-selection screen. Primary path for
+  // "Files"; the OS document picker is now the escape hatch behind it.
   const [inAppPickerOpen, setInAppPickerOpen] = useState(false);
   const [inAppPickerBusy, setInAppPickerBusy] = useState(false);
 
@@ -716,9 +726,9 @@ export default function MainScreen() {
   };
   const [pendingNameShare, setPendingNameShare] =
     useState<PendingNameShare | null>(null);
-  // No-op: the pickers are modals, so they can't be double-fired and there's
-  // nothing to gate. A future spinner would reintroduce real state here and
-  // thread it through BottomToolbar's Send button.
+  // No shareBusy state: the pickers can't
+  // be double-fired because they're modals. If a future spinner needs it
+  // back, reintroduce here and thread through BottomToolbar's Send button.
   const setShareBusy = (_v: boolean) => {};
   const [qrDriveId, setQrDriveId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
@@ -746,7 +756,7 @@ export default function MainScreen() {
   // Bumps every time a swipe-then-confirm flow opens — triggers SwipeableRow
   // to snap closed whether the user confirms or cancels.
   const [swipeCloseTick, setSwipeCloseTick] = useState(0);
-  // v5 folder modal: tapping a bundle (or its chevron) opens a modal
+  // Folder modal: tapping a bundle (or its chevron) opens a modal
   // showing the folder's contents. Replaced the earlier inline dropdown
   // expansion — the driveId here is whichever folder is currently open,
   // or null when the modal is dismissed.
@@ -754,17 +764,17 @@ export default function MainScreen() {
   const [sharedPaths, setSharedPaths] = useState<SharedFilePathsEntry[]>([]);
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   const [hostedFlags, setHostedFlags] = useState<HostedShareFlags[]>([]);
-  // View-mode toggle. Deliberately resets to "all" on mount, with no
-  // persistence. Favorites is a filterable subset.
+  // View-mode toggle. Always resets to "all" on mount — intentional;
+  // no persistence to AsyncStorage. Favorites is a filterable subset.
   const [viewMode, setViewMode] = useState<"all" | "favorites">("all");
-  // v5 shell state: search + filter + sort applied on top of viewMode.
+  // Shell state: search + filter + sort applied on top of viewMode.
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterId>("all");
   const [sort, setSort] = useState<SortId>("recent");
   const [receiveSheetVisible, setReceiveSheetVisible] = useState(false);
-  // v5 polish: bumped when Receive should open with the paste input focused.
+  // Bumped when Receive should open with the paste input focused.
   const [receiveFocusPaste, setReceiveFocusPaste] = useState(false);
-  // v5 multi-select mode: swaps kebab for checkboxes; header shows count +
+  // Multi-select mode: swaps kebab for checkboxes; header shows count +
   // Cancel/Delete. Entered via kebab → "Select multiple". Exited via Cancel
   // header button or after a batch action completes.
   const [selectionMode, setSelectionMode] = useState(false);
@@ -790,10 +800,11 @@ export default function MainScreen() {
     setReceiveFocusPaste(true);
     setReceiveSheetVisible(true);
   }, [manualEntryTick]);
-  // Target set for the post-grab child-row blink, populated by an effect
-  // watching `lastCompletedDownload`. If the folder modal isn't already open
-  // for that share, the effect opens it first, so the rows are seen arriving
-  // and then blinking in sequence.
+  // Target set for the post-grab child-row blink. Populated
+  // by an effect that watches `lastCompletedDownload`. If the folder
+  // modal isn't already open for the completed share, the effect opens
+  // it first, then sets the blink target so the user sees the rows
+  // arrive AND blink in sequence inside the modal.
   const [childBlinkTarget, setChildBlinkTarget] = useState<{
     shareKey: string;
     names: Set<string>;
@@ -807,15 +818,15 @@ export default function MainScreen() {
     return subscribeSharedFilePaths(setSharedPaths);
   }, []);
 
-  // Subscribe to per-share storage so received bundles re-render in place when
-  // downloads complete and flip files' isDownloaded.
+  // Subscribe to the per-share storage so received bundles re-
+  // render in place when downloads complete and flip files' isDownloaded.
   useEffect(() => {
     void loadShares().then(setReceivedShares);
     return subscribeShares(setReceivedShares);
   }, []);
 
-  // Subscribe to hosted-share flags so toggling pin/favorite re-renders and
-  // re-sorts the list immediately.
+  // Subscribe to hosted-share organizational flags so toggling
+  // pin/favorite re-renders the list (and re-sorts) immediately.
   useEffect(() => {
     void loadHostedFlags().then(setHostedFlags);
     return subscribeHostedFlags(setHostedFlags);
@@ -827,10 +838,11 @@ export default function MainScreen() {
     return m;
   }, [hostedFlags]);
 
-  // When a grab completes, open the folder-contents modal if it isn't already
-  // showing that folder, then blink the completed rows. The timers are refs so
-  // they survive the re-renders `consumeCompletedDownload` and
-  // `setFolderModalId` trigger, and cancel only on re-trigger or unmount.
+  // When a grab completes (newly-fetched or all already-on-disk),
+  // open the folder-contents modal if it isn't already showing that folder,
+  // then blink the completed rows inside it. Timer refs persist across the
+  // re-renders that `consumeCompletedDownload` and `setFolderModalId`
+  // trigger — refs let us cancel only on explicit re-trigger + unmount.
   const blinkStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blinkClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -869,14 +881,15 @@ export default function MainScreen() {
   // Sort: most recent activity first. Active state does not affect ordering
   // — items don't jump as they transition.
   //
-  // Two sources merged into one list:
-  //   - Hosted drives from the engine manifest, with `localFiles` synthesized
-  //     from sharedFilePathsStorage so hosted previews work like received.
-  //   - Received shares from receivedSharesStorage — one row per share key,
-  //     however many engine drives that share has produced.
+  // Two sources merged into one list.
+  //   - Hosted drives: engine manifest (origin === "hosted"). `localFiles`
+  //     synthesized from sharedFilePathsStorage so previewing hosted files
+  //     works the same way as received.
+  //   - Received shares: receivedSharesStorage entries — one row per share
+  //     key regardless of how many engine drives that share has produced.
   //
-  // The engine's received-side drives are deliberately hidden: they're a
-  // per-paste session detail, not a logical row.
+  // The engine's received-side drives are intentionally hidden here —
+  // they're a per-paste session detail, not a logical row in the list.
   const sortedDrives: DriveRow[] = useMemo(() => {
     const list: DriveRow[] = [];
 
@@ -945,8 +958,8 @@ export default function MainScreen() {
       list.push(row);
     }
 
-    // Two-level sort: pinned first, then recency within each group. Applies to
-    // both the All and Favorites views.
+    // Two-level sort — pinned shares first, then recency within
+    // each group. Applies in both the All and Favorites views.
     list.sort((a, b) => {
       const pa = a.isPinned ? 1 : 0;
       const pb = b.isPinned ? 1 : 0;
@@ -962,7 +975,7 @@ export default function MainScreen() {
     return m;
   }, [transfers]);
 
-  // v5 Send sheet: recent hosted shares that still have a live link, most
+  // Send sheet: recent hosted shares that still have a live link, most
   // recent first, capped at 5. Only hosted drives — received shares aren't
   // "yours to re-share" from this surface.
   const recentShares = useMemo<RecentShareItem[]>(() => {
@@ -980,9 +993,10 @@ export default function MainScreen() {
       }));
   }, [sortedDrives]);
 
-  // viewMode filter applies after the primary sort, then search (name
-  // substring), filter (type/status), and the user-selected sort. Pinned
-  // always float to the top within the active view.
+  // viewMode filter applied AFTER the primary "recent" sort.
+  // Also layers on search (name substring), filter (type/status), and a
+  // user-selected sort (recent/name/size). Pinned always float to the top
+  // within the active view.
   const visibleDrives = useMemo<DriveRow[]>(() => {
     let list = viewMode === "favorites"
       ? sortedDrives.filter((d) => d.isFavorite)
@@ -1050,7 +1064,7 @@ export default function MainScreen() {
     if (changed) setOptimisticallyDeleted(next);
   }, [drives, optimisticallyDeleted]);
 
-  // v5: the list emits only drive rows now — bundle contents live in the
+  // The list emits only drive rows — bundle contents live in the
   // folder-contents modal. Kept as a useMemo so downstream identity is
   // stable across re-renders that don't change the visible slice.
   const flattenedList = useMemo<ListItem[]>(
@@ -1115,9 +1129,11 @@ export default function MainScreen() {
   );
 
   // Preview player wiring.
-  // Resolves the preview's parent drive so the share / stop-sharing button
-  // knows what to toggle. Null for received-share synth rows, which have no
-  // clean activate path — the button is omitted for them.
+  // Resolve the preview's parent drive so the bottom share/
+  // stop-sharing button knows the active state + identity to toggle.
+  // Returns null if the parent was a received-share synth row — those
+  // don't expose a clean activate path in this sprint, so we omit the
+  // button for them.
   const previewParentDrive = useMemo(() => {
     if (!preview?.parentDriveId) return null;
     const found = sortedDrives.find((d) => d.id === preview.parentDriveId);
@@ -1197,9 +1213,9 @@ export default function MainScreen() {
     [audioPlayer, audioDuration],
   );
 
-  // Polls video currentTime / duration / playing while the takeover is open,
-  // mirroring the audio path: expo-video exposes no reactive playing flag that
-  // can be subscribed to without useEvent.
+  // Poll video currentTime / duration / playing at 4 Hz while
+  // the takeover is open, mirroring the audio pattern. expo-video doesn't
+  // expose a reactive playing flag we can subscribe to without useEvent.
   useEffect(() => {
     if (preview?.mode !== "video" || !videoPlayer) {
       setVideoIsPlaying(false);
@@ -1223,10 +1239,11 @@ export default function MainScreen() {
     return () => clearInterval(id);
   }, [preview?.mode, videoPlayer]);
 
-  // Chrome auto-hide for the video takeover. Stays visible while paused, fades
-  // out after a few idle seconds while playing; any tap on the video surface
-  // fades it back in and resets the timer. A no-op outside video, so
-  // audio/image/text keep chrome visible.
+  // Chrome auto-hide for the video takeover. Chrome stays
+  // visible while paused (the user is engaging); when playing, fades out
+  // after 3 s of no taps. Any tap on the video tap-surface fades it back
+  // in and resets the timer. Other media types (audio/image/text) keep
+  // chrome visible always — `scheduleChromeHide` is a no-op outside video.
   const scheduleChromeHide = useCallback(() => {
     if (chromeHideTimerRef.current) {
       clearTimeout(chromeHideTimerRef.current);
@@ -1414,7 +1431,8 @@ export default function MainScreen() {
       showToast("Nothing picked.");
       return;
     }
-    // The single funnel for share creation — every picker path lands here.
+    // The single funnel for share creation from the UI —
+    // every picker path lands here.
     debugLog(
       "info",
       "rn.share",
@@ -1432,6 +1450,14 @@ export default function MainScreen() {
       return;
     }
     debugLog("info", "rn.share", `share created drive=${out.driveId ?? "?"}`);
+    // Ask for notification permission here, at the first moment the user
+    // has something worth being notified about. The lazy request inside
+    // notifyTransferComplete stays as a backstop, but on its own it fires
+    // at a backgrounded completion — prompting while the user is in
+    // another app, which is the worst moment to ask and a likely denial.
+    // Fire-and-forget: the share flow, haptics and QR modal below must not
+    // wait on an OS dialog, and a denial stays silent by design.
+    void ensureNotificationPermission();
     if (out.driveId) {
       void saveSharedFilePathsEntry({
         driveId: out.driveId,
@@ -1529,8 +1555,8 @@ export default function MainScreen() {
 
   async function onPickAndShare() {
     setPickerSheet(null);
-    // Doubles as the in-app picker's escape hatch, so dismiss it before
-    // launching the OS picker behind it.
+    // These double as the in-app picker's escape hatches, so
+    // dismiss it before launching the OS picker behind it.
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
@@ -1539,8 +1565,8 @@ export default function MainScreen() {
         copyToCacheDirectory: true,
         multiple: true,
       });
-      // Cancel and empty both exit through `handlePickerExit`: clean return to
-      // the Send sheet, no half-started share, no fallthrough.
+      // Cancel and empty both exit through `handlePickerExit` —
+      // clean return to the Send sheet, no half-started share, no fallthrough.
       const outcome = classifyPickerResult(res.canceled, selectFiles(res));
       if (outcome.kind !== "selected") {
         handlePickerExit(outcome, { empty: "Nothing picked." });
@@ -1573,14 +1599,14 @@ export default function MainScreen() {
 
   async function onPickFolderAndShare() {
     setPickerSheet(null);
-    // Doubles as the in-app picker's escape hatch, so dismiss it before
-    // launching the OS picker behind it.
+    // These double as the in-app picker's escape hatches, so
+    // dismiss it before launching the OS picker behind it.
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
       const dir = await pickFolder();
-      // `pickFolder` returns null on a back-out; routed through the shared exit
-      // so the folder picker behaves like the other two.
+      // `pickFolder` returns null on a back-out. Route it through
+      // the shared exit so the folder picker behaves like the other two.
       if (!dir) {
         handlePickerExit(
           { kind: "cancelled" },
@@ -1644,16 +1670,19 @@ export default function MainScreen() {
 
   async function onPickPhotosAndShare() {
     setPickerSheet(null);
-    // Doubles as the in-app picker's escape hatch, so dismiss it before
-    // launching the OS picker behind it.
+    // These double as the in-app picker's escape hatches, so
+    // dismiss it before launching the OS picker behind it.
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
+      // Required on older Android; see the pick-flow guard above.
       // On older Android / OEM ROMs `launchImageLibraryAsync` can throw
-      // outright (permission denied, vendor gallery missing). Unguarded, that
-      // throw reaches the outer catch and dead-ends the user on a red error
-      // toast. A throw that reads as a back-out is treated as a cancel;
-      // anything else falls back to the SAF document picker.
+      // outright (permission denied, vendor gallery missing). Left unguarded
+      // that throw reached the outer catch and dead-ended the user on a red
+      // "Photo share error" toast. Now: a throw that reads as a back-out is
+      // treated as a cancel, and anything else falls back to the SAF
+      // document picker — the same path onPickAndShare uses — instead of
+      // dead-ending.
       let outcome: PickerOutcome;
       try {
         const res = await ImagePicker.launchImageLibraryAsync({
@@ -1740,8 +1769,9 @@ export default function MainScreen() {
     [deactivateDrive, refreshDrives, showToast],
   );
 
-  // Pin / favorite toggles, routed by origin: received shares carry the flags
-  // on their ReceivedShare record, hosted drives use the hostedShareFlags
+  // Unified pin / favorite toggles. Route to the right storage
+  // based on the share's origin. Received shares carry the flags on their
+  // ReceivedShare record; hosted drives go through the hostedShareFlags
   // side-store keyed by engine driveId.
   const togglePinned = useCallback((drive: DriveRow) => {
     const next = !drive.isPinned;
@@ -1786,9 +1816,9 @@ export default function MainScreen() {
       haptics.actionDone();
       showToast("Deleted.");
       if (drive.share) {
-        // Received share: drop the per-share record, then purge every engine
-        // drive whose key matches — re-pastes may have produced several
-        // short-lived engine entries for the one share.
+        // Received share. Drop the per-share record, then purge
+        // every engine drive whose key matches — the share may have produced
+        // several short-lived engine drive entries across re-pastes.
         const shareKey = drive.share.shareKey;
         void deleteShare(shareKey);
         const matchingEngineIds = (drives ?? [])
@@ -1804,8 +1834,8 @@ export default function MainScreen() {
           void refreshDrives();
         });
         void removeSharedFilePaths(id);
-        // Drop the organizational flags too, so a later share reusing the
-        // driveId doesn't inherit them.
+        // Drop the organizational flags too — a future fresh
+        // share that happens to reuse the driveId shouldn't inherit them.
         void clearHostedShareFlags(id);
       }
     },
@@ -1830,7 +1860,7 @@ export default function MainScreen() {
 
   const renderRow: ListRenderItem<ListItem> = useCallback(
     ({ item, index }) => {
-      // Drive rows only — child files live in the folder modal.
+      // Drive row.
       const drive = item.drive;
       const isActive = activeDriveIds.has(drive.id);
       const isFailed = failedHydrationIds.has(drive.id);
@@ -1850,7 +1880,7 @@ export default function MainScreen() {
           : "active-idle"
         : "inactive";
 
-      // v5 status sub-line: `<Type> · <StateLabel>` pattern matching the
+      // Status sub-line: `<Type> · <StateLabel>` pattern matching the
       // design deck. Type prefix comes from the primary file's mode for
       // single-file rows, or a "N files" summary for bundles.
       const typePrefix = ((): string => {
@@ -1876,7 +1906,7 @@ export default function MainScreen() {
         status = { label: `${typePrefix} · Active`, tone: "primary" };
       }
 
-      // v5 thumbnail: show the primary file's image directly for single-file
+      // Thumbnail: show the primary file's image directly for single-file
       // image rows; video rows generate a one-frame thumbnail via
       // expo-video-thumbnails (cached module-wide). Everything else falls
       // back to the tokenized icon tile.
@@ -1964,7 +1994,7 @@ export default function MainScreen() {
   const kebabActive = kebabDrive ? activeDriveIds.has(kebabDrive.id) : false;
   const kebabOpenable = kebabDrive ? isOpenableInOtherApp(kebabDrive) : false;
 
-  // v5: identity header for the per-drive kebab sheet. Mirrors the
+  // Identity header for the per-drive kebab sheet. Mirrors the
   // thumbnail/name/status derivation used by ShareRow so the sheet header
   // reads as the same row the user just tapped.
   const kebabHeader = useMemo(() => {
@@ -2001,7 +2031,7 @@ export default function MainScreen() {
     };
   }, [kebabDrive]);
 
-  // v5 folder-contents modal: derive the drive + prepared file list from
+  // Folder-contents modal: derive the drive + prepared file list from
   // the currently-open bundle id. Uses the same visible-drives slice as
   // the list so search / filter / sort mutations in the parent screen
   // don't strand a hidden folder open.
@@ -2141,13 +2171,14 @@ export default function MainScreen() {
         ? { label: "Active", tone: "primary" as const }
         : { label: "Inactive", tone: "muted" as const }
     : null;
-  // Received-share rows don't expose Share-it / Stop-sharing: the engine maps
-  // activate by driveId, not shareKey, so there's no clean per-share toggle.
+  // Received-share rows don't expose Share-it / Stop-sharing in
+  // this sprint — the engine maps activate by driveId, not shareKey, so
+  // there's no clean "this share" toggle yet. Out of scope to wire fully.
   const kebabIsReceivedShare = !!kebabDrive?.share;
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 4 }]}>
-      {/* v5 shell: Files/Favorites tabs + search/filter/sort toolbar. Send /
+      {/* Shell: Files/Favorites tabs + search/filter/sort toolbar. Send /
        *  Receive / Settings are surfaced via the floating BottomToolbar
        *  (mounted below the list). In selection mode the tabs + toolbar
        *  swap for a "N Selected · Cancel · Delete" header. */}
@@ -2260,14 +2291,14 @@ export default function MainScreen() {
         focusPaste={receiveFocusPaste}
       />
 
-      {/* v5 Send — centered modal card with Files + Photos and Recent Shares.
+      {/* Send — centered modal card with Files + Photos and Recent Shares.
           Folder handler stays wired but the entry point is hidden in the UI. */}
       <SendSheet
         visible={pickerSheet === "share-files"}
         onClose={() => setPickerSheet(null)}
         onPickFiles={() => {
-          // "Files" opens PearDrop's own picker; the OS document picker is
-          // one tap away inside it.
+          // "Files" now opens PearDrop's own picker. The OS
+          // document picker is still one tap away inside it.
           setPickerSheet(null);
           setInAppPickerOpen(true);
         }}
@@ -2277,10 +2308,11 @@ export default function MainScreen() {
         onCopyRecentLink={(link) => void onCopyLink(link)}
       />
 
-      {/* In-app file selection: recents plus one level of a SAF-granted
-          Downloads folder, with the OS picker as fallback. Cancel routes
-          through the shared picker-exit path, so backing out of this screen
-          behaves exactly like backing out of the OS picker. */}
+      {/* In-app file selection — recents + one level of a
+          SAF-granted Downloads folder, with the OS picker as fallback.
+          Cancel routes through the shared picker-exit path so backing
+          out of this screen behaves exactly like backing out of the OS
+          picker: Send sheet restored, silent, nothing half-built. */}
       <FilePickerSheet
         visible={inAppPickerOpen}
         history={sharedPaths}
@@ -2349,7 +2381,7 @@ export default function MainScreen() {
               },
             },
           ];
-          // v5 multi-select entry: opens selection mode with the current
+          // Multi-select entry: opens selection mode with the current
           // drive already selected. Hidden inside the row's kebab so it's
           // discoverable but not on the surface.
           list.push({
@@ -2362,7 +2394,7 @@ export default function MainScreen() {
               setKebabSheet(null);
             },
           });
-          // Do NOT change the Open affordance — per v5 guardrails it stays
+          // Do NOT change the Open affordance — it stays
           // exactly as-is on single-file rows in the kebab menu.
           if (kebabOpenable && kebabDrive.primaryFile) {
             const f = kebabDrive.primaryFile;
@@ -2388,7 +2420,7 @@ export default function MainScreen() {
               setKebabSheet(null);
             },
           });
-          // v5 kebab: Copy link + Show QR only make sense while the drive
+          // Kebab: Copy link + Show QR only make sense while the drive
           // is actively seeding — a dormant drive has no live link/QR to
           // hand out. When inactive, the "Start sharing" action at the
           // bottom is the meaningful next step instead.
@@ -2415,7 +2447,7 @@ export default function MainScreen() {
               },
             });
           }
-          // v5: Retry surfaces inside the kebab (not on the row) when the
+          // Retry surfaces inside the kebab (not on the row) when the
           // drive failed to hydrate or a transfer failed. Hosted drives
           // re-activate; received shares re-populate the paste field so
           // the auto-resolve loop kicks in again.
@@ -2604,11 +2636,12 @@ export default function MainScreen() {
         );
       })()}
 
-      {/* Fullscreen takeover preview. Chrome floats over the video and
-       *  auto-hides during playback; image/text/audio keep it visible.
-       *  Dismiss is the back arrow or Android back button — no tap-outside,
-       *  no swipe. Custom controls rather than `nativeControls`: playback
-       *  toggles on any tap of the video surface, mirroring the OS player. */}
+      {/* Fullscreen takeover preview. Pure black behind
+       *  the media. Chrome floats over the video and auto-hides during
+       *  playback; image/text/audio keep chrome visible. Dismiss is the
+       *  back arrow (or Android back button) — no tap-outside, no swipe.
+       *  Custom video controls (no `nativeControls`) — playback toggles
+       *  on any tap of the video tap-surface, mirroring the OS player. */}
       <Modal
         visible={!!preview}
         transparent={false}
@@ -2768,9 +2801,10 @@ export default function MainScreen() {
               </View>
             )}
 
-            {/* Top bar holds only the back arrow; sharing lives in an inline
-              *  button below the video. The safe-area top inset clears the
-              *  status bar so the icon is fully tappable. */}
+            {/* Top bar holds only the back arrow now. Three-dots
+              *  removed in favor of an inline share button below the video.
+              *  Safe-area top inset clears the status bar so the icon is
+              *  fully tappable. Bigger touch target + hitSlop. */}
             <Animated.View
               pointerEvents={chromeVisible ? "box-none" : "none"}
               style={[
@@ -2798,8 +2832,8 @@ export default function MainScreen() {
                   styles.fsBottomBar,
                   {
                     opacity: chromeOpacity,
-                    // Clears the gesture bar so the share button isn't flush
-                    // against the bottom edge.
+                    // Clear the gesture bar so the share
+                    // button isn't flush against the bottom edge.
                     paddingBottom: insets.bottom + 16,
                   },
                 ]}
@@ -2844,11 +2878,12 @@ export default function MainScreen() {
                     {videoDuration > 0 ? formatClock(videoDuration) : "—:—"}
                   </Text>
                 </View>
-                {/* Share / stop-sharing toggle. Hosted drives only — received
-                  *  synth rows can't activate via this path.
+                {/* Share/stop-sharing toggle below the scrubber.
+                  *  Only renders for hosted drives (received synth rows
+                  *  can't activate via this path in this sprint).
                   *  - Stop sharing: deactivates inline, preview stays open
-                  *  - Share it: closes the preview and opens the QR modal so
-                  *    the user can hand off the link */}
+                  *  - Share it: closes the preview and opens the main-page
+                  *    QR modal so the user can hand off the link */}
                 {previewParentDrive ? (
                   <View style={styles.fsShareBtnRow}>
                     <Pressable
@@ -2901,7 +2936,7 @@ export default function MainScreen() {
         )}
       </Modal>
 
-      {/* Folder contents, opened from a bundle tap. */}
+      {/* Folder-contents modal. */}
       <FolderContentsModal
         visible={!!folderModalDrive}
         onClose={() => setFolderModalId(null)}
@@ -2957,7 +2992,7 @@ export default function MainScreen() {
         }}
       />
 
-      {/* v5 multi-select: batch delete confirmation. */}
+      {/* Multi-select: batch delete confirmation. */}
       <ConfirmModal
         visible={confirmBatchDelete}
         title={`Delete ${selectedIds.size} ${selectedIds.size === 1 ? "share" : "shares"}?`}

@@ -128,6 +128,9 @@ export default function AccountScreen() {
       <View style={styles.headerRow}>
         <Text style={styles.title}>Account</Text>
         <View style={styles.headerActions}>
+          {/* TestBed flask removed for release.
+           * The TestBed screen + scenarios live in src/screens/TestBedScreen.tsx
+           * but are no longer reachable from the UI. */}
           <Pressable style={styles.iconBtn} onPress={() => navigation.navigate("Settings")}>
             <Ionicons name="settings-outline" size={19} color={theme.text} />
           </Pressable>

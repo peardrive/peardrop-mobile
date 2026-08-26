@@ -146,9 +146,10 @@ function createReceiveStyles(theme: AppTheme) {
       flexGrow: 1,
       justifyContent: "center",
     },
-    // Minimal icon + message centered in the list area; without it the page
-    // reads as broken rather than empty. No instructional prose — the link
-    // input at the bottom already says what to do.
+    // Without an empty state the page reads as broken rather than empty.
+    // A minimal icon + warm message centered in the list area. No
+    // instructional prose — the link input at the bottom already says
+    // what to do.
     emptyWrap: {
       flex: 1,
       paddingHorizontal: 24,
@@ -275,7 +276,7 @@ function createReceiveStyles(theme: AppTheme) {
     transferCardWrap: { marginTop: 10 },
     previewBackdrop: {
       flex: 1,
-      // Matches SharePreviewModal's scrim.
+      // Standardized at 0.5 to match SharePreviewModal. Was 0.6.
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "center",
       padding: 12,
@@ -285,8 +286,9 @@ function createReceiveStyles(theme: AppTheme) {
       borderRadius: 16,
       borderWidth: 1,
       borderColor: theme.border,
-      // theme.bg is opaque; theme.card is a low-alpha tint that would let
-      // file content behind the modal bleed through.
+      // Theme.bg (opaque) instead of theme.card (5–8% alpha) so
+      // file content behind the modal can't bleed through. Same fix as
+      // SharePreviewModal.
       backgroundColor: theme.bg,
       padding: 14,
       gap: 10,
@@ -330,8 +332,9 @@ function createReceiveStyles(theme: AppTheme) {
       gap: 12,
     },
     audioMeta: { color: theme.muted, fontSize: 12 },
-    // Skip buttons flank play/pause; all three are circular tap targets sized
-    // for a typical thumb.
+    // Full media-control row centered horizontally. Skip
+    // buttons flank the play/pause; all three are circular tap targets
+    // sized for a typical thumb (44 px).
     audioControlsRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -417,9 +420,9 @@ export default function ReceiveScreen() {
   const [peekTopmost, setPeekTopmost] = useState(false);
   const [infoFileId, setInfoFileId] = useState<string | null>(null);
   const [menuItem, setMenuItem] = useState<DownloadedItem | null>(null);
-  // IDs that just arrived from a download. Same flash animation as the dedup
-  // highlight, but driven by storage subscribe rather than paste-time
-  // classification.
+  // IDs that just arrived from a download. Reuse the same flash
+  // animation as the dedup highlight, but driven by storage
+  // subscribe instead of paste-time classification.
   const [newHighlightIds, setNewHighlightIds] = useState<string[]>([]);
   // Set of all IDs we've seen in any prior subscribe emit. Initialized
   // empty so the FIRST emit (cold start with already-present files) does
@@ -427,9 +430,10 @@ export default function ReceiveScreen() {
   const prevDownloadedIdsRef = useRef<Set<string>>(new Set());
   const haveSeenInitialEmitRef = useRef(false);
   const flatListRef = useRef<FlatList<DownloadedItem>>(null);
-  // 1 = full accent overlay, 0 = transparent. One shared animation for dedup
-  // hits and new arrivals: merging both sources into a single render set
-  // keeps the effect from double-firing when both happen in one tick.
+  // 1 = full accent overlay, 0 = transparent. Drives the highlight flash
+  // for both dedup hits and new-arrival flashes. One
+  // shared animation; merging both sources into one render set means the
+  // effect doesn't double-fire when both happen in the same tick.
   const highlightAnim = useRef(new Animated.Value(0)).current;
   const highlightSet = useMemo(
     () => new Set([...highlightedDownloadedIds, ...newHighlightIds]),
@@ -460,10 +464,12 @@ export default function ReceiveScreen() {
     p.loop = false;
   });
 
-  // expo-audio's `useAudioPlayerStatus` exposes `playing` / `didJustFinish`
-  // reactively but not currentTime, so it's polled directly from the player to
-  // drive the scrubber. Stops when the modal closes or the preview switches
-  // away from audio.
+  // Poll the audio player's currentTime / duration at 4 Hz
+  // while the audio preview is open. expo-audio's `useAudioPlayerStatus`
+  // exposes `playing` / `didJustFinish` reactively but not currentTime,
+  // so we read it directly from the player at a steady cadence to drive
+  // the scrubber + time display. Stops when the modal closes or the
+  // preview switches away from audio.
   const [audioPosition, setAudioPosition] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [scrubWidth, setScrubWidth] = useState(0);
@@ -505,11 +511,13 @@ export default function ReceiveScreen() {
     loadDownloaded().then(setDownloaded).catch(() => {});
   }, []);
 
-  // Live-subscribe to the downloads index so the list updates as soon as
-  // appendDownloadResults / deleteDownloaded run, with no tab switch. Matters
-  // most on the demo path, where no backend events fire. Each emit diffs IDs
-  // against the previous one and flashes the new ones; the first emit only
-  // seeds the ref, since those files predate mount.
+  // Live-subscribe to the downloads index so the file list
+  // updates as soon as appendDownloadResults / deleteDownloaded run —
+  // no tab-switch required. Demo path benefits especially (no backend
+  // events fire there). On each emit we diff IDs vs. the previous emit;
+  // any newly-added IDs flash via the shared highlight animation. The
+  // very first emit just seeds prevDownloadedIdsRef without flashing
+  // (those files were there before mount).
   useEffect(() => {
     return subscribeDownloaded((items) => {
       setDownloaded(items);
@@ -545,9 +553,10 @@ export default function ReceiveScreen() {
     [downloaded]
   );
 
-  // One-shot swipe-hint peek on the topmost row the first time the list has
-  // items. The flag is marked seen immediately, before the delay, so a sibling
-  // list doesn't also fire — the cue is shared.
+  // Trigger the one-shot swipe-hint peek on the topmost
+  // downloaded row the first time the list has items. Marks the flag
+  // seen IMMEDIATELY (before the 500 ms delay) so a sibling list
+  // (Share bundles) doesn't also fire — the cue is shared.
   useEffect(() => {
     if (peekTopmost) return;
     if (sortedDownloaded.length === 0) return;
@@ -595,11 +604,14 @@ export default function ReceiveScreen() {
     return () => clearTimeout(timer);
   }, [activeDownloadTransfer, clearTransfer, refreshList, showToast]);
 
-  // Surfaces a friendly error when the stall detector flips `stalled: true` on
-  // a received transfer. The card deliberately stays visible so the user can
-  // see what happened and dismiss it themselves. Tracked separately from
-  // completedDriveIdRef so a stall followed by a clean retry doesn't suppress
-  // the later success toast.
+  // Stall detector toast. When the BackendProvider's stall
+  // detector flips `stalled: true` on a received transfer (>30 s without
+  // events after data was previously flowing), surface a friendly error.
+  // The transfer card itself stays visible so the user can see what
+  // happened and dismiss via × — we deliberately do NOT clearTransfer
+  // here per the prompt's "let the user see what happened and dismiss."
+  // Tracked separately from completedDriveIdRef so a stall-then-clean-
+  // -recovery doesn't suppress the success toast on a later attempt.
   const stalledDriveIdRef = useRef<string | null>(null);
   useEffect(() => {
     const t = activeDownloadTransfer;
@@ -613,11 +625,13 @@ export default function ReceiveScreen() {
     );
   }, [activeDownloadTransfer, showToast]);
 
-  // Highlight pulse for both already-added detection and new arrivals. Bursts
-  // to 1, fades to 0, then drops the IDs from both sources so the overlay
-  // clears. Scrolls the first match into view so the flash is visible on a long
-  // list. Native driver is off because opacity is animated through a
-  // state-driven render gate.
+  // Highlight pulse for both already-added detection and the new-arrival
+  // flash. Bursts to 1 then fades to 0 over ~1.5 s. On
+  // completion we drop the IDs from BOTH sources (context highlights via
+  // clearHighlights, local new-arrival highlights via setNewHighlightIds)
+  // so the overlay clears cleanly. Scrolls the first match into view so
+  // the flash is visible even on a long list. Native driver is off because
+  // we're animating opacity through a context-/state-driven render gate.
   useEffect(() => {
     const allIds = [...highlightedDownloadedIds, ...newHighlightIds];
     if (allIds.length === 0) return;
@@ -737,8 +751,8 @@ export default function ReceiveScreen() {
     }
   }, [preview, audioPlayer, audioStatus, showToast]);
 
-  // Skip handlers and tap-to-seek, clamped to [0, duration] so a seek can't
-  // overshoot the end of the file.
+  // ±15 s skip handlers and tap-to-seek on the scrubber.
+  // Clamped to [0, duration] so we never overshoot the end of the file.
   const onAudioSkip = useCallback(
     (deltaSeconds: number) => {
       if (!audioPlayer) return;
@@ -835,9 +849,9 @@ export default function ReceiveScreen() {
     [highlightSet, highlightAnim, onDeleteDownloaded, onPreviewFile, onPeekDone, peekTopmost, styles, theme.muted]
   );
 
-  // Reinstated 2026-05-14: rendering nothing read as "broken-empty" on
-  // device. Minimal warm empty state — icon + a short title + a one-line
-  // hint. The link input below remains the call-to-action.
+  // Rendering nothing reads as "broken-empty" on device. Minimal warm empty
+  // state — icon + a short title + a one-line hint. The link input below
+  // remains the call-to-action.
   const downloadedEmpty = useMemo(
     () => (
       <View style={styles.emptyWrap} accessibilityRole="summary">

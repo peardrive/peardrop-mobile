@@ -1,7 +1,7 @@
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-// With no bottom tab bar, screens only reserve the safe-area bottom inset.
-// The hook name is retained for source compatibility.
+// The bottom tab bar is gone. Screens now only need to reserve
+// the safe-area bottom inset. Kept the hook name for source compatibility.
 export function useMainDockBottomInset(): number {
   const insets = useSafeAreaInsets();
   return insets.bottom;

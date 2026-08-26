@@ -132,10 +132,11 @@ export default function ShareQrModal({
     [theme, topInset, bottomToolbarClearance],
   );
   const [confirming, setConfirming] = useState(false);
-  // Absolutely positioned so it can never eat into the ScrollView's flex
-  // allocation — the RN flex + ScrollView interaction overlaps the last
-  // section otherwise. Its measured height sets the scroll body's
-  // paddingBottom so content clears the pinned buttons.
+  // Actions row is absolutely positioned so it can never eat into the
+  // ScrollView's flex allocation (the RN flex + ScrollView interaction
+  // otherwise overlaps the last section). Measuring its height
+  // lets us reserve exactly the right paddingBottom on the scroll body
+  // so the tail of the content clears the pinned buttons.
   const [actionsHeight, setActionsHeight] = useState(0);
 
   const statusLabel = formatStatus(info?.status);

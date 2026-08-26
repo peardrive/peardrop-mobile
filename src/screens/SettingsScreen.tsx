@@ -3,13 +3,25 @@ import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from "react-nat
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
+import * as Notifications from "expo-notifications";
+import {
+  NOTIFICATION_ACCENT,
+  TRANSFER_CHANNEL_ID,
+  ensureNotificationsReady,
+  ensurePermission as ensureNotificationPermission,
+} from "../lib/notifications";
 import { useAppTheme } from "../state/ThemeContext";
 import { THEME_ORDER, themes } from "../ui/themes";
 import { loadStats, subscribeStats, type Stats } from "../state/statsStorage";
-import { formatBytes } from "../lib/format";
+import { formatBytes, formatSimulateDelay } from "../lib/format";
 import { useToast } from "../ui/Toast";
 import type { AppTheme } from "../ui/themes";
 import { useDebugLogging } from "../state/debugLogStorage";
+import { useBackend } from "../state/backend";
+import {
+  SIMULATE_DELAY_OPTIONS,
+  useSimulateDelay,
+} from "../state/simulateDelayStorage";
 import {
   buildExportBundle,
   clearLog,
@@ -22,9 +34,40 @@ import { maxOnDiskBytes } from "../lib/debugLogFormat";
 import ConfirmModal from "../ui/ConfirmModal";
 import NameShareModal from "../ui/NameShareModal";
 
-// Section list (Appearance / Support) with a profile placeholder on top.
-// Edit Account / Language / Report / About / Sign out are toast placeholders;
-// only Theme is wired.
+/**
+ * The simulated transfer's nominal length. 4 s is the engine's clamp floor
+ * (`Math.max(4000, …)`), so this is the shortest run available.
+ */
+const SIMULATE_DURATION_MS = 4_000;
+/** Simulation tick. Completion can only land on a tick boundary. */
+const SIMULATE_TICK_MS = 500;
+/**
+ * How long the simulation ACTUALLY takes — 3 s, not the 4 s
+ * `SIMULATE_DURATION_MS` implies. A label of 4 s would be 1 s optimistic because of
+ * this gap, and the device run showed completions at ~14.0 s against a
+ * promised 15 s.
+ *
+ * Where the second goes: the engine reads `earlyCompletePeers` as
+ * `Number(opts.earlyCompletePeers || 1)`. Passing `0` to disable early
+ * disconnect, but `0` is falsy, so `|| 1` silently restores it to 1. One
+ * peer is therefore disconnected at `durationMs * 0.65` = 2600 ms, leaving
+ * nobody connected; the next tick at 3000 ms sees `activeWeight <= 0` with
+ * every peer having joined and completes via the `path=no-peers` branch —
+ * the `path=no-peers` branch.
+ *
+ * That coercion lives in `backend/`, which this sprint must not touch, so
+ * the early disconnect is treated as the intended behaviour and the offset
+ * is matched to it rather than fought. Completion is therefore
+ * deterministic at `ceil(4000 * 0.65 / 500) * 500` = 3000 ms.
+ */
+const SIMULATE_RUN_MS =
+  Math.ceil((SIMULATE_DURATION_MS * 0.65) / SIMULATE_TICK_MS) * SIMULATE_TICK_MS;
+
+// The settings screen groups the surviving surfaces
+// (Theme + follow-system + stats)
+// into a section list (Appearance / Support), adds a profile placeholder
+// block on top, and stubs Edit Account / Language / Report / About / Sign
+// out as toast placeholders. Only Theme is actually wired.
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -38,6 +81,8 @@ export default function SettingsScreen() {
     setMode,
   } = useAppTheme();
   const { show: showToast } = useToast();
+  const { runFakeUploadTest } = useBackend();
+  const { delayMs, setDelayMs } = useSimulateDelay();
   const followSystem = mode === "system";
   const [stats, setStats] = useState<Stats>({
     sentBytes: 0,
@@ -190,6 +235,108 @@ export default function SettingsScreen() {
       unsub();
     };
   }, []);
+
+  /**
+   * Post a notification directly, bypassing the engine and
+   * `notifyTransferComplete` entirely.
+   *
+   * This exists so a failed device test can tell "the channel is wrong"
+   * apart from "the worklet was asleep". Going through
+   * `notifyTransferComplete` would reintroduce both the AppState guard and
+   * the dependency on a real transfer, which is exactly what needs
+   * isolating. Because it skips that guard, this one *does* show while the
+   * app is in the foreground — that is the point.
+   */
+  const onTestNotification = useCallback(async () => {
+    try {
+      await ensureNotificationsReady();
+      const granted = await ensureNotificationPermission();
+      if (!granted) {
+        // Denials are terminal for the session (and after two, for the OS
+        // too), so say what happened rather than silently doing nothing.
+        showToast("Notifications are off for PearDrop — enable them in system settings.");
+        return;
+      }
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "PearDrop test notification",
+          body: "If you can see this, the transfers channel is working.",
+          sound: true,
+          // Same accent as the real path, so this row still
+          // isolates the channel rather than also differing in appearance.
+          color: NOTIFICATION_ACCENT,
+        },
+        trigger: { channelId: TRANSFER_CHANNEL_ID },
+      });
+      debugLog("info", "rn.notify", `test notification posted channel=${TRANSFER_CHANNEL_ID}`);
+      showToast("Test notification sent.", { kind: "success" });
+    } catch (err) {
+      debugLog(
+        "error",
+        "rn.notify",
+        `test notification failed — ${String((err as Error)?.message || err)}`,
+      );
+      showToast("Couldn't post the test notification.", { kind: "error" });
+    }
+  }, [showToast]);
+
+  /**
+   * Fire a REAL `upload-complete` from the engine after a delay,
+   * so the tester can background the app and see whether the notification
+   * actually arrives.
+   *
+   * Deliberately not a shortcut to `notifyTransferComplete`: this goes
+   * engine → IPC → BackendProvider's upload-complete handler → the same
+   * AppState guard and the same wording every real transfer uses. A
+   * simulation that skipped that chain would prove nothing about it.
+   *
+   * The complement of "Send a test notification" above, not a replacement:
+   * that one bypasses the guard to isolate the channel, this one exercises
+   * the whole path. A failure in one and not the other localises the fault.
+   */
+  const onSimulateComplete = useCallback(async () => {
+    try {
+      await ensureNotificationsReady();
+      const granted = await ensureNotificationPermission();
+      if (!granted) {
+        showToast("Notifications are off for PearDrop — enable them in system settings.");
+        return;
+      }
+      const res = await runFakeUploadTest({
+        // Subtract the simulation's real 3 s so the total lands on the
+        // delay the label promises. See SIMULATE_RUN_MS.
+        startDelayMs: Math.max(0, delayMs - SIMULATE_RUN_MS),
+        durationMs: SIMULATE_DURATION_MS,
+        tickMs: SIMULATE_TICK_MS,
+        peers: 1,
+        forceSelfPeer: true,
+        // Engine floor. Kept minimal because the RN handler tallies a
+        // hosted completion into lifetime "sent" stats — see the report.
+        totalBytes: 1024 * 1024,
+      });
+      if (!res?.ok) {
+        showToast("Couldn't start the simulation — is the backend running?", { kind: "error" });
+        return;
+      }
+      debugLog(
+        "info",
+        "rn.notify",
+        `simulate-complete scheduled drive=${res.driveId ?? "?"} ` +
+          `fires in ${delayMs}ms (startDelay=${Math.max(0, delayMs - SIMULATE_RUN_MS)}ms + sim=${SIMULATE_RUN_MS}ms)`,
+      );
+      showToast(
+        `Completion in ${formatSimulateDelay(delayMs)} — background the app now.`,
+        { kind: "success" },
+      );
+    } catch (err) {
+      debugLog(
+        "error",
+        "rn.notify",
+        `simulate-complete failed — ${String((err as Error)?.message || err)}`,
+      );
+      showToast("Couldn't start the simulation.", { kind: "error" });
+    }
+  }, [delayMs, runFakeUploadTest, showToast]);
 
   const onBack = useCallback(() => {
     if (navigation.canGoBack()) navigation.goBack();
@@ -353,9 +500,81 @@ export default function SettingsScreen() {
           label="About"
           onPress={notYet("About")}
         />
+        {/* Posts straight to the transfers channel — no engine, no
+            AppState guard. Lets a tester confirm notifications work at all
+            before blaming a transfer for not announcing itself. */}
+        <SettingsRow
+          theme={theme}
+          icon="notifications-outline"
+          label="Send a test notification"
+          onPress={() => void onTestNotification()}
+          trailing="chevron-forward"
+        />
+        {/* The other half of the pair above. That row proves the
+            channel works; this one drives a real engine `upload-complete`
+            through the full notification path, including the AppState
+            guard — so it shows nothing unless the app is backgrounded.
 
-        {/* Sits next to "Report a bug" — same job, producing something
-            diagnosable. */}
+            Dev-only. `__DEV__` is statically false in release, so
+            the whole subtree — row, delay picker, and the useSimulateDelay
+            subscription it reads — is unreachable and stripped. The "Send a
+            test notification" row ABOVE deliberately stays ungated: that one
+            is a support tool for real bug reports, not instrumentation. */}
+        {__DEV__ ? (
+        <View style={styles.debugRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.followLabel}>
+              Simulate transfer complete ({formatSimulateDelay(delayMs)})
+            </Text>
+            <Text style={styles.followHint}>
+              Fires a real completion after the selected delay. Tap, then
+              background the app straight away — nothing shows while PearDrop
+              is on screen. Pick a delay longer than a minute to test what
+              happens once the system freezes the app.
+            </Text>
+            {/* Same Pressable + radio idiom as the theme list
+                above, laid out in a row because three short values don't
+                warrant full-width rows. */}
+            <View style={styles.delayPicker}>
+              {SIMULATE_DELAY_OPTIONS.map((ms) => {
+                const active = ms === delayMs;
+                return (
+                  <Pressable
+                    key={ms}
+                    onPress={() => setDelayMs(ms)}
+                    style={[styles.delayChip, active && styles.delayChipActive]}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                    accessibilityLabel={`Delay ${formatSimulateDelay(ms)}`}
+                  >
+                    <Text
+                      style={[
+                        styles.delayChipText,
+                        active && styles.delayChipTextActive,
+                      ]}
+                    >
+                      {formatSimulateDelay(ms)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Simulate transfer complete"
+            onPress={() => void onSimulateComplete()}
+            hitSlop={8}
+          >
+            <Ionicons name="play-circle-outline" size={26} color={theme.primary} />
+          </Pressable>
+        </View>
+        ) : null}
+
+        {/* Debugging. Sits next to "Report a bug" because it's
+            the same job — getting us something we can diagnose from. The
+            toggle itself is NOT dev-gated: it's a real feature for bug
+            reports. Only the instrumentation built on top of it is. */}
         <View style={styles.debugRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.followLabel}>Debugging</Text>
@@ -413,6 +632,11 @@ export default function SettingsScreen() {
             </View>
           </View>
         ) : null}
+
+        {/* Do not add a "keep transfers awake" toggle driving a
+            counter-`resume()` on background. Measured on device, it makes no
+            difference in either direction: the freeze comes from the OS
+            process freezer, which `resume()` does not affect. */}
       </View>
 
       {/* Lifetime stats — kept as a small footer card so the info survives. */}
@@ -628,6 +852,24 @@ function createStyles(theme: AppTheme) {
       marginTop: 2,
       lineHeight: 16,
     },
+    // The delay picker. Same border/active tokens as themeRow
+    // below, sized down to a chip because the values are two or three
+    // characters and sit inside an existing row.
+    delayPicker: { flexDirection: "row", gap: 6, marginTop: 8 },
+    delayChip: {
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: theme.border,
+      paddingHorizontal: 12,
+      paddingVertical: 5,
+      backgroundColor: theme.cardStrong,
+    },
+    delayChipActive: {
+      backgroundColor: theme.tabActiveOverlay,
+      borderColor: theme.primaryMuted,
+    },
+    delayChipText: { color: theme.muted, fontSize: 12, fontWeight: "600" },
+    delayChipTextActive: { color: theme.text },
     themeList: { gap: 8 },
     themeListDisabled: { opacity: 0.5 },
     themeRow: {

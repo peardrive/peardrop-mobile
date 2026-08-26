@@ -31,9 +31,9 @@ export type AppTheme = {
   surfaceSubtle: string;
   tabActiveOverlay: string;
   tabBadgeBg: string;
-  /** v5: amber "Sharing (NN%)" state color. Per-theme so contrast is right on every surface. */
+  /** Amber "Sharing (NN%)" state color. Per-theme so contrast is right on every surface. */
   warning: string;
-  /** v5: two-stop gradient for the Grab CTA — [primary, primaryMuted] per theme. */
+  /** Two-stop gradient for the Grab CTA — [primary, primaryMuted] per theme. */
   grabGradient: readonly [string, string];
   radius: number;
   pad: number;
@@ -367,8 +367,9 @@ export const THEME_ORDER: ThemeId[] = [
 
 /**
  * IDs of the themes whose backgrounds are light (i.e., need dark status-bar
- * icons for contrast). Consumed by ThemedRoot in app/index.tsx to pick the
- * right `StatusBar barStyle`. Add new light themes here as they're
- * introduced.
+ * icons for contrast). Consumed by ThemedRoot in app/index.tsx
+ * to pick the right `StatusBar barStyle`. Add new light themes here when
+ * they're introduced; defaulting to "dark text on light bg" is a one-line
+ * change away from defaulting to "light text on dark bg" otherwise.
  */
 export const LIGHT_THEME_IDS: ThemeId[] = ["pear", "paper", "cream"];

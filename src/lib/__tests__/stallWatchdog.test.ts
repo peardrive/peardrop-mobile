@@ -1,11 +1,16 @@
-// Tripwire for the stall watchdog inside pipeDriveToFile. That code uses
-// bare-fs streams, which Jest can't load, so the watchdog logic is mirrored
-// against node:stream with fake timers.
+// Tripwire for the stall watchdog inside
+// pipeDriveToFile. The engine's pipeDriveToFile uses bare-fs streams;
+// Jest can't load them. We mirror the watchdog logic against
+// node:stream with fake timers, exercising three scenarios:
+//   1. Successful transfer well under the timeout — no fire.
+//   2. Simulated stall — timer fires with typed cause.
+//   3. Slow-but-live transfer that keeps emitting data — no false fire.
 
 import { PassThrough, Writable, Readable } from "node:stream";
 
 const STALL_TIMEOUT_MS = 60000;
 
+// FileStallError now carries category via the EngineError base.
 class FileStallError extends Error {
   category: string = "receive.stall";
   override cause: string;

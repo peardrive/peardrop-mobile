@@ -1,12 +1,15 @@
 /**
- * Pure decision logic for what happens after the OS-native send-side picker
- * returns.
+ * Pure decision logic for what happens after the OS-native
+ * send-side picker returns.
  *
- * The picker is system UI; all that's controllable is how its result is read.
- * There are exactly three outcomes — a selection came back, the user backed
- * out, or the picker returned nothing — and only the first proceeds into share
- * creation. Kept out of MainScreen so the cancel/empty contract is testable
- * without mounting React Native or the picker native modules.
+ * The picker itself is system UI we can't touch; everything we control is
+ * how we read its result. There are exactly three outcomes — a selection
+ * came back, the user backed out, or the picker returned with nothing —
+ * and only the first should ever proceed into share creation. Extracted
+ * here (rather than left as inline branches in MainScreen) so the
+ * cancel/empty contract is unit-testable without mounting React Native or
+ * the picker native modules. Same pure-module pattern as `format.ts` /
+ * `links.ts`.
  */
 
 export type PickedFile = { name: string; size?: number; uri: string };
@@ -70,9 +73,10 @@ export function pickerExitPlan(
         proceed: true,
       };
     case "cancelled":
-      // A deliberate back-out is silent — no toast, no error. The only noise
-      // is the one-time hint teaching the return gesture, for OEM pickers
-      // that ship no visible back affordance.
+      // A deliberate back-out is silent —
+      // no toast, no error. The only noise is the one-time hint teaching
+      // the return gesture, for the OEM pickers that ship no visible back
+      // affordance.
       return {
         reopenSendSheet: true,
         toast: null,

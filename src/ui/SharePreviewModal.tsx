@@ -20,9 +20,11 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      // 50% scrim over an opaque theme.bg sheet. theme.card is a near-
-      // transparent tint in most themes, which lets underlying screen text
-      // bleed through the modal.
+      // 50% black scrim. A near-transparent theme.card sheet renders at
+      // 5–8% alpha in 8 of 10 themes (only paper and cream are #ffffff
+      // opaque), letting underlying screen text bleed through the modal.
+      // Hence a 50%
+      // scrim + opaque sheet (theme.bg) for uniform behavior across themes.
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "flex-end",
       padding: 16,
@@ -112,8 +114,9 @@ function createStyles(theme: AppTheme) {
     closeText: { color: theme.muted, fontWeight: "600", fontSize: 14 },
     disabled: { opacity: 0.55 },
     errBanner: { color: theme.danger, fontSize: 13, marginBottom: 10, lineHeight: 18 },
-    // Advisory, distinct from the red errBanner: the share might still work,
-    // this only warns that the other side appears offline.
+    // Amber-tinted advisory banner. Distinct from errBanner
+    // (red) because the share might still work; we just want to warn the
+    // user that the other side appears to be offline.
     offlineBanner: {
       flexDirection: "row",
       alignItems: "center",
@@ -160,10 +163,13 @@ export default function SharePreviewModal() {
   const isPartialMatch = alreadySet.size > 0;
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Offline detection while the preview is open. The receiver's drive stays
-  // joined to the swarm after the resolve, so its peer events reflect whether
-  // the sender is still reachable. Zero peers past the grace window surfaces a
-  // warning banner; deliberately advisory, never an auto-close.
+  // Offline detection while the preview is open. After the
+  // resolve succeeds and the modal opens, the receiver's drive stays
+  // joined to the swarm — its peer-connected / peer-disconnected events
+  // reflect whether the sender is still reachable. If we have zero
+  // connected peers >10 s after the modal opened, surface a warning
+  // banner. We don't auto-close — the user might want to dismiss
+  // manually or wait it out — this is purely advisory.
   const modalOpenedAtRef = useRef<number | null>(null);
   const [tickNow, setTickNow] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -190,19 +196,26 @@ export default function SharePreviewModal() {
     tickNow - modalOpenedAtRef.current > 10_000 &&
     (!sessionTransfer || sessionTransfer.peersConnected === 0);
 
-  // Default selection on open depends on whether this is a partial match:
-  //  - partial: pre-select only the new files, so "Grab N" fetches exactly
-  //    what's missing. Already-downloaded files are unchecked, badged, dim.
-  //  - no match: nothing selected, primary action reads "Grab everything".
-  // Closing clears selection so the next open starts fresh.
+  // When the modal opens, default selection state depends on
+  // whether we're in a partial-match scenario.
+  // - Partial match (some files already downloaded): pre-select only the
+  //   NEW files. Already-downloaded files are unchecked + badged + dim.
+  //   Tapping the primary action ("Grab N") then defaults to fetching
+  //   exactly the missing files.
+  // - No match: keep previous behavior — nothing selected, primary action
+  //   reads "Grab everything".
+  // Closing the modal clears selection so the next open starts fresh.
   useEffect(() => {
     if (!previewVisible) {
       setSelected(new Set());
       return;
     }
-    // Re-grab pre-selection wins. The hint comes from tapping a missing child
-    // row in an expanded bundle and names exactly which file to pre-check.
-    // Preselected names that are already downloaded are skipped.
+    // Smart-regrab pre-selection wins. The hint comes from tapping
+    // a missing child row in an expanded bundle; it tells the modal exactly
+    // which file to pre-check. Already-downloaded files are still rendered
+    // dimmed + badged via alreadySet — preselected names that happen to
+    // already be downloaded are skipped (no reason to pre-check an existing
+    // file).
     if (pendingPreselection && pendingPreselection.length > 0) {
       const manifestNames = new Set(files.map((f) => f.name));
       const initial = pendingPreselection.filter(
@@ -248,9 +261,9 @@ export default function SharePreviewModal() {
     ? `Grab ${selectedKeys.length} (${formatBytes(selectedBytes)})`
     : "Grab everything";
 
-  // No in-modal blink: the "Got it" badge already says which files are
-  // downloaded, and the acknowledging blink lives on the main list's bundle
-  // row instead.
+  // The in-modal Grab blink is gone — the "Got it" badge already
+  // tells the user which files are downloaded. The acknowledging blink now
+  // lives on the main list's bundle row (auto-expanded if needed).
   const onPressGrab = () => {
     if (someSelected) void downloadSelectedFromPreview(selectedKeys);
     else void downloadAllFromPreview();

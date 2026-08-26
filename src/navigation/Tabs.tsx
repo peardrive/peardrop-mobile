@@ -1,6 +1,8 @@
-// A native stack, not a tab navigator: the app collapsed to a single unified
-// main page. The launch flow (Splash → Onboarding) leads into Main + Settings.
-// The `Tabs.tsx` filename is retained to avoid import churn.
+// The bottom tab navigator was removed when the app collapsed
+// to a single unified main page. The root now uses a native stack with
+// the initial launch flow (Splash → Onboarding) leading into Main +
+// Settings. The file is kept under the same `Tabs.tsx` name to minimize
+// import churn in app/index.tsx.
 import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import MainScreen from "../screens/MainScreen";

@@ -3,4 +3,10 @@
   <color name="iconBackground">#0f2238</color>
   <color name="colorPrimary">#023c69</color>
   <color name="colorPrimaryDark">#0f2238</color>
+  <!-- Notification small-icon tint. Resource name is the one
+       expo-notifications' plugin uses (NOTIFICATION_ICON_COLOR). Value is
+       the app accent, themes.ts paper/void `primary`. Kept in sync by hand
+       with NOTIFICATION_ACCENT in src/lib/notifications.ts, which is the
+       runtime path and wins where both apply. -->
+  <color name="notification_icon_color">#a8cf3a</color>
 </resources>

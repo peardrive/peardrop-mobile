@@ -28,7 +28,7 @@ type Nav = NativeStackNavigationProp<{
 }>;
 
 /**
- * v5 "Report a bug" form. Textarea + optional location + attach-device-info
+ * "Report a bug" form. Textarea + optional location + attach-device-info
  * toggle. Submit is currently a stub: it toasts success and navigates to
  * the Status "report-sent" screen. Wiring to a real backend/email intent
  * is a follow-up decision.

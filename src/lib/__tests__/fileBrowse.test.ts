@@ -222,7 +222,7 @@ describe("selection → share mapping", () => {
   });
 });
 
-// ---------------------------------------------------------- thumbnails
+// ----------------------------------------------------------------
 
 describe("thumbnailFor", () => {
   it("asks for a real thumbnail only for image types", () => {
@@ -433,7 +433,7 @@ describe("folderDisplayName", () => {
   });
 });
 
-describe("fuller recents (5F caps)", () => {
+describe("fuller recents (caps)", () => {
   const manyShares = Array.from({ length: 80 }, (_, i) => ({
     savedAt: i,
     files: [{ name: `f${i}.txt`, localPath: `/cache/f${i}.txt`, size: 1 }],

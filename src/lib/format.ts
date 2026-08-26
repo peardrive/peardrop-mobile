@@ -1,3 +1,22 @@
+/**
+ * Render a simulate-completion delay for the Settings label.
+ *
+ * Lives here rather than beside the storage module because that module
+ * imports AsyncStorage, which the jest config cannot load — a pure
+ * formatter in `lib/` is genuinely testable instead of untested by
+ * construction.
+ *
+ * Sub-minute reads in seconds; whole minutes read as minutes. The options
+ * are a fixed set, so this deliberately doesn't handle mixed values like
+ * 90 s — it would be dead code dressed as generality.
+ */
+export function formatSimulateDelay(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  const minutes = ms / 60_000;
+  return `${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)}min`;
+}
+
 const UNITS = ["B", "KB", "MB", "GB", "TB"];
 
 export function formatBytes(bytes?: number | null): string {

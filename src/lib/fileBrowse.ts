@@ -1,12 +1,14 @@
 /**
  * Pure list logic for the in-app file picker.
  *
- * Two sections: "Recent" (files this app has shared before — usage history,
- * no permission needed) and "Downloads" (one level of the folder the user
- * granted via SAF). One level, not a folder tree, by design.
+ * The picker shows two sections: "Recent" (files this app has shared
+ * before — real usage history, no permission needed) and "Downloads"
+ * (a single level of the folder the user granted via SAF). Everything in
+ * here is deliberately free of native imports so it stays unit-testable
+ * under the `testEnvironment: node` jest config; anything touching
+ * expo-file-system lives in `folderShare.ts` instead.
  *
- * Free of native imports so it stays unit-testable under the node jest
- * environment; anything touching expo-file-system lives in `folderShare.ts`.
+ * Not a folder tree. One level, by design (see sprint scope).
  */
 
 import type { PickedFile } from "./pickerResult";
@@ -193,10 +195,11 @@ export function selectionSummary(
 /**
  * What to draw in a row's leading slot.
  *
- * Images get a real thumbnail — the platform `Image` renders the uri directly,
- * with no generation step and no extra access. Everything else gets a type
- * icon; thumbnail *generation* for pdf/video/office types is a rendering
- * pipeline, deliberately not a picker concern.
+ * Images get a real thumbnail (the platform `Image` can render the uri
+ * directly — no generation step, no extra access). Everything else gets a
+ * type icon. Deliberately no thumbnail *generation* for pdf/video/office
+ * types: that's a rendering pipeline, not a picker feature, and it's out
+ * of scope this sprint.
  */
 export type ThumbSpec =
   | { kind: "image" }
@@ -273,9 +276,12 @@ export function folderDisplayName(treeUri: string): string {
 }
 
 /**
- * Incremental reveal. The Downloads listing can be large and every image row
- * mounts a real `Image`, so the screen reveals a page at a time — the data
- * stays complete while what's mounted is bounded.
+ * Incremental reveal.
+ *
+ * The Downloads listing can be large, and every image row mounts a real
+ * `Image`. Rendering all of them at once is the jank risk, so the screen
+ * reveals a page at a time. This keeps the *data* complete while bounding
+ * what's mounted.
  */
 export function pageEntries<T>(
   list: T[],

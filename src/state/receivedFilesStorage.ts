@@ -17,11 +17,12 @@ export function fileType(name: string): string {
   return fileExt(name) || "file";
 }
 
-// Subscription so consumers get live updates when files are appended or
-// deleted. Refreshing only on focus / transfer-completed misses the demo path
-// entirely (no backend events fire) and races the post-download write on real
-// shares. Listeners receive the on-disk-filtered list, the same shape
-// `loadDownloaded()` returns.
+// Subscribe pattern so consumers (ReceiveScreen) get live
+// updates when files are appended or deleted. Without this, the file list
+// is only refreshed on focus / on transfer-completed effects — which
+// misses the demo path entirely (no backend events fire) and creates a
+// race against the post-download write on real shares. Listeners receive
+// the on-disk-filtered list, same shape `loadDownloaded()` returns.
 type Listener = (items: DownloadedItem[]) => void;
 const listeners = new Set<Listener>();
 
@@ -51,6 +52,15 @@ export function subscribeDownloaded(listener: Listener): () => void {
   };
 }
 
+/**
+ * Read the index, dropping any entry whose file is no longer on disk.
+ *
+ * That `RNFS.exists` filter is the de-facto tombstone for deleted files:
+ * `deleteDownloaded` unlinks the file as well as dropping the entry, while
+ * the engine's manifest keeps listing it in `localFiles`, so the reconcile
+ * pass re-proposes it on every run. Remove the filter and every reconcile
+ * resurrects everything the user has ever deleted.
+ */
 export async function loadDownloaded(): Promise<DownloadedItem[]> {
   try {
     const exists = await RNFS.exists(STORAGE_FILE);
@@ -99,10 +109,18 @@ export async function deleteDownloaded(id: string): Promise<DownloadedItem[]> {
 
 export async function appendDownloadResults(
   files: { name: string; path: string; size: number }[],
-  shareLink?: string
+  shareLink?: string,
+  /**
+   * Override the recorded timestamp. Defaults to now, which is
+   * right for a live download. The reconcile pass passes the engine's own
+   * `lastActivityAt` instead — recovered files really did arrive earlier,
+   * and dating them "now" would float them to the top of the recency sort
+   * and misreport when they landed.
+   */
+  downloadedAt?: number
 ): Promise<DownloadedItem[]> {
   let next = await loadDownloaded();
-  const now = Date.now();
+  const now = typeof downloadedAt === "number" ? downloadedAt : Date.now();
   for (const saved of files) {
     const name = baseName(saved.name);
     const item: DownloadedItem = {

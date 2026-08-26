@@ -41,9 +41,9 @@ import {
 } from "../state/grantedFoldersStorage";
 import FolderAccessModal from "./FolderAccessModal";
 
-// These bound the data held in memory; `PAGE_SIZE` bounds what's mounted at
-// once, so a large Downloads folder doesn't mount hundreds of Image views on
-// first render.
+// Fuller lists. These bound the *data* we hold; `PAGE_SIZE`
+// bounds what's mounted at once so a big Downloads folder doesn't mount
+// hundreds of Image views on first render.
 const RECENT_SHARES_LIMIT = 60;
 const DOWNLOADS_LIMIT = 500;
 const PAGE_SIZE = 40;
@@ -60,7 +60,7 @@ export type FilePickerSheetProps = {
   onReshare: (entry: BrowseEntry) => void;
   /** Escape hatch to the OS document picker ("Internal Storage"). */
   onBrowseOther: () => void;
-  /** Shortcut into the existing 5D photo path. */
+  /** Shortcut into the existing photo path. */
   onPickPhotos: () => void;
   /** True while the parent materializes + hands off to the share flow. */
   busy?: boolean;
@@ -69,10 +69,11 @@ export type FilePickerSheetProps = {
 /**
  * PearDrop's own file-selection screen.
  *
- * The reason it exists is the top-left back button: it's ours, so cancel
- * behaves. Storage shortcuts up top, "Recent shares" below, then the granted
- * Downloads folder — without widening file access. Internal Storage is a
- * styled entry point to the OS picker, not an in-app browser.
+ * The point of it is still the top-left back button: it's ours, so cancel
+ * behaves. The layout follows Telegram's shape — storage shortcut
+ * rows up top, "Recent shares" below them, then the granted Downloads
+ * folder — without widening file access one inch. Internal Storage is a
+ * styled entry point to the OS picker, NOT an in-app browser.
  */
 export default function FilePickerSheet({
   visible,
@@ -253,8 +254,10 @@ export default function FilePickerSheet({
           contentContainerStyle={styles.scrollInner}
           showsVerticalScrollIndicator={false}
         >
-          {/* "Internal Storage" is a styled entry point to the OS document
-              picker — no in-app folder browsing, no new permissions. */}
+          {/* Storage shortcuts. "Internal Storage"
+              is a styled entry point to the OS document picker we already
+              fall back to — there is no in-app folder browsing behind it
+              and it asks for nothing new. */}
           <ShortcutRow
             icon="phone-portrait-outline"
             title="Internal Storage"

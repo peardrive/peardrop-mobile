@@ -1,19 +1,32 @@
-// Manifest load/save for the mobile engine. The module name is historical;
-// it loads and saves, it does not recover.
+// Manifest load/save for the mobile engine.
 //
-// The loader is deliberately non-destructive:
-//   - Parses, or starts empty. drives-manifest.json is used only if it parses
-//     as JSON with the expected top-level shape; anything else yields an empty
-//     manifest rather than a partial salvage.
-//   - Never prunes entries. It does not compare the manifest against the
-//     on-disk drives folder — a pruning step that deletes every entry when
-//     the drives folder is transiently unreadable is a data-loss bug.
-//     Missing storage is handled per-drive by engineHydrateDrives at open time.
-//   - Never touches drive folders. Corestore folders are the engine's
-//     concern, never this module's.
-//   - Backs up before discarding. A corrupt or mis-shaped manifest is copied
-//     to <path>.corrupted.<epoch-ms> before an empty manifest is returned.
-//     Backups may accumulate across boots; they're small and preserve state.
+// The filename says "recovery", but this module only loads and saves. The
+// name is kept so engine imports don't churn.
+//
+// The four rules:
+//   1. Parse or start empty. If drives-manifest.json parses as valid
+//      JSON with the expected top-level shape, use it. Otherwise back
+//      it up as <path>.corrupted.<epoch-ms> and return an empty
+//      manifest to the engine.
+//   2. Never prune entries. This loader does not compare manifest
+//      entries against the on-disk drives folder. Missing storage is a
+//      per-drive concern that engineHydrateDrives handles at open time.
+//   3. Never touch drive folders. This loader reads the manifest file
+//      only. Corestore folders are inspected by the engine (during
+//      hydrate) or removed by the engine (during in-flight cleanup and
+//      user-initiated delete), never here.
+//   4. Backup on failure. Any corrupt / mis-shaped / unreadable
+//      manifest gets backed up with .corrupted.<timestamp> before the
+//      empty state is returned. Multiple backups may accumulate across
+//      boots; that is fine (they're small; they preserve forensic
+//      state; the user can inspect them).
+//
+// Why this is deliberately minimal, and must stay that way: a recovery
+// chain that reconciles manifest entries against the on-disk drives folder
+// causes production data loss. The pruning step deletes every entry when
+// that folder is transiently unreadable. Atomic manifest writes already
+// close the torn-write failure mode that motivated salvage logic, so none
+// of it is needed here.
 
 import fs from "bare-fs/promises";
 
@@ -35,8 +48,12 @@ function isWellFormed(parsed) {
   );
 }
 
-// Backup errors are swallowed rather than allowed to break the boot.
-// The original file is left in place; a subsequent engine save overwrites it.
+// Best-effort backup: read the current file and write it beside the
+// original with a .corrupted.<ts> suffix. If the source read fails
+// too (rare — usually the caller already failed to parse it), we swallow
+// the backup error rather than let it break the boot. The original file
+// on disk is left untouched by this function; a subsequent engine save
+// will overwrite it.
 async function backupCorrupted(manifestPath) {
   try {
     const raw = await fs.readFile(manifestPath, "utf8");
@@ -50,9 +67,19 @@ async function backupCorrupted(manifestPath) {
   }
 }
 
-// Returns the parsed manifest, or an empty one if the file is absent,
-// unreadable, or mis-shaped (the latter two also leave a .corrupted.<ts>
-// backup). Does not itself write the empty manifest to disk.
+// Load the manifest from disk.
+//
+// - Returns the parsed manifest if the file exists and has the expected
+//   top-level shape.
+// - Returns an empty manifest if the file does not exist.
+// - Returns an empty manifest AND writes a .corrupted.<ts> backup of
+//   the original file if the file exists but doesn't parse or has the
+//   wrong shape.
+//
+// Non-throwing except on unexpected errors from bare-fs itself (which
+// the engine's own try/catch catches). The engine's saveManifest is
+// what puts the empty manifest on disk if a subsequent state change
+// fires.
 export async function loadManifest(manifestPath) {
   let raw;
   try {
@@ -61,8 +88,8 @@ export async function loadManifest(manifestPath) {
     if (err?.code === "ENOENT") {
       return defaultManifest();
     }
-    // Permission / i/o error — start empty. No backup attempt; the read
-    // already failed.
+    // Anything else (permission, i/o error) — treat as unreadable and
+    // start empty. Do not attempt backup (the read already failed).
     console.warn(
       "[manifest] read failed (starting empty):",
       err?.message || err,
@@ -83,8 +110,9 @@ export async function loadManifest(manifestPath) {
     return defaultManifest();
   }
 
-  // Merge stats defaults so an older or hand-edited manifest missing fields
-  // still loads; parsed fields win.
+  // Merge stats defaults in case an older/hand-edited manifest is
+  // missing some fields. The default's fields are additive; the parsed
+  // fields override.
   return {
     drives: parsed.drives,
     stats: {
@@ -96,13 +124,13 @@ export async function loadManifest(manifestPath) {
   };
 }
 
-// Serialization chain kept separate from the engine's own saveManifest so
-// neither can stall the other.
+// Separate serialization chain from the engine's saveManifest.
+// This save is only used if a caller of loadManifest wants to persist
+// its result immediately (e.g. after a first-boot empty-manifest
+// creation). Errors are swallowed — the caller can retry.
 let _saveChain = Promise.resolve();
 
 export async function saveManifest(manifestPath, manifest) {
-  // .catch(() => {}) before .then: without it a single rejection poisons the
-  // chain and every later save short-circuits.
   const next = _saveChain
     .catch(() => {})
     .then(() => atomicWriteJson(manifestPath, manifest));

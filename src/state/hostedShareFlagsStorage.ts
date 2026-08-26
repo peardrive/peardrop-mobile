@@ -1,13 +1,15 @@
 import RNFS from "react-native-fs";
 
 /**
- * Per-hosted-share organizational flags. Hosted drives live in the engine
- * manifest, which RN must not mutate directly, so flags like "pinned" and
- * "favorite" need an RN-side annotation table keyed by the engine's driveId.
- * Cleared by the consumer on delete via `clearHostedShareFlags(driveId)`.
+ * Per-hosted-share organizational flags. Hosted drives live in
+ * the engine manifest (off-limits for direct mutation from RN), so flags
+ * like "pinned" and "favorite" need an RN-side annotation table keyed by
+ * the engine's driveId. Cleared by the consumer on delete via
+ * `clearHostedShareFlags(driveId)`.
  *
- * Received shares carry their flags on the `ReceivedShare` record instead —
- * that storage is already RN-side. This file is the hosted side only.
+ * Received shares carry their own flags on the `ReceivedShare` record —
+ * that storage was already RN-side and could absorb the fields directly.
+ * This file exists only for the hosted side.
  */
 
 export type HostedShareFlags = {

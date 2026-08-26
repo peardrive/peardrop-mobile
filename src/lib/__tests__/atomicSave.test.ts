@@ -1,6 +1,16 @@
-// Tripwire for the atomic manifest write pattern. backend/atomic-save.mjs uses
-// bare-fs, which Jest can't load (it needs the Bare global), so this mirrors
-// the same logic against node:fs.promises.
+// Tripwire for the atomic manifest write pattern.
+// The engine + manifest-recovery both call `atomicWriteJson(path, data)`
+// from backend/atomic-save.mjs, which uses bare-fs. Jest can't load
+// bare-fs (needs the Bare global), so this test mirrors the same logic
+// against node:fs.promises. If the logic here regresses, the same
+// regression is in bare-fs's usage of the same primitives.
+//
+// The four scenarios (per the sprint prompt):
+//   1. Save-and-load round-trip.
+//   2. Concurrent-save serialization (10 parallel calls, final content
+//      matches last, no leftover .tmp).
+//   3. Interrupted writeFile leaves prior state; .tmp is cleaned up.
+//   4. Interrupted rename leaves prior state; .tmp is cleaned up.
 
 import { promises as fs, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

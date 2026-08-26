@@ -18,16 +18,20 @@ import {
 } from "../state/debugLogStorage";
 
 /**
- * The single file writer. RN calls `log()` directly; the Bare backend ships
- * its lines over the RPC event channel and BackendProvider feeds them into
- * `logFromBackend()`. The worklet never writes the file — two realms
- * appending to one path with no lock produces interleaved, torn lines.
+ * The single file writer.
  *
- * Buffer + flush rather than append-per-line: the download loop emits
- * per-file and per-progress entries, and an RNFS.appendFile per entry would
- * thrash the disk on exactly the path most worth tracing.
+ * Two realms, one sink. RN calls `log()` directly; the Bare backend ships
+ * its lines over the RPC event channel ({type:"log"}) and BackendProvider
+ * feeds them into `logFromBackend()` here. The file is never written from
+ * the worklet — two realms appending to one path with no lock produces
+ * interleaved, torn lines.
  *
- * Flag off means no buffer, no timer, no file handle — see `applyEnabled()`.
+ * Write policy is buffer + flush, not append-per-line: the download loop
+ * emits per-file and per-progress entries, and an `RNFS.appendFile` per
+ * entry would thrash the disk on exactly the path we most want traced.
+ *
+ * Flag OFF means genuinely off — no buffer, no timer, no file handle. See
+ * `applyEnabled()`.
  */
 
 const LIVE_PATH = `${RNFS.DocumentDirectoryPath}/peardrop-debug.log`;
@@ -80,8 +84,9 @@ export const logError = (tag: string, msg: string) => log("error", tag, msg);
 /**
  * Log a structured engine error preserving category / cause / detail.
  *
- * `formatStructuredError` keeps all four fields; flattening to
- * `String(err.message)` discards the taxonomy exactly when it's most useful.
+ * Flattening to `String(err.message)` discards the taxonomy at exactly
+ * the moment it becomes useful. `formatStructuredError` keeps all four
+ * fields.
  */
 export function logStructuredError(tag: string, context: string, err: unknown): void {
   if (!enabled) return;

@@ -1,16 +1,26 @@
 // The export → (confirm) → reset orchestrator.
 //
-// RN-free by design: every side effect arrives as an injected function, so the
-// ordering guarantee below is covered by unit tests with fakes rather than
+// RN-free by design. Every side effect arrives as an injected function so
+// the ordering guarantee below is a pure unit test with fakes, not an
 // on-device hope. See src/lib/__tests__/debugLogExport.test.ts.
 //
-// The guarantee: Android gives no trustworthy "the user actually sent it"
-// signal. Sharing.shareAsync() resolves on sheet *dismissal*, identically
-// whether the user picked Gmail or hit Back — there is no chosen-target or
-// cancel callback. So there is no auto-reset: the log is cleared only when the
-// user explicitly answers "Clear it" to a confirm shown after the sheet
-// returns. Every other path leaves the log intact. And "clear" is a rotation,
-// not a delete, so even the explicit path is recoverable.
+// ---------------------------------------------------------------------
+// THE GUARANTEE
+// ---------------------------------------------------------------------
+// Android gives us no trustworthy "the user actually sent it" signal.
+// `Sharing.shareAsync()` resolves when the sheet is *dismissed* — exactly
+// the same way whether the user picked Gmail or hit Back. There is no
+// chosen-target callback and no cancel callback.
+//
+// So there is NO silent auto-reset. The log is cleared if and only if the
+// user explicitly answers "Clear it" to a confirm shown *after* the sheet
+// returns. Anything else — bundle failure, share failure, sheet dismissed,
+// user answers "Keep it" — leaves the log fully intact.
+//
+// And "clear" is a rotation, not a delete: clearLog() moves the live file
+// aside to `.exported` (see src/lib/debugLog.ts), so even the explicit
+// path is recoverable. Losing a tester's bug data is the one outcome this
+// module exists to prevent.
 
 export type ExportStage =
   | "bundle" // building the bundle from the rotation segments

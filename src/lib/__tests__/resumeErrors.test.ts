@@ -1,7 +1,15 @@
-// Tripwire for the non-destructive hydrate-failure pattern: the engine keeps
-// hydrate failures in an in-memory Map instead of persisting `state: "failed"`
-// to the manifest. engineHydrateDrives itself needs bare-fs and can't run under
-// Jest, so the pattern is mirrored here.
+// Tripwire for the non-destructive hydrate-failure
+// pattern. The engine keeps hydrate failures in an in-memory Map instead
+// of persisting `state: "failed"` to the manifest. This test verifies
+// the pattern's invariants at behavior level — we can't run the actual
+// engine's `engineHydrateDrives` under Jest (it needs bare-fs), but the
+// pattern itself is small enough to mirror and exercise.
+//
+// The invariants:
+//   1. A failure sets an entry in the map with { error, at } (timestamp).
+//   2. A successful hydrate for the same driveId clears the map entry.
+//   3. Multiple failures for different drives coexist independently.
+//   4. Nothing about this pattern touches persistent state.
 
 type ResumeError = { error: string; at: number };
 
@@ -104,9 +112,13 @@ describe("resumeErrors pattern", () => {
     expect(tracker.getAll()).toEqual({});
   });
 
-  test("scenario 6 — hydrate failures can carry a typed cause", () => {
-    // The tracker doesn't enforce a payload shape — it stores whatever
-    // message it's given, so a caller can carry a typed cause through it.
+  test("scenario 6 — hydrate failures could carry a typed cause", () => {
+    // The engine's recordHydrateFailure could be extended
+    // to accept a { message, cause } payload so RN can branch on the
+    // failure type (storage-missing vs open-fail). The tracker itself
+    // doesn't enforce the shape; this test documents that the emit
+    // payload's structure is caller-controlled and the tracker stores
+    // whatever message it's given.
     tracker.recordFailure(
       "drive_typed",
       "Storage directory missing (typed)",

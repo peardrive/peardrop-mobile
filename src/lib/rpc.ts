@@ -37,6 +37,13 @@ export type FakeUploadOpts = {
   stallAtMs?: number;
   stallDurationMs?: number;
   earlyCompletePeers?: number;
+  /**
+   * Defer the whole simulation by this many ms, so the tester
+   * has time to background the app before `upload-complete` fires. The
+   * RPC still returns immediately, carrying the driveId. Timer lives in
+   * the worklet — RN's own timers are frozen while backgrounded.
+   */
+  startDelayMs?: number;
 };
 
 export type RpcResultFor = {
@@ -78,14 +85,19 @@ export type RpcPayloadFor = {
   [RPC_DRIVES_RESUME]: { driveId: string };
   [RPC_TEST_FAKE_UPLOAD]: FakeUploadOpts;
   [RPC_REFRESH_SWARM]: Record<string, never>;
-  [RPC_SET_DEBUG_LOGGING]: { enabled: boolean };
+  /**
+   * `heartbeat` gates the worklet's 2 s liveness tick, separately from
+   * `enabled`: Debugging ships to users, the heartbeat is dev-only, and the
+   * worklet realm has no build-type constant of its own. Absent means off.
+   */
+  [RPC_SET_DEBUG_LOGGING]: { enabled: boolean; heartbeat?: boolean };
 };
 
 export type RpcCommand = keyof RpcResultFor;
 
-// bare-rpc's Request.send is typed for a Node Buffer, but at runtime accepts
-// any Uint8Array — which is what b4a produces on React Native. The cast is
-// contained in this helper rather than repeated at every call site.
+// bare-rpc's Request.send typing advertises a Node-style Buffer, but the
+// runtime in practice handles any Uint8Array (which is what b4a produces
+// on React Native). We wrap the call in a tiny helper to contain the cast.
 type BufferLike = Parameters<ReturnType<InstanceType<typeof RPC>["request"]>["send"]>[0];
 
 function sendBytes(req: ReturnType<InstanceType<typeof RPC>["request"]>, body: Uint8Array): void {
