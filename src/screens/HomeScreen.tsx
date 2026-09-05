@@ -139,7 +139,7 @@ function createStyles(theme: AppTheme) {
     statusLine: { color: theme.muted, marginBottom: 10, fontSize: 12 },
     middleSection: { marginTop: 2, minHeight: 120 },
     sectionLabel: { color: theme.muted, fontSize: 12, fontWeight: "600", marginBottom: 8, letterSpacing: 0.4 },
-    // Shape for the SwipeableRow wrapper around a standalone
+    // Phase O: shape for the SwipeableRow wrapper around a standalone
     // bundle card — full rounded corners so the swipe-reveal red backing
     // matches the bundle card's rounding.
     bundleSwipeWrap: {
@@ -153,7 +153,7 @@ function createStyles(theme: AppTheme) {
       borderTopRightRadius: 16,
     },
     // Minimal launcher card. Tap opens the QR/action
-    // modal; swipe-to-delete still handles stop/remove. Dormant
+    // modal; swipe-to-delete (Phase O) still handles stop/remove. Dormant
     // and failed states are now signaled through opacity + a small icon
     // rather than prose.
     bundleCard: {
@@ -181,8 +181,8 @@ function createStyles(theme: AppTheme) {
       marginTop: 4,
     },
     bundleStateIcon: { marginRight: 2 },
-    // Renamed semantically from a hex verify-tail
-    // to a filename summary. Same visual treatment (muted, small) but
+    // A filename summary, not a hex verify-tail.
+    // Same visual treatment (muted, small) but
     // without the tabular-nums variant — filenames aren't digit grids.
     bundleVerify: {
       color: theme.muted,
@@ -310,7 +310,7 @@ export default function HomeScreen() {
     // Show only transfers originating from drives we host. Anything that
     // came in via a share link belongs on the Receive tab.
     const hosted = transfers.filter((t) => t.origin === "hosted");
-    // In user mode, hide hosted transfers that are still in their
+    // Phase V: in user mode, hide hosted transfers that are still in their
     // seeded state (no peer has ever connected, no progress, not completed).
     // The bundle card by itself communicates "share is live, waiting for
     // someone to grab it" — surfacing a separate "Waiting for the other
@@ -322,7 +322,7 @@ export default function HomeScreen() {
     return filtered.slice(0, 8);
   }, [transfers, devMode]);
 
-  // Trigger the one-shot swipe-hint peek on the topmost bundle
+  // Phase W.1: trigger the one-shot swipe-hint peek on the topmost bundle
   // card the first time the list has items. Marks the flag seen IMMEDIATELY
   // (before the 500 ms delay) so a sibling list (Receive) checking in the
   // same window doesn't also fire — the cue is shared across both lists.
@@ -409,7 +409,7 @@ export default function HomeScreen() {
     });
   }, [showToast]);
 
-  // Hydrate persisted bundles on mount. Anything we load was
+  // Phase T.3: hydrate persisted bundles on mount. Anything we load was
   // created in a previous app session and is dormant — the engine isn't
   // announcing it. Live bundles created this session are appended above
   // and have `dormant: false`.
@@ -446,12 +446,12 @@ export default function HomeScreen() {
   // fires we leave the card alone; the next completion cycle schedules
   // its own clear.
   //
-  // Was 4 s. Real-world transfers complete in well under
+  // Phase R adjustment: was 4 s. Real-world transfers complete in well under
   // a second (Hyperdrive replication is fast for small drives), and the
   // engine's 1 Hz socket.bytesWritten sampler doesn't track Hyperdrive bytes
   // accurately, so the card flashes "Sending" → "Sent" too quickly to
   // perceive. 12 s leaves a clear window for the user to see the "Sent"
-  // badge before the strip clears. Bundle persistence keeps
+  // badge before the strip clears. Bundle persistence (Phase T) will keep
   // the share itself visible regardless.
   const TRANSFER_AUTO_CLEAR_MS = 12000;
   const scheduledClearRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -512,7 +512,7 @@ export default function HomeScreen() {
 
       const out = await sharePaths(paths);
       if (!out.ok || !out.shareLink) {
-        // Out.error was the raw backend message (e.g., "Cannot read
+        // Phase V: out.error was the raw backend message (e.g., "Cannot read
         // file (...): EACCES"). out.error is a structured
         // {category, cause, message, detail?} object; errorMessage extracts
         // the display string. Dev mode surfaces the raw engine message;
@@ -537,7 +537,7 @@ export default function HomeScreen() {
         createdAt: now,
       };
       setBundles((prev) => [bundle, ...prev.filter((b) => b.driveId !== out.driveId)]);
-      // Persist so the bundle survives app restarts. Persistence
+      // Persist so the bundle survives app restarts (Phase T.1). Persistence
       // is best-effort; failure here doesn't block the share flow.
       if (out.driveId) {
         void persistBundle({
@@ -779,7 +779,7 @@ export default function HomeScreen() {
     // disappears. Used by both the "Stop sharing" / "Clear" header button
     // and the swipe-delete affordance.
     //
-    // "live" is now derived from activeDriveIds — a
+    // "live" is derived from activeDriveIds — a
     // bundle marked `dormant: true` at load time may have since been
     // rehydrated by the engine and is therefore live. We always call
     // cancelTransfer(purge: true) when there's a driveId: the engine's
@@ -854,7 +854,7 @@ export default function HomeScreen() {
           <Text style={styles.sub}>Send, track, receive — one home for it all.</Text>
 
           {/*
-           * Backend lifecycle status ("booting" / "listening" /
+           * Phase V: backend lifecycle status ("booting" / "listening" /
            * "ready" / "error" / "boot error") is engineering vocabulary —
            * useful while debugging, meaningless to a non-technical user.
            * Gated behind dev mode. The `ready` boolean still drives the
@@ -981,8 +981,9 @@ export default function HomeScreen() {
                   deleteLabel={isLive ? "Stop" : "Delete"}
                   accessibilityLabel={a11yLabel}
                   frontBackground={theme.bg}
-                  // The outer bundlePairWrap owns the inter-pair spacing,
-                  // so the SwipeableRow carries no bottom margin of its own. Border-radius depends on whether a
+                  // The outer bundlePairWrap owns the inter-pair spacing
+                  // now; the SwipeableRow no longer needs its own
+                  // bottom margin. Border-radius depends on whether a
                   // transfer card is paired below — flatten bottom
                   // corners in the paired case.
                   containerStyle={

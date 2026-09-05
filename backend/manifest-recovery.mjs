@@ -1,7 +1,9 @@
 // Manifest load/save for the mobile engine.
 //
-// The filename says "recovery", but this module only loads and saves. The
-// name is kept so engine imports don't churn.
+// A non-destructive four-rule loader mirroring desktop v0.24.0's
+// approach. The filename stays "manifest-recovery.mjs" so engine
+// imports don't churn, but "recovery" is not what this module
+// does — it just loads and saves.
 //
 // The four rules:
 //   1. Parse or start empty. If drives-manifest.json parses as valid
@@ -21,12 +23,13 @@
 //      boots; that is fine (they're small; they preserve forensic
 //      state; the user can inspect them).
 //
-// Why this is deliberately minimal, and must stay that way: a recovery
-// chain that reconciles manifest entries against the on-disk drives folder
-// causes production data loss. The pruning step deletes every entry when
-// that folder is transiently unreadable. Atomic manifest writes already
-// close the torn-write failure mode that motivated salvage logic, so none
-// of it is needed here.
+// Why there is no recovery chain: desktop v0.24.0 deleted its own
+// four-step chain after production data loss — the `validateAndSync`
+// pruning step deletes every manifest entry when the drives folder is
+// transiently unreadable. Atomic manifest writes close the "torn
+// write" motivator, the rebuild-from-scan path was theoretical, and
+// partial-JSON salvage covered the same failure mode atomic writes
+// close. So the chain is replaced by this loader.
 
 import fs from "bare-fs/promises";
 

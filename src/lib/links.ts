@@ -135,7 +135,7 @@ export type ParsedShareLink =
 
 /**
  * Strictly parse a link that arrived from outside the app (an Android
- * VIEW intent today; a notification payload later).
+ * VIEW intent today; a notification payload once that lands).
  *
  * Accepts only `peardrop://<64 hex>`, case-insensitively on both the
  * scheme and the key, with at most one trailing slash — browsers and
@@ -145,7 +145,7 @@ export type ParsedShareLink =
  * fragments — is rejected. Those shapes remain reachable through the
  * paste path, which is where a human is present to read an error message.
  *
- * Exactly one allowlist entry: `peardrop://demo`. It is a
+ * There is exactly one allowlist entry: `peardrop://demo`. It is a
  * literal match, not a loosening of key validation — `peardrop://demo2`
  * and every other near-miss still fail the same charset check they
  * always did. The demo share resolves offline against six bundled files,

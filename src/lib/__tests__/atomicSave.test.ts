@@ -1,4 +1,4 @@
-// Tripwire for the atomic manifest write pattern.
+// Automated tripwire for the atomic manifest write pattern.
 // The engine + manifest-recovery both call `atomicWriteJson(path, data)`
 // from backend/atomic-save.mjs, which uses bare-fs. Jest can't load
 // bare-fs (needs the Bare global), so this test mirrors the same logic

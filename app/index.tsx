@@ -9,6 +9,7 @@ import IncomingLinkBridge from "../src/state/IncomingLinkBridge";
 import { ThemeProvider, useAppTheme } from "../src/state/ThemeContext";
 import SharePreviewModal from "../src/ui/SharePreviewModal";
 import { ToastProvider } from "../src/ui/Toast";
+import BackgroundRestrictionPrompt from "../src/ui/BackgroundRestrictionPrompt";
 import { LIGHT_THEME_IDS } from "../src/ui/themes";
 
 /**
@@ -81,8 +82,14 @@ export default function App() {
                     navigation at all — the preview draws over whatever
                     route the launch flow settled on. */}
                 <IncomingLinkBridge />
+                {/* Offers the background-activity setting after the OS has
+                    actually been observed freezing the app. Mounted here
+                    rather than in a screen so it can appear over whatever
+                    the user returned to; renders nothing until there is
+                    something to say. */}
+                <BackgroundRestrictionPrompt />
                 {/* QR scanner is embedded directly in ReceiveSheet;
-                    the standalone QrScanModal is not mounted. */}
+                    the standalone QrScanModal is no longer mounted. */}
               </ShareLinkFlowProvider>
             </BackendProvider>
           </ToastProvider>

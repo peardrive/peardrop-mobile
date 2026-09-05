@@ -174,8 +174,7 @@ export type ToastVariantId =
   | "no-connection"
   | "peer-not-found"
   | "file-unavailable"
-  | "something-wrong"
-  | "report-sent";
+  | "something-wrong";
 
 export type ToastVariant = {
   title: string;
@@ -203,11 +202,6 @@ export const TOAST_VARIANTS: Record<ToastVariantId, ToastVariant> = {
     title: "Something went wrong",
     body: "We hit an unexpected snag. Try again in a moment.",
     kind: "error",
-  },
-  "report-sent": {
-    title: "Report sent",
-    body: "Thanks — we'll take a look.",
-    kind: "success",
   },
 };
 

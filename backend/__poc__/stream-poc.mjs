@@ -1,4 +1,4 @@
-// Round-trip a 5 MB file through Hyperdrive
+// Proof-of-concept: round-trip a 5 MB file through Hyperdrive
 // using streaming on both ends, verifying byte-for-byte fidelity.
 //
 // Runs under Node (bare-fs needs the Bare global and can't run here). The

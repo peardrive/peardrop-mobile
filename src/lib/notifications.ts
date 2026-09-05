@@ -29,7 +29,7 @@ export const TRANSFER_CHANNEL_ID = "transfers";
  * theme is deliberate here — this value is read outside React (and, for
  * the channel, once at boot), so it cannot follow a live theme change, and
  * a notification whose tint depended on when the channel happened to be
- * registered would be worse than one that is always brand green.
+ * registered would be worse than one that is simply always brand green.
  *
  * Both accent paths in expo-notifications 55.0.20 take `#RRGGBB`.
  */

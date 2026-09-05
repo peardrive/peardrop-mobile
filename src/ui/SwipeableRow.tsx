@@ -25,14 +25,15 @@ type Props = {
    * Background color for the moving "front" surface. Must be opaque so the
    * red delete backer doesn't bleed through gaps in row content. Defaults
    * to `theme.bg` — the only AppTheme color guaranteed to be fully opaque
-   * across all 10 themes. `theme.card` is translucent — alpha 0.05–0.08 —
-   * in 8 of 10 themes, which lets the row's red `theme.danger` background
-   * bleed through at rest. Pass an explicit color when the row's parent has
+   * across all 10 themes. (`theme.card` is translucent — alpha
+   * 0.05–0.08 — in 8 of 10 themes, which lets the row's red
+   * `theme.danger` background bleed through at rest, so it must not be
+   * used here.) Pass an explicit color when the row's parent has
    * a different backdrop and you want the front to match.
    */
   frontBackground?: string;
   /**
-   * One-shot peek animation for the swipe-discoverability cue.
+   * One-shot peek animation for the swipe-discoverability cue (Phase W.1).
    * When this transitions to true, the row slides ~30 px left over 400 ms,
    * holds 200 ms, then slides back over 400 ms — total ~1000 ms. Calls
    * `onPeekDone` when the sequence finishes so the parent can clear the
@@ -86,7 +87,7 @@ export default function SwipeableRow({
   const frontBg = frontBackground ?? theme.bg;
   const translateX = useRef(new Animated.Value(0)).current;
   const offsetRef = useRef(0);
-  // Peek animation. Drives translateX through a one-shot
+  // Phase W.1: peek animation. Drives translateX through a one-shot
   // -30 → hold → 0 sequence. We track `running` so a re-render with
   // peek still true (e.g., parent re-renders before clearing) doesn't
   // re-trigger.

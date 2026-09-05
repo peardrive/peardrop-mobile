@@ -8,22 +8,25 @@
   <!--
     Photo-picker permission shape.
 
-    On Android 14+ the system PhotoPicker shows a "PearDrop only has access to
-    a few photos" banner whenever the app declares ANY media-access permission.
-    PickVisualMedia, the contract expo-image-picker uses, is permissionless on
-    Android 13+, so no media permissions should be declared there.
+    Goal: on Android 14+ the system PhotoPicker shows a "PearDrop only
+    has access to a few photos" banner whenever the app declares ANY
+    media-access permission. PickVisualMedia (the contract
+    expo-image-picker uses) is permissionless on Android 13+, so on
+    those versions we want NO media permissions at all.
 
-    On Android 12 and below expo-image-picker falls back to MediaStore, which
-    does need READ_EXTERNAL_STORAGE — stripping it outright breaks the picker
-    on older devices.
+    But on Android ≤12 (API 32), expo-image-picker falls back to
+    MediaStore which DOES need READ_EXTERNAL_STORAGE — stripping it
+    entirely (the first attempt) broke the picker on older devices.
 
-    So the legacy storage permissions are capped with android:maxSdkVersion,
-    and tools:replace forces that cap to win over the un-capped permission
-    expo-image-picker declares in its own library manifest. API 33+ doesn't
-    declare it, so no banner; API 32 and below does, so MediaStore works.
+    Compromise: cap the legacy storage perms to API 32 (Android 12) and
+    below using android:maxSdkVersion. tools:replace forces our cap to
+    win over the un-capped permission expo-image-picker declares in its
+    library manifest. On API ≥ 33 the perm isn't declared → no banner;
+    on API ≤ 32 it's declared → legacy MediaStore path works.
 
-    READ_MEDIA_* only exist on Android 13+, where they aren't needed. Keep
-    them stripped.
+    READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED
+    only exist on Android 13+ where we don't need them (PhotoPicker is
+    permissionless). Keep these stripped.
   -->
   <uses-permission
     android:name="android.permission.READ_EXTERNAL_STORAGE"

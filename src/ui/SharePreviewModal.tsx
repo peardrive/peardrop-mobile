@@ -20,10 +20,10 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      // 50% black scrim. A near-transparent theme.card sheet renders at
-      // 5–8% alpha in 8 of 10 themes (only paper and cream are #ffffff
-      // opaque), letting underlying screen text bleed through the modal.
-      // Hence a 50%
+      // Phase Y: 50% black scrim. Used to be 0.55 alongside a near-transparent
+      // theme.card sheet — the tinted card was rendering at 5–8% alpha in 8
+      // of 10 themes (only paper and cream are #ffffff opaque), letting
+      // underlying screen text bleed through the modal. Switched to a 50%
       // scrim + opaque sheet (theme.bg) for uniform behavior across themes.
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "flex-end",
@@ -261,7 +261,7 @@ export default function SharePreviewModal() {
     ? `Grab ${selectedKeys.length} (${formatBytes(selectedBytes)})`
     : "Grab everything";
 
-  // The in-modal Grab blink is gone — the "Got it" badge already
+  // There is no in-modal Grab blink — the "Got it" badge already
   // tells the user which files are downloaded. The acknowledging blink now
   // lives on the main list's bundle row (auto-expanded if needed).
   const onPressGrab = () => {

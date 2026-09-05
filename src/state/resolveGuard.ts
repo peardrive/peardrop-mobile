@@ -78,7 +78,7 @@ export async function runGuardedResolve(
     if (myGen !== gen.current) {
       // A newer resolve started while this one was in flight, so every
       // side effect below is suppressed. From the user's seat this is the
-      // "I tapped it and nothing happened" case, which must not be silent.
+      // "I tapped it and nothing happened" case — previously silent.
       log(
         "warn",
         `resolve gen=${myGen} DISCARDED (superseded by gen=${gen.current}) after ${Date.now() - startedAt}ms — ` +

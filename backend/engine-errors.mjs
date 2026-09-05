@@ -24,7 +24,7 @@
 // in Unify_process/proposal.md §5.5. Keep the two in sync when adding
 // categories.
 //
-// The taxonomy now self-records. Every EngineError logs
+// The taxonomy self-records. Every EngineError logs
 // itself at construction with category + cause + detail intact, so the
 // ~25 `failure()` sites, the 11 bridge wrappers and `outerCatchReply`
 // all became instrumented in one edit — no per-site logging needed. This

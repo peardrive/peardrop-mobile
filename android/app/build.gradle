@@ -103,6 +103,37 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+/**
+ * Release signing credentials, loaded from android/keystore.properties.
+ *
+ * That file is gitignored and the keystore it points at lives outside the
+ * tree entirely, so a published clone has neither. The build MUST still
+ * succeed there: a repo that cannot be compiled is a worse outcome than one
+ * whose artifact is debug-signed, and the published tree's first successful
+ * compile was recent enough that regressing it would go unnoticed.
+ *
+ * Blank passwords count as absent. The checked-in template ships with them
+ * empty, so an unfilled template degrades exactly like a missing file rather
+ * than failing the build with a Gradle stacktrace.
+ */
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def hasReleaseKeystore = false
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+    hasReleaseKeystore =
+        keystoreProperties['storeFile'] &&
+        keystoreProperties['storePassword'] &&
+        keystoreProperties['keyAlias'] &&
+        keystoreProperties['keyPassword'] &&
+        file(keystoreProperties['storeFile']).exists()
+}
+if (!hasReleaseKeystore) {
+    // Plain ASCII: Gradle console output goes through the Windows OEM
+    // codepage, which renders an em-dash as mojibake.
+    logger.lifecycle("WARNING: no usable android/keystore.properties - release builds will be DEBUG-SIGNED. They cannot be published, and cannot update an installed release build.")
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -126,15 +157,25 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // Declared only when credentials resolve. An empty signingConfig
+        // referenced by a buildType fails configuration outright, so the
+        // fallback has to be "never declare it" rather than "declare it
+        // blank".
+        if (hasReleaseKeystore) {
+            release {
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig hasReleaseKeystore ? signingConfigs.release : signingConfigs.debug
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds

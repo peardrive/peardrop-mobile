@@ -10,7 +10,7 @@ import RNFS from "react-native-fs";
  * the swarm, so persisted bundles are "dormant" — useful as history /
  * link records, but the share link won't resolve until the user re-shares.
  * HomeScreen renders dormant entries with reduced opacity and a clarifying
- * caption.
+ * caption (see Phase T.3).
  */
 
 export type PersistedBundleFile = {

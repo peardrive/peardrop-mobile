@@ -1,4 +1,4 @@
-// SafePathWithin guard against path-traversal
+// safePathWithin guard against path-traversal
 // on peer-provided paths. Mirrors desktop v0.24.0's `safeJoin` at
 // lib/file-utils.js:30-43. The name uses "within" to make the semantic
 // explicit — the return value is a path that is provably inside `root`.
@@ -18,7 +18,7 @@ import path from "bare-path";
 
 import { EngineError } from "./engine-errors.mjs";
 
-// PathTraversalError is now an EngineError subclass. The
+// PathTraversalError is an EngineError subclass. The
 // name "PathTraversalError" is kept because it appears in test tripwires
 // and reads cleanly in stack traces; the extra typing (category, cause,
 // toJSON) comes from the base class.

@@ -206,7 +206,7 @@ function normalizeLocalPath(uri: string): string {
   }
 }
 
-// Match "uuid.ext" or "uuid" so received shares whose filenames are
+// Match "uuid.ext" or "uuid" — so received shares whose filenames are
 // synthesized as UUIDs by the peer don't display the raw hex to the user.
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.[^.]+)?$/i;
@@ -490,7 +490,7 @@ function createStyles(theme: AppTheme) {
       zIndex: 10,
     },
     fsTopBtn: {
-      // Bigger touch target — was 44; bumped to 48 with extra
+      // Bigger touch target — 48 with extra
       // visual padding so the icon doesn't sit hard against the edge.
       width: 48,
       height: 48,
@@ -674,7 +674,7 @@ export default function MainScreen() {
 
   const [pickerSheet, setPickerSheet] = useState<PickerSheet>(null);
 
-  // First time the user opens a
+  // The first time the user opens a
   // picker and backs out without selecting anything, show a one-time
   // educational toast. Some Android pickers (Google Drive especially) don't
   // expose an obvious back button — users got stuck repeatedly. We can't add
@@ -994,7 +994,7 @@ export default function MainScreen() {
   }, [sortedDrives]);
 
   // viewMode filter applied AFTER the primary "recent" sort.
-  // Also layers on search (name substring), filter (type/status), and a
+  // Search (name substring), filter (type/status), and a
   // user-selected sort (recent/name/size). Pinned always float to the top
   // within the active view.
   const visibleDrives = useMemo<DriveRow[]>(() => {
@@ -1352,7 +1352,7 @@ export default function MainScreen() {
     [showToast],
   );
 
-  // Bundle tap opens the folder-contents modal.
+  // Bundle tap opens the folder-contents modal, not an inline dropdown.
   const openFolderModal = useCallback((driveId: string) => {
     setFolderModalId(driveId);
   }, []);
@@ -1675,7 +1675,6 @@ export default function MainScreen() {
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
-      // Required on older Android; see the pick-flow guard above.
       // On older Android / OEM ROMs `launchImageLibraryAsync` can throw
       // outright (permission denied, vendor gallery missing). Left unguarded
       // that throw reached the outer catch and dead-ended the user on a red
@@ -1860,7 +1859,7 @@ export default function MainScreen() {
 
   const renderRow: ListRenderItem<ListItem> = useCallback(
     ({ item, index }) => {
-      // Drive row.
+      // Drive row (ShareRow). The folder modal replaces the child branch.
       const drive = item.drive;
       const isActive = activeDriveIds.has(drive.id);
       const isFailed = failedHydrationIds.has(drive.id);
@@ -2297,7 +2296,7 @@ export default function MainScreen() {
         visible={pickerSheet === "share-files"}
         onClose={() => setPickerSheet(null)}
         onPickFiles={() => {
-          // "Files" now opens PearDrop's own picker. The OS
+          // "Files" opens PearDrop's own picker. The OS
           // document picker is still one tap away inside it.
           setPickerSheet(null);
           setInAppPickerOpen(true);
@@ -2801,7 +2800,7 @@ export default function MainScreen() {
               </View>
             )}
 
-            {/* Top bar holds only the back arrow now. Three-dots
+            {/* Top bar holds only the back arrow. Three-dots
               *  removed in favor of an inline share button below the video.
               *  Safe-area top inset clears the status bar so the icon is
               *  fully tappable. Bigger touch target + hitSlop. */}

@@ -1,4 +1,4 @@
-// Pure formatting + size-cap math for the debug logging
+// Sprint 5I: pure formatting + size-cap math for the debug logging
 // subsystem. Deliberately RN-free (no react-native, no react-native-fs,
 // no expo-*) so Jest can exercise it under `testEnvironment: "node"` —
 // see jest.config.js, which only picks up `.ts` under src/.
@@ -88,7 +88,7 @@ export function clampEntry(line: string, max = MAX_ENTRY_BYTES): string {
 /**
  * Serialize an arbitrary value for the message field. Structured engine
  * errors ({category, cause, detail}) must survive as structure — the whole
- * point is that they are not flattened to
+ * point of Sprint 5I's B4 fix is that we stopped flattening them to
  * `String(err.message)`.
  */
 export function stringifyDetail(value: unknown): string {
@@ -196,7 +196,7 @@ export function buildLogFilename(label: string, date: Date | number): string {
 /**
  * Header prepended to an export bundle. Gives whoever reads the file the
  * context that isn't in any individual line, and states plainly that the
- * contents are unscrubbed (raw logs ship by decision — see the
+ * contents are unscrubbed (Sprint 5I ships raw logs by decision — see the
  * privacy note in the sprint summary).
  */
 export function buildBundleHeader(

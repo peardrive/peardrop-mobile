@@ -92,8 +92,9 @@ export function subscribeDevMode(listener: Listener): () => void {
  *
  * Hard-locked to `enabled: false` for
  * the release candidate. The Settings toggle that flipped this is gone,
- * the TestBed entry point is gone, and a user with the AsyncStorage flag
- * set to "true" sees the polished user-mode UI regardless. The hook + storage helpers stay in the codebase so the
+ * the TestBed entry point is gone, and any user who previously had the
+ * AsyncStorage flag set to "true" will now see the polished user-mode UI
+ * regardless. The hook + storage helpers stay in the codebase so the
  * `devMode ? a : b` ternaries scattered through HomeScreen, TransferCard,
  * ShareLinkFlowContext, AccountScreen all keep compiling and collapse to
  * the user-mode branch at runtime.

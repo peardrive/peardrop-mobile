@@ -56,6 +56,9 @@ import {
   log as debugLog,
 } from "../lib/debugLog";
 import { subscribeDebugLogging } from "./debugLogStorage";
+import { IS_DEBUG_BUILD } from "../lib/devGate";
+import { evaluateFreeze } from "../lib/freezeDetect";
+import { recordFreeze } from "./backgroundHealthStorage";
 import { runReceivedReconcile } from "./reconcileReceivedRunner";
 import type { EngineDriveLike } from "../lib/reconcileReceived";
 import { addSent } from "./statsStorage";
@@ -172,7 +175,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
 
   const logId = useRef(0);
   /**
-   * The existing in-memory ring (120 lines, no timestamps, no
+   * The in-memory ring (120 lines, no timestamps, no
    * levels, gone on restart) stays exactly as it was for the dev-facing
    * `logs` array — and now also fans out to the file writer. That single
    * wrap gave all ~25 pre-existing call sites in this file real timestamps
@@ -300,11 +303,74 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * state, so a resume that races the state update still reconciles against
    * the engine's current truth.
    *
-   * Event-driven on purpose. RN's `setInterval` is frozen for the
+   * Event-driven on purpose. RN's `setInterval` was measured frozen for the
    * whole of a backgrounded window, so a polling reconcile would only ever
    * run when the app was already in the foreground — exactly when the
    * foreground transition has already fired.
    */
+  /**
+   * Background-freeze detection.
+   *
+   * On the way out, snapshot the wall clock and the engine's liveness
+   * counter. On the way back, ask for the counter again: wall-clock time
+   * passes whether we ran or were frozen, so the difference between elapsed
+   * time and ticks actually taken is the only available evidence.
+   *
+   * The status call is the same one the swarm refresh already makes, so this
+   * adds no message traffic of its own.
+   */
+  const freezeMarkRef = useRef<{ at: number; ticks: number } | null>(null);
+
+  const readAliveTicks = useCallback(async (): Promise<{
+    ticks: number;
+    intervalMs: number;
+  } | null> => {
+    try {
+      const obj = await invoke(
+        rpcRef.current,
+        RPC_HYPERDRIVE_STATUS,
+        {} as Record<string, never>
+      );
+      const ticks = obj?.status?.aliveTicks;
+      const intervalMs = obj?.status?.aliveTickMs;
+      if (typeof ticks !== "number" || typeof intervalMs !== "number") return null;
+      return { ticks, intervalMs };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const markBackgrounded = useCallback(async () => {
+    const reading = await readAliveTicks();
+    freezeMarkRef.current = reading
+      ? { at: Date.now(), ticks: reading.ticks }
+      : null;
+  }, [readAliveTicks]);
+
+  const checkForFreeze = useCallback(async () => {
+    const mark = freezeMarkRef.current;
+    freezeMarkRef.current = null;
+    if (!mark) return;
+    const reading = await readAliveTicks();
+    if (!reading) return;
+
+    const verdict = evaluateFreeze({
+      elapsedMs: Date.now() - mark.at,
+      ticksAtBackground: mark.ticks,
+      ticksNow: reading.ticks,
+      tickIntervalMs: reading.intervalMs,
+    });
+
+    if (!verdict.frozen) return;
+    await recordFreeze(verdict.elapsedMs, verdict.frozenFraction);
+    debugLog(
+      "warn",
+      "rn.freeze",
+      `frozen ${(verdict.frozenFraction * 100).toFixed(0)}% of ${verdict.elapsedMs}ms ` +
+        `backgrounded (ticks ${verdict.observedTicks}/${verdict.expectedTicks})`
+    );
+  }, [readAliveTicks]);
+
   const reconcileReceived = useCallback(
     async (reason: string) => {
       try {
@@ -455,19 +521,19 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
             // means the engine kept running and the IPC queued — a
             // different answer, and indistinguishable with one clock.
             //
-            // Gated on `__DEV__`. The `return` sits OUTSIDE the
+            // Gated to debug builds. The `return` sits OUTSIDE the
             // gate so a release build still swallows the event rather than
             // letting it fall through the UI state machine — the engine
             // keeps emitting ticks whenever debug logging is on, including
             // in release (see the report's "still shipping" note).
             if (evt.type === "worklet-tick") {
-              if (__DEV__) {
+              if (IS_DEBUG_BUILD) {
                 debugLog(
                   "info",
                   "rn.heartbeat",
                   `worklet n=${evt.n ?? "?"} worklet-at=${evt.at ?? "?"} rn-at=${Date.now()}`
                 );
-              // RN's setInterval
+              // Found by a 2-minute device run: RN's setInterval
               // is driven by the Choreographer, which Android halts while
               // the app is backgrounded — debugLog's own 1 s flush timer
               // included. Entries then sit in memory until foreground, and
@@ -482,7 +548,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               // would be pure churn.
                 // This forced a disk write every 2 s while
                 // backgrounded. Diagnostic only — it must not reach users,
-                // so it lives inside the __DEV__ gate.
+                // so it lives inside the dev-build gate.
                 if (AppState.currentState !== "active") void flushDebugLog();
               }
               return;
@@ -617,7 +683,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "drive-hydrated") {
-              // Hydration now spans both active and inactive
+              // Hydration spans both active and inactive
               // drives, and either origin. The state field tells us which
               // set the drive belongs in.
               appendLog(`Drive hydrated: ${evt.shareLink || evt.driveId || ""}`);
@@ -756,7 +822,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "peer-rejected") {
-              // A path-traversal rejection must not vanish silently.
+              // Must stay handled: when it was not, a path-traversal
+              // rejection vanished silently.
               appendLog(
                 `Peer rejected a file (${evt.cause ?? "unknown"})${evt.driveId ? ` on ${evt.driveId}` : ""}`
               );
@@ -829,8 +896,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     // hosted transfer straight to 100% on a heuristic —
                     // "last peer left and we'd seen at least one, so it
                     // probably finished". When it's wrong the user reports
-                    // "it said Sent but nothing arrived" — this line is
-                    // what explains it in the log.
+                    // "it said Sent but nothing arrived", and there was
+                    // previously nothing in any log to explain it.
                     debugLog(
                       "warn",
                       "rn.watchdog",
@@ -882,9 +949,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         // instrumentation matches the RN side from the first event.
         void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
           enabled: debugEnabledRef.current,
-          // The worklet realm has no `__DEV__`, so the heartbeat's dev-only
+          // The worklet realm has no build-type constant, so the heartbeat's dev-only
           // gate is pushed down from here. `enabled` stays user-facing.
-          heartbeat: __DEV__,
+          heartbeat: IS_DEBUG_BUILD,
         }).catch(() => {});
         sendOneWay(rpcRef.current, RPC_LISTEN);
         await refreshStatus();
@@ -940,7 +1007,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       if (!rpcRef.current) return;
       void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
         enabled,
-        heartbeat: __DEV__,
+        heartbeat: IS_DEBUG_BUILD,
       }).catch(() => {});
     });
   }, []);
@@ -957,22 +1024,22 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * if it gaps too, the RN side stopped and the worklet stream says
    * nothing about the worklet.
    *
-   * It also indirectly reports on the log writer: debugLog's flush timer
-   * is another setInterval on this thread, so a gap here means the flush
-   * timer gapped as well.
+   * Note it also indirectly reports on the log writer: debugLog's flush
+   * timer is another setInterval on this thread, so a gap here means the
+   * flush timer gapped as well (see the Phase 4 note in the report).
    *
-   * Gated on the debug-logging flag — no timer at all while debugging
+   * Gated on the same flag as Phase 1 — no timer at all while debugging
    * is off. `subscribeDebugLogging` replays the current value on
    * subscribe, so the initial state is handled without a separate read.
    *
-   * Additionally gated on `__DEV__`, and the gate sits ABOVE the
+   * Additionally gated to debug builds, and the gate sits ABOVE the
    * `subscribeDebugLogging` call deliberately — in a release build this
    * registers no listener at all, not merely a listener that declines to
    * start a timer. "Off means genuinely off", as the debug-logging
    * subsystem already requires of itself.
    */
   useEffect(() => {
-    if (!__DEV__) return;
+    if (!IS_DEBUG_BUILD) return;
     let timer: ReturnType<typeof setInterval> | null = null;
     let n = 0;
 
@@ -1010,7 +1077,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   // Once a transfer has had at least one upload-progress event AND no
   // further events for >30 s, we treat it as done:
   //  - hosted → mark completed=true (the sender did their part; auto-clear
-  //    kicks in 12 s after that, leaving "Sent" briefly
+  //    via Phase R kicks in 12 s after that, leaving "Sent" briefly
   //    visible).
   //  - received → keep completed=false but set `stalled=true` so the UI
   //    can surface a "couldn't finish" toast and let the user dismiss.
@@ -1058,9 +1125,13 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         // download whose RN-side write never completed because the process
         // was killed mid-chain.
         void reconcileReceived("foreground");
+        void checkForFreeze();
         startInterval();
       } else {
         stopInterval();
+        // Snapshot on the way out. Still alive at this point, so the status
+        // call succeeds; once frozen there would be nothing to ask.
+        if (next === "background") void markBackgrounded();
       }
     };
     const sub = AppState.addEventListener("change", onChange);
@@ -1068,7 +1139,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       stopInterval();
       sub.remove();
     };
-  }, [ready, refreshSwarm, reconcileReceived]);
+  }, [ready, refreshSwarm, reconcileReceived, checkForFreeze, markBackgrounded]);
 
   useEffect(() => {
     const STALL_MS = 30_000;
@@ -1124,17 +1195,19 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * invocation order, so the seq numbers are how the real order is
    * recovered rather than assumed.
    *
-   * Do not add a counter-`resume()` on the background transition. Measured
-   * on device, it makes no difference in either direction: the freeze comes
-   * from the OS process freezer, which `resume()` does not affect.
+   * There is deliberately no counter-`resume()` here. Device runs showed
+   * it made no difference in either direction — the worklet froze with it
+   * on and off under battery restriction, and ran clean with it on and off
+   * without. It was fighting SmartPower's process freeze, which `resume()`
+   * has no bearing on.
    *
-   * Now gated on `__DEV__` instead of a persisted toggle. In a
-   * release build `__DEV__` is statically false, so the body below is
+   * Gated to debug builds instead of a persisted toggle. In a
+   * release build the flag is false, so the body below is
    * unreachable and stripped — no AppState listener, no worklet event
    * subscriptions, no storage read.
    */
   useEffect(() => {
-    if (!__DEV__) return;
+    if (!IS_DEBUG_BUILD) return;
     if (!ready) return;
 
     let appStateSub: { remove: () => void } | null = null;
@@ -1196,7 +1269,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Observe only — the transition line below is the whole payload.
+      // Observe only. No counter-`resume()` fires here on `background`;
+      // the transition line below is the whole payload.
       const onChange = (next: AppStateStatus) => {
         const prev = lastState;
         lastState = next;

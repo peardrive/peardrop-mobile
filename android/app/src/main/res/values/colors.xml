@@ -1,6 +1,12 @@
 <resources>
   <color name="splashscreen_background">#0f2238</color>
-  <color name="iconBackground">#0f2238</color>
+  <!-- Adaptive-icon background, matching icon.png's own corners
+       and app.json's android.adaptiveIcon.backgroundColor. Mirrored by hand
+       because the mipmaps are regenerated in-tree rather than by prebuild;
+       app.json is only read by `expo prebuild`, which this project does not
+       run. Change both together or the launcher and a future prebuild will
+       disagree. -->
+  <color name="iconBackground">#201e1f</color>
   <color name="colorPrimary">#023c69</color>
   <color name="colorPrimaryDark">#0f2238</color>
   <!-- Notification small-icon tint. Resource name is the one

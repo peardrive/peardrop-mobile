@@ -34,7 +34,7 @@ function createStyles(theme: AppTheme) {
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: theme.danger,
+      backgroundColor: theme.tabBadgeBg,
     },
     camWrap: {
       marginHorizontal: theme.pad,
@@ -242,7 +242,7 @@ export default function QrScanModal() {
             accessibilityLabel="Close"
             style={styles.closeCircle}
           >
-            <Ionicons name="close" size={16} color={theme.onPrimary} />
+            <Ionicons name="close" size={16} color={theme.muted} />
           </Pressable>
         </View>
 

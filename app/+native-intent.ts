@@ -54,7 +54,7 @@ export function redirectSystemPath({
   try {
     const parsed = parseIncomingShareLink(path);
     // Rejections are forwarded rather than dropped. The case
-    // for silence is that a visible error would let any web
+    // for silence was that a visible error would let any web
     // page interrupt the user — but by the time this runs the app has
     // *already* been brought to the foreground, so the interruption has
     // happened either way and silence only withholds the explanation.

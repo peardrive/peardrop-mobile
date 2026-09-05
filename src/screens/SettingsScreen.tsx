@@ -29,6 +29,8 @@ import {
   shareBundle,
   log as debugLog,
 } from "../lib/debugLog";
+import { IS_DEBUG_BUILD } from "../lib/devGate";
+import { openBackgroundSettings } from "../lib/openBackgroundSettings";
 import { runExportFlow, runManualReset } from "../lib/debugLogExport";
 import { maxOnDiskBytes } from "../lib/debugLogFormat";
 import ConfirmModal from "../ui/ConfirmModal";
@@ -43,31 +45,33 @@ const SIMULATE_DURATION_MS = 4_000;
 const SIMULATE_TICK_MS = 500;
 /**
  * How long the simulation ACTUALLY takes — 3 s, not the 4 s
- * `SIMULATE_DURATION_MS` implies. A label of 4 s would be 1 s optimistic because of
- * this gap, and the device run showed completions at ~14.0 s against a
- * promised 15 s.
+ * `SIMULATE_DURATION_MS` implies. A label based on the nominal duration
+ * is 1 s optimistic because of this gap: device runs show completions at
+ * ~14.0 s against a promised 15 s.
  *
  * Where the second goes: the engine reads `earlyCompletePeers` as
  * `Number(opts.earlyCompletePeers || 1)`. Passing `0` to disable early
- * disconnect, but `0` is falsy, so `|| 1` silently restores it to 1. One
- * peer is therefore disconnected at `durationMs * 0.65` = 2600 ms, leaving
- * nobody connected; the next tick at 3000 ms sees `activeWeight <= 0` with
- * every peer having joined and completes via the `path=no-peers` branch —
- * the `path=no-peers` branch.
+ * disconnect does not work — `0` is falsy, so `|| 1` silently restores it
+ * to 1. One peer is therefore disconnected at `durationMs * 0.65` =
+ * 2600 ms, leaving nobody connected; the next tick at 3000 ms sees
+ * `activeWeight <= 0` with every peer having joined and completes via the
+ * `path=no-peers` branch.
  *
- * That coercion lives in `backend/`, which this sprint must not touch, so
- * the early disconnect is treated as the intended behaviour and the offset
- * is matched to it rather than fought. Completion is therefore
- * deterministic at `ceil(4000 * 0.65 / 500) * 500` = 3000 ms.
+ * That coercion lives in `backend/`, so the early disconnect is treated as
+ * the intended behaviour and the offset is matched to it rather than
+ * fought. Completion is therefore deterministic at
+ * `ceil(4000 * 0.65 / 500) * 500` = 3000 ms.
  */
 const SIMULATE_RUN_MS =
   Math.ceil((SIMULATE_DURATION_MS * 0.65) / SIMULATE_TICK_MS) * SIMULATE_TICK_MS;
 
-// The settings screen groups the surviving surfaces
-// (Theme + follow-system + stats)
-// into a section list (Appearance / Support), adds a profile placeholder
-// block on top, and stubs Edit Account / Language / Report / About / Sign
-// out as toast placeholders. Only Theme is actually wired.
+// The surviving surfaces (Theme + follow-system + stats) are grouped into
+// a section list (Appearance / Support).
+//
+// There is deliberately no profile block, Edit Account, About or Report a
+// bug row — each was a toast stub or a screen that claimed to send
+// something it never sent. Language survives because "English" is a true
+// statement about the app even unwired.
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -350,6 +354,22 @@ export default function SettingsScreen() {
   const styles = useMemo(() => createStyles(theme), [theme]);
   const activeThemeLabel = themes[themeId].label;
 
+  /**
+   * Which element leads the Support card.
+   *
+   * The card clips to a rounded corner, so a top hairline on whatever
+   * renders first shows as a stray line hugging that corner. The
+   * test-notification row is build-gated, so "first" cannot be a static prop
+   * on it.
+   *
+   * The background row is permanent, so it always leads in a
+   * release build and the Debugging row can never be first. Order here must
+   * match render order.
+   */
+  const firstSupportRow: "test" | "background" = IS_DEBUG_BUILD
+    ? "test"
+    : "background";
+
   return (
     <ScrollView
       style={[styles.root, { paddingTop: insets.top + theme.pad }]}
@@ -372,35 +392,16 @@ export default function SettingsScreen() {
         <Text style={styles.title}>Settings</Text>
       </View>
 
-      {/* Profile block */}
-      <View style={styles.profileCard}>
-        <View style={styles.avatar}>
-          <Ionicons name="person" size={28} color={theme.muted} />
-        </View>
-        <View style={styles.profileMain}>
-          <Text style={styles.profileName}>User</Text>
-          <Text style={styles.profileId} numberOfLines={1}>
-            Local device
-          </Text>
-        </View>
-      </View>
-
       {/* Appearance section */}
       <SectionLabel theme={theme}>Appearance</SectionLabel>
       <View style={styles.sectionCard}>
-        <SettingsRow
-          theme={theme}
-          icon="person-circle-outline"
-          label="Edit Account"
-          onPress={notYet("Edit Account")}
-          first
-        />
         <SettingsRow
           theme={theme}
           icon="language-outline"
           label="Language"
           value="English"
           onPress={notYet("Language")}
+          first
         />
         <SettingsRow
           theme={theme}
@@ -487,40 +488,45 @@ export default function SettingsScreen() {
       {/* Support section */}
       <SectionLabel theme={theme}>Support</SectionLabel>
       <View style={styles.sectionCard}>
-        <SettingsRow
-          theme={theme}
-          icon="bug-outline"
-          label="Report a bug"
-          onPress={() => navigation.navigate("ReportBug")}
-          first
-        />
-        <SettingsRow
-          theme={theme}
-          icon="information-circle-outline"
-          label="About"
-          onPress={notYet("About")}
-        />
         {/* Posts straight to the transfers channel — no engine, no
             AppState guard. Lets a tester confirm notifications work at all
-            before blaming a transfer for not announcing itself. */}
+            before blaming a transfer for not announcing itself.
+
+            Dev-gated: a release build should not offer a diagnostic that
+            only means something to us. */}
+        {IS_DEBUG_BUILD ? (
+          <SettingsRow
+            theme={theme}
+            icon="notifications-outline"
+            label="Send a test notification"
+            onPress={() => void onTestNotification()}
+            trailing="chevron-forward"
+            first={firstSupportRow === "test"}
+          />
+        ) : null}
+        {/* Permanent, not conditional on a freeze having been recorded.
+            Gating it meant a user who dismissed the prompt had no way back
+            to the setting, and a user who never froze never learned the
+            option existed. The prompt is the one-time nudge toward it, not
+            the only route to it. */}
         <SettingsRow
           theme={theme}
-          icon="notifications-outline"
-          label="Send a test notification"
-          onPress={() => void onTestNotification()}
+          icon="battery-half-outline"
+          label="Allow background activity"
+          onPress={() => void openBackgroundSettings()}
           trailing="chevron-forward"
+          first={firstSupportRow === "background"}
         />
-        {/* The other half of the pair above. That row proves the
-            channel works; this one drives a real engine `upload-complete`
-            through the full notification path, including the AppState
-            guard — so it shows nothing unless the app is backgrounded.
 
-            Dev-only. `__DEV__` is statically false in release, so
-            the whole subtree — row, delay picker, and the useSimulateDelay
-            subscription it reads — is unreachable and stripped. The "Send a
-            test notification" row ABOVE deliberately stays ungated: that one
-            is a support tool for real bug reports, not instrumentation. */}
-        {__DEV__ ? (
+        {/* The other half of the pair above. That row proves the channel
+            works; this one drives a real engine `upload-complete` through
+            the full notification path, including the AppState guard — so it
+            shows nothing unless the app is backgrounded. Dev-only: the flag
+            is false in release, so the whole subtree — row, delay picker,
+            and the useSimulateDelay subscription it reads — is unreachable.
+            The test-notification row above is gated on the same flag, so
+            the pair appears and disappears together. */}
+        {IS_DEBUG_BUILD ? (
         <View style={styles.debugRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.followLabel}>
@@ -571,10 +577,10 @@ export default function SettingsScreen() {
         </View>
         ) : null}
 
-        {/* Debugging. Sits next to "Report a bug" because it's
-            the same job — getting us something we can diagnose from. The
-            toggle itself is NOT dev-gated: it's a real feature for bug
-            reports. Only the instrumentation built on top of it is. */}
+        {/* Debugging. The toggle itself is NOT dev-gated: it's a
+            real feature for bug reports, and the log export hanging off it
+            is the only way to get diagnostics off a user's device. Only the
+            instrumentation built on top of it is gated. */}
         <View style={styles.debugRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.followLabel}>Debugging</Text>
@@ -633,10 +639,13 @@ export default function SettingsScreen() {
           </View>
         ) : null}
 
-        {/* Do not add a "keep transfers awake" toggle driving a
-            counter-`resume()` on background. Measured on device, it makes no
-            difference in either direction: the freeze comes from the OS
-            process freezer, which `resume()` does not affect. */}
+        {/* There is deliberately no "Keep transfers awake" toggle here.
+            Device runs showed the counter-`resume()` it drove made no
+            difference in either direction — the worklet froze with it on
+            and off under battery restriction. It was fighting SmartPower's
+            process freeze, which `resume()` does not affect. The suspend
+            probe's *logging* survives in backend.ts, gated on the
+            debug-build flag and needing no toggle. */}
       </View>
 
       {/* Lifetime stats — kept as a small footer card so the info survives. */}
@@ -784,7 +793,11 @@ function createStyles(theme: AppTheme) {
       flexDirection: "row",
       alignItems: "center",
       gap: 4,
-      marginBottom: 16,
+      // 0, not 16. There is no card between the
+      // title and the first section header, so this margin would
+      // stack with SectionLabel's own marginTop: 20 and give the first
+      // header 36px where every later one gets 20.
+      marginBottom: 0,
     },
     backBtn: {
       width: 32,
@@ -793,37 +806,6 @@ function createStyles(theme: AppTheme) {
       justifyContent: "center",
     },
     title: { fontSize: 26, fontWeight: "700", color: theme.text },
-    profileCard: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 14,
-      backgroundColor: theme.card,
-      borderRadius: theme.radius,
-      borderWidth: 1,
-      borderColor: theme.border,
-      padding: 16,
-    },
-    avatar: {
-      width: 56,
-      height: 56,
-      borderRadius: 28,
-      backgroundColor: theme.surfaceSubtle,
-      borderWidth: 1,
-      borderColor: theme.border,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    profileMain: { flex: 1 },
-    profileName: {
-      color: theme.text,
-      fontSize: 17,
-      fontWeight: "700",
-      marginBottom: 2,
-    },
-    profileId: {
-      color: theme.muted,
-      fontSize: 13,
-    },
     sectionCard: {
       backgroundColor: theme.card,
       borderRadius: theme.radius,

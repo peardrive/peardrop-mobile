@@ -1,4 +1,4 @@
-// Tripwire for Hyperdrive's stream contract. The
+// Automated tripwire for Hyperdrive's stream contract. The
 // engine pipes bare-fs streams through hyperdrive.createReadStream /
 // createWriteStream; this test exercises the same pipe pattern with
 // Node's `fs` (Jest can't load bare-fs — it needs the Bare global), so

@@ -49,7 +49,7 @@ export default function ReceivedFileInfoModal({
       visible={visible}
       onClose={onClose}
       title="File info"
-      dangerClose
+      filledClose
       maxHeight="92%"
     >
       <ScrollView style={styles.body} keyboardShouldPersistTaps="handled">

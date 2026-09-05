@@ -6,7 +6,7 @@
 
 import path from "node:path";
 
-// Mirror of backend/path-safe.mjs's PathTraversalError. also
+// Mirror of backend/path-safe.mjs's PathTraversalError. Also
 // carries category (via the shared EngineError base). We keep the mirror
 // simple — instance-of check + a category field satisfies the tripwire.
 class PathTraversalError extends Error {

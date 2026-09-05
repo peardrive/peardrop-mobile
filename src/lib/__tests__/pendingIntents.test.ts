@@ -136,7 +136,7 @@ describe("handler registration", () => {
     enqueueIntent(share(LINK));
 
     expect(links).toEqual([LINK]);
-    // The notification intent waits for its handler to register.
+    // The notification intent waits for the handler to register.
     expect(pendingIntentCount()).toBe(1);
 
     const taps: string[] = [];

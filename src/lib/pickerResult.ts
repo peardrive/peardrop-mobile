@@ -73,7 +73,7 @@ export function pickerExitPlan(
         proceed: true,
       };
     case "cancelled":
-      // A deliberate back-out is silent —
+      // Contract: a deliberate back-out is silent —
       // no toast, no error. The only noise is the one-time hint teaching
       // the return gesture, for the OEM pickers that ship no visible back
       // affordance.

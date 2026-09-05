@@ -107,7 +107,7 @@ export default function NameShareModal({
                 accessibilityRole="button"
                 accessibilityLabel="Cancel"
               >
-                <Ionicons name="close" size={16} color={theme.onPrimary} />
+                <Ionicons name="close" size={16} color={theme.muted} />
               </Pressable>
             </View>
 
@@ -207,7 +207,7 @@ function createStyles(theme: AppTheme, topInset: number) {
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: theme.danger,
+      backgroundColor: theme.tabBadgeBg,
     },
     subtitle: {
       color: theme.muted,

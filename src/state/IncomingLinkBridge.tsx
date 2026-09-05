@@ -61,9 +61,9 @@ const REJECTION_MAX_AGE_MS = 30_000;
  * Nothing in `ShareLinkFlowContext` changed to make that possible: the
  * state it needs is already on the context, read-only.
  *
- * The second surface: links that never got as far as a resolve because
- * they failed validation. Those arrive as their own intent kind and get
- * one generic toast. Between the two, every incoming
+ * The second surface: links that never got as far as a
+ * resolve because they failed validation. Those now arrive as their own
+ * intent kind and get one generic toast. Between the two, every incoming
  * link that reaches the app either visibly works or visibly explains
  * itself — which is what makes the offline device tests decisive rather
  * than ambiguous.

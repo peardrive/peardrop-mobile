@@ -10,7 +10,6 @@ import SettingsScreen from "../screens/SettingsScreen";
 import SplashScreenRoute from "../screens/SplashScreenRoute";
 import OnboardingScreen from "../screens/OnboardingScreen";
 import StatusRoute from "../screens/StatusRoute";
-import ReportBugScreen from "../screens/ReportBugScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -32,7 +31,6 @@ export default function RootNav() {
       />
       <Stack.Screen name="Main" component={MainScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
-      <Stack.Screen name="ReportBug" component={ReportBugScreen} />
       <Stack.Screen name="Status" component={StatusRoute} />
     </Stack.Navigator>
   );

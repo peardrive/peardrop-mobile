@@ -11,7 +11,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  *
  * Built on AsyncStorage rather than RNFS because it's a single boolean
  * and survives reinstalls more reliably (matches the devModeStorage
- * pattern).
+ * pattern from Phase J.1).
  */
 
 const STORAGE_KEY = "peardrop.has-seen-swipe-hint";

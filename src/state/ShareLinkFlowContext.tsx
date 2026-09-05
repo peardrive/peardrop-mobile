@@ -132,16 +132,16 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   const [downloadAllBusy, setDownloadAllBusy] = useState(false);
   const [highlightedDownloadedIds, setHighlightedDownloadedIds] = useState<string[]>([]);
   const [alreadyDownloadedNames, setAlreadyDownloadedNames] = useState<string[]>([]);
-  // PendingPreselection survives across debounced resolve attempts
+  // pendingPreselection survives across debounced resolve attempts
   // (so retries preserve it) but clears on explicit clear, modal close, or
   // download completion. See ZZZZZ.1.
   const [pendingPreselection, setPendingPreselectionState] = useState<string[] | null>(null);
   const setPendingPreselection = useCallback((names: string[] | null) => {
     setPendingPreselectionState(names && names.length > 0 ? names : null);
   }, []);
-  // One-shot completion signal, in place of a 30-second
-  // window approach — instead of "did this share have a recent download?",
-  // the new model is "what's the just-completed download?" Consumers
+  // One-shot completion signal. Not a time window — the question is
+  // "what's the just-completed download?", not "did this share have a
+  // recent download?". Consumers
   // read once on state change and call consumeCompletedDownload to clear.
   const [lastCompletedDownload, setLastCompletedDownload] =
     useState<{ shareKey: string; names: string[]; at: number } | null>(null);
@@ -304,7 +304,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       // Treat this like a transient failure: friendly error, fire-and-forget
       // cleanup of the half-formed drive on the engine side (so retries
       // don't accumulate stale activeDrives entries), and let the user hit
-      // the "Try again" button. By the time they retry, the
+      // the Phase K "Try again" button. By the time they retry, the
       // connection is warm and replication has had a moment to progress.
       if (!manifest.files || manifest.files.length === 0) {
         // The RN half of the empty-manifest bug. The
@@ -335,7 +335,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setPendingPreselectionState(null);
       };
       if (kind === "full") {
-        // Every manifest file is already on disk. Skip
+        // Every manifest file is already on disk — Phase P behavior. Skip
         // the preview entirely; the Receive screen flashes the matching
         // rows via highlightedDownloadedIds.
         setHighlightedDownloadedIds(matchedIds);
@@ -396,7 +396,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         // If the probe fails we fall through to a normal resolve with no
         // dedup behavior (better than blocking the share over a JSON read).
       }
-      // Per-share dedup. The new storage canonicalizes by share
+      // Per-share dedup. The storage canonicalizes by share
       // key, so a paste of a previously-grabbed link returns an existing
       // record with the right `isDownloaded` flags. Legacy disk-based
       // dedup stays as a fallback for shares that predate the new storage.
@@ -452,7 +452,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         openLink,
         abortOpen,
         timerRef: resolveTimerRef,
-        // ResolveGuard stays RN-free, so the sink is
+        // resolveGuard stays RN-free, so the sink is
         // injected here rather than imported there.
         onLog: (level, msg) => debugLog(level, "rn.resolve", msg),
         onBegin: () => {
@@ -543,10 +543,11 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       setLinkError(null);
       // Close the preview modal IMMEDIATELY so the transfer
       // card on the Receive screen (driven by upload-progress events)
-      // becomes visible while the download runs. Awaiting startDownload
-      // before closing would leave the modal covering the screen for the
-      // whole fetch with no progress feedback. Errors surface via the
-      // linkError that
+      // becomes visible while the download runs. Previously we awaited
+      // startDownload before closing — meaning the modal sat there
+      // covering the screen for the entire duration of the fetch and
+      // the user got no progress feedback. Errors (which used to render
+      // in the modal's errBanner) now surface via the linkError that
       // ReceiveScreen renders below the link input, so closing the
       // modal early doesn't lose error visibility.
       setPreviewVisible(false);

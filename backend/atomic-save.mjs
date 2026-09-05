@@ -4,7 +4,8 @@
 // (Android's runtime, via libuv's uv_fs_rename → rename(2)) a same-
 // filesystem rename is atomic — readers see the old file or the new
 // file, never a truncated in-between state. This closes the "app killed
-// mid-fs.writeFile leaves a torn manifest" hole.
+// mid-fs.writeFile leaves a torn manifest" hole that the recovery chain
+// previously had to salvage from on the next boot.
 //
 // Residual risk: bare-fs does not expose fsync (see
 // node_modules/bare-fs/index.js:2297 — `// exports.fsync = fsync TODO`).

@@ -198,7 +198,7 @@ describe("EngineError tripwire", () => {
 // The RN-side helper for extracting a display string from a wire-shaped
 // error must handle both raw strings (legacy paths) and structured
 // objects (new default).
-describe("errorMessage helper", () => {
+describe("errorMessage helper (RN-side)", () => {
   test("null / undefined return null", () => {
     expect(errorMessage(null)).toBeNull();
     expect(errorMessage(undefined)).toBeNull();

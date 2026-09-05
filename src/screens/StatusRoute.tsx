@@ -12,8 +12,7 @@ export type StatusVariant =
   | "no-connection"
   | "peer-not-found"
   | "file-unavailable"
-  | "something-wrong"
-  | "report-sent";
+  | "something-wrong";
 
 type Preset = {
   tone: StatusScreenTone;
@@ -24,8 +23,8 @@ type Preset = {
   actionSpecs: {
     label: string;
     kind?: "primary" | "secondary";
-    /** `back` = navigation.goBack(); `report` = navigate to ReportBug. */
-    behavior: "back" | "report";
+    /** `back` = navigation.goBack(). */
+    behavior: "back";
   }[];
 };
 
@@ -56,23 +55,12 @@ const PRESETS: Record<StatusVariant, Preset> = {
     icon: "alert-circle",
     title: "Something went wrong",
     body: "PearDrop ran into an unexpected problem and had to stop. Your files are safe.",
-    actionSpecs: [
-      { label: "Restart app", behavior: "back", kind: "primary" },
-      { label: "Send crash report", behavior: "report", kind: "secondary" },
-    ],
-  },
-  "report-sent": {
-    tone: "primary",
-    icon: "checkmark-circle",
-    title: "Report sent",
-    body: "Thanks for the feedback. We'll look into it as soon as possible.",
-    actionSpecs: [{ label: "Done", behavior: "back" }],
+    actionSpecs: [{ label: "Restart app", behavior: "back", kind: "primary" }],
   },
 };
 
 type Nav = NativeStackNavigationProp<{
   Status: { variant: StatusVariant };
-  ReportBug: undefined;
   Main: undefined;
 }>;
 
@@ -90,8 +78,6 @@ export default function StatusRoute() {
       if (spec.behavior === "back") {
         if (nav.canGoBack()) nav.goBack();
         else nav.reset({ index: 0, routes: [{ name: "Main" }] });
-      } else if (spec.behavior === "report") {
-        nav.navigate("ReportBug");
       }
     },
   }));

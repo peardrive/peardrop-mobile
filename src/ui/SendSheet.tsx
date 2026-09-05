@@ -81,7 +81,7 @@ export default function SendSheet({
               accessibilityRole="button"
               accessibilityLabel="Close"
             >
-              <Ionicons name="close" size={16} color={theme.onPrimary} />
+              <Ionicons name="close" size={16} color={theme.muted} />
             </Pressable>
           </View>
 
@@ -230,7 +230,7 @@ function createStyles(theme: AppTheme) {
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: theme.danger,
+      backgroundColor: theme.tabBadgeBg,
     },
     cardsRow: {
       flexDirection: "row",

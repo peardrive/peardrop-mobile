@@ -10,7 +10,7 @@ import { PassThrough, Writable, Readable } from "node:stream";
 
 const STALL_TIMEOUT_MS = 60000;
 
-// FileStallError now carries category via the EngineError base.
+// FileStallError carries category via the EngineError base.
 class FileStallError extends Error {
   category: string = "receive.stall";
   override cause: string;

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { IS_DEBUG_BUILD } from "../lib/devGate";
+
 /**
  * Which delay the simulated-completion test uses.
  *
- * A hard-coded 15 s delay passes the battery-restriction
- * scenario for the wrong reason: every background window it produced was
- * 14-57 s, while the OS freeze arrives around 80 s. A
+ * A hard-coded 15 s passes the battery-restriction scenario for the
+ * wrong reason: every background window it produces is 14-57 s, while
+ * the OS freeze was measured arriving around 80 s. A
  * completion scheduled at 15 s always fires before the phone gets round to
  * freezing the process, so that scenario could not fail. Closing the hole
  * needs two to three minutes, and rebuilding to change a constant is the
@@ -113,7 +115,7 @@ export function subscribeSimulateDelay(listener: Listener): () => void {
 /**
  * React hook: `{ delayMs, setDelayMs }`.
  *
- * The `__DEV__` check must live INSIDE the effect, not around the hook call:
+ * The debug-build check must live INSIDE the effect, not around the hook call:
  * rules of hooks force this hook to run in every build, so guarding outside
  * would still register a listener and hydrate AsyncStorage in release.
  */
@@ -125,7 +127,7 @@ export function useSimulateDelay(): {
     cache ?? DEFAULT_SIMULATE_DELAY_MS
   );
   useEffect(() => {
-    if (!__DEV__) return;
+    if (!IS_DEBUG_BUILD) return;
     return subscribeSimulateDelay(setState);
   }, []);
   return {

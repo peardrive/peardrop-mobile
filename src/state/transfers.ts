@@ -44,8 +44,8 @@ export type OriginResolver = (driveId: string) => TransferOrigin;
 /**
  * Pure reducer: given the current transfers array and an update for a single
  * drive, return the new array. Centralizes the "known" origin resolution and
- * the per-driveId insert/update/cap bookkeeping, kept out of
- * BackendProvider. Backend-agnostic so tests can drive it without
+ * the per-driveId insert/update/cap bookkeeping that used to live inline in
+ * BackendProvider. Kept backend-agnostic so tests can drive it without
  * mounting React.
  *
  * When `update` is an object patch, we merge it into the base and normalize

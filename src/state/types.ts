@@ -63,8 +63,8 @@ export type BackendEvent =
   /**
    * The engine emits this when a peer-supplied key fails the
    * path-traversal guard. It must stay in this union and stay handled:
-   * absent from either, a security-relevant
-   * event was silently discarded. Now typed and logged.
+   * when it was missing, a security-relevant event was silently
+   * discarded.
    */
   | { type: "peer-rejected"; driveId?: string; cause?: string; key?: string }
   /**
@@ -113,6 +113,15 @@ export type BridgeStatus = {
   started?: boolean;
   activeCount?: number;
   pendingOpen?: number;
+  /**
+   * Engine liveness counter, incremented on a fixed interval inside the
+   * worklet. Only advances while the process is actually executing, so
+   * comparing it against elapsed wall-clock time is what distinguishes
+   * "backgrounded" from "frozen by the OS".
+   */
+  aliveTicks?: number;
+  /** Cadence of the above, in ms. Reported so RN needn't hardcode it. */
+  aliveTickMs?: number;
 };
 
 export type SharePathsResult = {
@@ -131,7 +140,7 @@ export type OpenLinkResult = {
   shareName?: string | null;
   totalBytes?: number;
   hasManifest?: boolean;
-  /** Set when the share's manifest declares more files than the
+  /** D5.1: set when the share's manifest declares more files than the
    *  1000-entry cap allows. UI may surface a "shown N of M" hint. */
   truncated?: { available: number; shown: number };
 };

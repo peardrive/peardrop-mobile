@@ -146,10 +146,10 @@ function createReceiveStyles(theme: AppTheme) {
       flexGrow: 1,
       justifyContent: "center",
     },
-    // Without an empty state the page reads as broken rather than empty.
-    // A minimal icon + warm message centered in the list area. No
-    // instructional prose — the link input at the bottom already says
-    // what to do.
+    // Without an empty state the page reads as broken-empty on device.
+    // A minimal
+    // icon + warm message centered in the list area. No instructional
+    // prose — the link input at the bottom already says what to do.
     emptyWrap: {
       flex: 1,
       paddingHorizontal: 24,
@@ -276,7 +276,7 @@ function createReceiveStyles(theme: AppTheme) {
     transferCardWrap: { marginTop: 10 },
     previewBackdrop: {
       flex: 1,
-      // Standardized at 0.5 to match SharePreviewModal. Was 0.6.
+      // Phase Y: standardized at 0.5 to match SharePreviewModal. Was 0.6.
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "center",
       padding: 12,
@@ -286,7 +286,7 @@ function createReceiveStyles(theme: AppTheme) {
       borderRadius: 16,
       borderWidth: 1,
       borderColor: theme.border,
-      // Theme.bg (opaque) instead of theme.card (5–8% alpha) so
+      // Phase Y: theme.bg (opaque) instead of theme.card (5–8% alpha) so
       // file content behind the modal can't bleed through. Same fix as
       // SharePreviewModal.
       backgroundColor: theme.bg,
@@ -421,7 +421,7 @@ export default function ReceiveScreen() {
   const [infoFileId, setInfoFileId] = useState<string | null>(null);
   const [menuItem, setMenuItem] = useState<DownloadedItem | null>(null);
   // IDs that just arrived from a download. Reuse the same flash
-  // animation as the dedup highlight, but driven by storage
+  // animation as the Phase P dedup highlight, but driven by storage
   // subscribe instead of paste-time classification.
   const [newHighlightIds, setNewHighlightIds] = useState<string[]>([]);
   // Set of all IDs we've seen in any prior subscribe emit. Initialized
@@ -553,7 +553,7 @@ export default function ReceiveScreen() {
     [downloaded]
   );
 
-  // Trigger the one-shot swipe-hint peek on the topmost
+  // Phase W.1: trigger the one-shot swipe-hint peek on the topmost
   // downloaded row the first time the list has items. Marks the flag
   // seen IMMEDIATELY (before the 500 ms delay) so a sibling list
   // (Share bundles) doesn't also fire — the cue is shared.
@@ -625,8 +625,8 @@ export default function ReceiveScreen() {
     );
   }, [activeDownloadTransfer, showToast]);
 
-  // Highlight pulse for both already-added detection and the new-arrival
-  // flash. Bursts to 1 then fades to 0 over ~1.5 s. On
+  // Highlight pulse for both Phase P (already-added detection) and Phase
+  // DD (new-arrival flash). Bursts to 1 then fades to 0 over ~1.5 s. On
   // completion we drop the IDs from BOTH sources (context highlights via
   // clearHighlights, local new-arrival highlights via setNewHighlightIds)
   // so the overlay clears cleanly. Scrolls the first match into view so
@@ -849,9 +849,9 @@ export default function ReceiveScreen() {
     [highlightSet, highlightAnim, onDeleteDownloaded, onPreviewFile, onPeekDone, peekTopmost, styles, theme.muted]
   );
 
-  // Rendering nothing reads as "broken-empty" on device. Minimal warm empty
-  // state — icon + a short title + a one-line hint. The link input below
-  // remains the call-to-action.
+  // Rendering nothing reads as "broken-empty" on
+  // device. Minimal warm empty state — icon + a short title + a one-line
+  // hint. The link input below remains the call-to-action.
   const downloadedEmpty = useMemo(
     () => (
       <View style={styles.emptyWrap} accessibilityRole="summary">

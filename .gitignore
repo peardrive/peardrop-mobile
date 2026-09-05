@@ -1,7 +1,7 @@
-# Dependencies
+﻿# Dependencies
 node_modules/
 
-# Generated Bare worklet bundle — rebuilt by `npm run bundle:backend`
+# Generated Bare worklet bundle â€” rebuilt by `npm run bundle:backend`
 app/app.bundle.mjs
 
 # Build output
@@ -23,6 +23,13 @@ android/local.properties
 .env.*
 
 # Signing material
+*.keystore
+# The RN debug key is a well-known public key, not a credential, and the
+# build needs it. Re-included after the *.keystore rule above.
+!android/app/debug.keystore
+# Release signing credentials. The keystore lives outside the tree; this
+# file only points at it and holds the passwords.
+android/keystore.properties
 *.jks
 *.p8
 *.p12

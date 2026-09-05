@@ -69,7 +69,7 @@ export type FilePickerSheetProps = {
 /**
  * PearDrop's own file-selection screen.
  *
- * The point of it is still the top-left back button: it's ours, so cancel
+ * The point of it is the top-left back button: it's ours, so cancel
  * behaves. The layout follows Telegram's shape — storage shortcut
  * rows up top, "Recent shares" below them, then the granted Downloads
  * folder — without widening file access one inch. Internal Storage is a

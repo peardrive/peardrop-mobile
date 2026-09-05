@@ -21,7 +21,8 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#0f2238"
+        "monochromeImage": "./assets/images/monochrome-icon.png",
+        "backgroundColor": "#201e1f"
       },
       "package": "com.peardrop.mobile"
     },
@@ -38,7 +39,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/adaptive-icon.png",
+          "icon": "./assets/images/notification-icon.png",
           "color": "#a8cf3a"
         }
       ],

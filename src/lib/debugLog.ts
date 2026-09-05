@@ -84,9 +84,9 @@ export const logError = (tag: string, msg: string) => log("error", tag, msg);
 /**
  * Log a structured engine error preserving category / cause / detail.
  *
- * Flattening to `String(err.message)` discards the taxonomy at exactly
- * the moment it becomes useful. `formatStructuredError` keeps all four
- * fields.
+ * This is the B4 fix: the RN side used to flatten every error to
+ * `String(err.message)` at exactly the moment the taxonomy would have been
+ * useful. `formatStructuredError` keeps all four fields.
  */
 export function logStructuredError(tag: string, context: string, err: unknown): void {
   if (!enabled) return;

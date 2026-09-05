@@ -19,10 +19,22 @@ export type BottomSheetProps = {
   /** Optional sheet title (shown at top-left, bold). */
   title?: string;
   /**
-   * Shows a red circle-X close button top-right when true (matches design).
-   * Defaults to a subtle muted close.
+   * Shows a filled circle-X close button top-right when true. Defaults to a
+   * bare muted close.
+   *
+   * Both branches draw a `muted` glyph, so the fill is the only thing
+   * that varies — hence the name.
+   *
+   * The fill is deliberately NOT `theme.danger`. Dismissing a sheet
+   * destroys nothing, and every other dismiss control in the app is muted
+   * (see `closeMuted` below, Toast, TransferCard), so a red circle read as
+   * a destructive warning it had no business making. It was also a
+   * contrast failure in Paper and Pear, where a near-black `onPrimary`
+   * glyph sat on `#b91c1c` at ~2.8:1. `theme.danger` is still correct for
+   * genuinely destructive controls — ConfirmModal's destructive button,
+   * SwipeableRow's delete, FolderContentsModal's "Stop sharing".
    */
-  dangerClose?: boolean;
+  filledClose?: boolean;
   /** Show the drag handle at top of sheet. Default true. */
   showHandle?: boolean;
   /** Optional max height, e.g. `"88%"`. Default: no cap (natural). */
@@ -45,14 +57,14 @@ export type BottomSheetProps = {
  * Uses `theme.bg` for the sheet background — the only token that is
  * guaranteed opaque across every theme (many themes' `theme.card` is a
  * translucent rgba, which would let the underlying UI bleed through the
- * sheet body — the exact bug that surfaced in Send/Receive/Kebab.)
- * The same applies to any sheet body.
+ * sheet body — the exact bug that surfaced in Send/Receive/Kebab on
+ * translucent.) Same lesson as the original SharePreviewModal.
  */
 export default function BottomSheet({
   visible,
   onClose,
   title,
-  dangerClose,
+  filledClose,
   showHandle = true,
   maxHeight,
   sideInset,
@@ -90,7 +102,7 @@ export default function BottomSheet({
           {title != null ? (
             <View style={styles.titleRow}>
               <Text style={styles.title}>{title}</Text>
-              {dangerClose ? (
+              {filledClose ? (
                 <Pressable
                   onPress={onClose}
                   style={styles.closeCircle}
@@ -98,7 +110,7 @@ export default function BottomSheet({
                   accessibilityRole="button"
                   accessibilityLabel="Close"
                 >
-                  <Ionicons name="close" size={16} color={theme.onPrimary} />
+                  <Ionicons name="close" size={16} color={theme.muted} />
                 </Pressable>
               ) : (
                 <Pressable
@@ -174,7 +186,7 @@ function createStyles(theme: AppTheme) {
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: theme.danger,
+      backgroundColor: theme.tabBadgeBg,
     },
   });
 }

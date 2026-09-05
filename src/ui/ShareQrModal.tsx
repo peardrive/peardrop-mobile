@@ -134,7 +134,7 @@ export default function ShareQrModal({
   const [confirming, setConfirming] = useState(false);
   // Actions row is absolutely positioned so it can never eat into the
   // ScrollView's flex allocation (the RN flex + ScrollView interaction
-  // otherwise overlaps the last section). Measuring its height
+  // was previously overlapping the last section). Measuring its height
   // lets us reserve exactly the right paddingBottom on the scroll body
   // so the tail of the content clears the pinned buttons.
   const [actionsHeight, setActionsHeight] = useState(0);
@@ -237,7 +237,7 @@ export default function ShareQrModal({
                 accessibilityRole="button"
                 accessibilityLabel="Close"
               >
-                <Ionicons name="close" size={16} color={theme.onPrimary} />
+                <Ionicons name="close" size={16} color={theme.muted} />
               </Pressable>
             </View>
 
@@ -570,7 +570,7 @@ function createStyles(
       borderRadius: 14,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: theme.danger,
+      backgroundColor: theme.tabBadgeBg,
     },
     itemHeader: {
       flexDirection: "row",

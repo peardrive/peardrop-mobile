@@ -81,7 +81,7 @@ async function loadManifest(
 
 // --- Tests --- //
 
-describe("loadManifest (non-destructive loader tripwire)", () => {
+describe("loadManifest — non-destructive loader tripwire", () => {
   let tmp: string;
   let manifestPath: string;
 

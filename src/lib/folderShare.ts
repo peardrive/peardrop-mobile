@@ -62,8 +62,8 @@ export async function pickFolder(): Promise<PickedDirectory | null> {
   try {
     return await Directory.pickDirectoryAsync();
   } catch (err: unknown) {
-    // Was a bare `message.includes("cancel")` probe, which misses
-    // the thrown-code form entirely. `isPickerCancellation` checks the
+    // A bare `message.includes("cancel")` probe misses the thrown-code
+    // form entirely. `isPickerCancellation` checks the
     // documented error codes first and keeps the substring probe as a
     // fallback, so a back-out returns null instead of propagating as an
     // error the caller surfaces in red.
