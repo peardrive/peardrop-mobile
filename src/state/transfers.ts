@@ -32,6 +32,8 @@ export function baseTransfer(
     progressEverReceived: false,
     stalled: false,
     lastEventAt: now,
+    // no peer has ever left a transfer that has just been created.
+    lastPeerLeftAt: null,
   };
 }
 

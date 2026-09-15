@@ -215,3 +215,72 @@ describe("buildBundle", () => {
     expect(buildBundleHeader("  ", AT, 1)).toContain("label:     (none)");
   });
 });
+
+// A 2026-09-06 device session produced five logs with no instrumentation in
+// any of them, because the installed APK was a release build and the header
+// did not say so. These lock the header's contract: a reader must be able to
+// tell armed from not-armed without reading any log line.
+describe("buildBundleHeader — build identity", () => {
+  const ARMED = {
+    appVersion: "0.1.0",
+    appVersionCode: 1,
+    buildType: "debug",
+    isDebugBuild: true,
+    isDebuggable: true,
+    gateSource: "PeardropBuildInfo.isDebugBuild=true buildType=debug debuggable=true",
+    platform: "android",
+  };
+
+  it("states ARMED in words when the gate is on", () => {
+    const out = buildBundleHeader("lbl", AT, 1, ARMED);
+    expect(out).toContain("instrument: ARMED");
+    expect(out).toContain("heartbeats and probe are present");
+  });
+
+  it("states NOT ARMED in words when the gate is off", () => {
+    const out = buildBundleHeader("lbl", AT, 1, {
+      ...ARMED,
+      buildType: "release",
+      isDebugBuild: false,
+      isDebuggable: false,
+      gateSource:
+        "PeardropBuildInfo.isDebugBuild=false buildType=release debuggable=false",
+    });
+    expect(out).toContain("instrument: NOT ARMED");
+    expect(out).toContain("heartbeats and probe are ABSENT");
+  });
+
+  it("distinguishes an armed non-debuggable build from a debug build", () => {
+    const out = buildBundleHeader("lbl", AT, 1, {
+      ...ARMED,
+      buildType: "release",
+      isDebugBuild: true,
+      isDebuggable: false,
+    });
+    expect(out).toContain("instrument: ARMED");
+    expect(out).toContain("debuggable: no");
+    expect(out).toContain("0.1.0 (1) release / android");
+  });
+
+  it("reports an unresolved native module as unknown, not as false", () => {
+    const out = buildBundleHeader("lbl", AT, 1, {
+      ...ARMED,
+      appVersion: "unknown",
+      appVersionCode: null,
+      buildType: "unknown",
+      isDebugBuild: false,
+      isDebuggable: null,
+      gateSource: "__DEV__=false (PeardropBuildInfo unavailable on android)",
+    });
+    expect(out).toContain("debuggable: unknown");
+    expect(out).toContain("PeardropBuildInfo unavailable");
+    expect(out).toContain("unknown (?) unknown / android");
+  });
+
+  it("omits the build lines entirely when no context is supplied", () => {
+    const out = buildBundleHeader("lbl", AT, 1);
+    expect(out).not.toContain("instrument:");
+    expect(out).not.toContain("gate-src:");
+    expect(out).toContain("label:     lbl");
+  });
+});

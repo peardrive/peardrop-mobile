@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * Persistent "debugging" toggle. Off by default.
+ * persistent "debugging" toggle. Off by default.
  *
  * When ON, the app routes its diagnostic stream to a file so a tester can
  * export it and we can reconstruct a failure without the device in hand.

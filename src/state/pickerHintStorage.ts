@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
  * One-time educational hint for "how to back out of the OS picker without
- * selecting". Some Android pickers — Google Drive
+ * selecting" (Phase ZZ, Sprint 2C). Some Android pickers — Google Drive
  * in particular — don't expose an obvious back affordance, so users can
  * get stuck not knowing they can swipe from the edge or tap the system
  * back button. We surface a brief toast the first time we detect a

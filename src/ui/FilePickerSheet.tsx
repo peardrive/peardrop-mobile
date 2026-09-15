@@ -41,7 +41,7 @@ import {
 } from "../state/grantedFoldersStorage";
 import FolderAccessModal from "./FolderAccessModal";
 
-// Fuller lists. These bound the *data* we hold; `PAGE_SIZE`
+// fuller lists. These bound the *data* we hold; `PAGE_SIZE`
 // bounds what's mounted at once so a big Downloads folder doesn't mount
 // hundreds of Image views on first render.
 const RECENT_SHARES_LIMIT = 60;
@@ -56,21 +56,21 @@ export type FilePickerSheetProps = {
   onCancel: () => void;
   /** Confirmed multi-selection, in list order. */
   onConfirm: (entries: BrowseEntry[]) => void;
-  /** One-tap re-share of a previously shared file. */
+  /** one-tap re-share of a previously shared file. */
   onReshare: (entry: BrowseEntry) => void;
   /** Escape hatch to the OS document picker ("Internal Storage"). */
   onBrowseOther: () => void;
-  /** Shortcut into the existing photo path. */
+  /** Shortcut into the existing 5D photo path. */
   onPickPhotos: () => void;
   /** True while the parent materializes + hands off to the share flow. */
   busy?: boolean;
 };
 
 /**
- * PearDrop's own file-selection screen.
+ * PearDrop's own file-selection screen (Sprint 5E, polished in 5F).
  *
- * The point of it is the top-left back button: it's ours, so cancel
- * behaves. The layout follows Telegram's shape — storage shortcut
+ * The point of it is still the top-left back button: it's ours, so cancel
+ * behaves. 5F moves the layout toward Telegram's shape — storage shortcut
  * rows up top, "Recent shares" below them, then the granted Downloads
  * folder — without widening file access one inch. Internal Storage is a
  * styled entry point to the OS picker, NOT an in-app browser.
@@ -254,7 +254,7 @@ export default function FilePickerSheet({
           contentContainerStyle={styles.scrollInner}
           showsVerticalScrollIndicator={false}
         >
-          {/* Storage shortcuts. "Internal Storage"
+          {/* addition 1: storage shortcuts. "Internal Storage"
               is a styled entry point to the OS document picker we already
               fall back to — there is no in-app folder browsing behind it
               and it asks for nothing new. */}
@@ -275,7 +275,7 @@ export default function FilePickerSheet({
             theme={theme}
           />
 
-          {/* Recent shares, one tap to send again. */}
+          {/* addition 2: recent shares, one tap to send again. */}
           {recentShares.length > 0 && (
             <>
               <Text style={styles.sectionLabel}>RECENT SHARES</Text>
@@ -455,7 +455,7 @@ function ShortcutRow({
 }
 
 /**
- * Image thumbnail or type icon.
+ * addition 4: image thumbnail or type icon.
  *
  * The platform `Image` fetches asynchronously off the JS thread, so
  * mounting one never blocks the row — the icon renders immediately and is

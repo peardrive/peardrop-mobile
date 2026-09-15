@@ -1,4 +1,4 @@
-// The bottom tab navigator was removed when the app collapsed
+// the bottom tab navigator was removed when the app collapsed
 // to a single unified main page. The root now uses a native stack with
 // the initial launch flow (Splash → Onboarding) leading into Main +
 // Settings. The file is kept under the same `Tabs.tsx` name to minimize

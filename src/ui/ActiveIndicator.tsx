@@ -25,7 +25,7 @@ const RING_PEAK_SCALE = 2.8;
 const CYCLE_MS = 2000;
 
 /**
- * Tiered status overlay anchored to a file icon's corner.
+ * tiered status overlay anchored to a file icon's corner.
  *
  *  - inactive             → renders nothing
  *  - active-idle          → static green dot

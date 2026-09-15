@@ -1,7 +1,7 @@
 import RNFS from "react-native-fs";
 
 /**
- * Per-hosted-share organizational flags. Hosted drives live in
+ * per-hosted-share organizational flags. Hosted drives live in
  * the engine manifest (off-limits for direct mutation from RN), so flags
  * like "pinned" and "favorite" need an RN-side annotation table keyed by
  * the engine's driveId. Cleared by the consumer on delete via

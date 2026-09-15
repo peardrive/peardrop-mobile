@@ -39,7 +39,7 @@ export type SendSheetProps = {
 };
 
 /**
- * Send: centered modal card (matching the Receive dialog) with two large
+ * v5 Send: centered modal card (matching the Receive dialog) with two large
  * Files + Photos cards, then a Recent Shares list with a "Link" copy button.
  */
 export default function SendSheet({

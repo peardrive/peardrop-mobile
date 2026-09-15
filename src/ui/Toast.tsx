@@ -34,7 +34,7 @@ const DEFAULT_DURATION = 2600;
 
 /**
  * Single-toast provider. Only one live toast at a time — consecutive calls
- * replace rather than stack. Optional bold `title` above the
+ * replace rather than stack. v5 restyle: optional bold `title` above the
  * message, and a left-side accent stripe whose color is severity-driven
  * (theme.danger for error, theme.primary for success, theme.secondary for
  * warning, theme.muted for info). Kind + copy come from callers; this
@@ -166,7 +166,7 @@ export function useToast(): ToastApi {
 }
 
 /**
- * Preset copy for the standard error/status variants. Toast callers can
+ * Preset copy for the standard v5 error/status variants. Toast callers can
  * spread the result into `show(msg, opts)` — never a hardcoded color.
  * Anything not in this list falls back to the raw engine error message.
  */

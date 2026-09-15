@@ -1,4 +1,4 @@
-// Backend-side (Bare worklet) logging.
+// backend-side (Bare worklet) logging.
 //
 // The worklet does NOT write the log file. Two realms appending to one
 // path with no lock produces interleaved, torn lines. Instead every line
@@ -66,7 +66,7 @@ export const berror = (tag, msg) => blog("error", tag, msg);
 /**
  * Render a structured EngineError (or any thrown value) preserving
  * category / cause / detail rather than flattening to `.message`. The
- * whole point of the fix.
+ * whole point of the Sprint 5I B4 fix.
  */
 export function describeError(err) {
   if (err == null) return "";

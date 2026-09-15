@@ -1,4 +1,4 @@
-// Tripwire for the non-destructive hydrate-failure
+// JJJJJJJ tripwire for the non-destructive hydrate-failure
 // pattern. The engine keeps hydrate failures in an in-memory Map instead
 // of persisting `state: "failed"` to the manifest. This test verifies
 // the pattern's invariants at behavior level — we can't run the actual
@@ -45,7 +45,7 @@ class HydrateFailureTracker {
   }
 }
 
-describe("resumeErrors pattern", () => {
+describe("resumeErrors pattern (Sprint 3R JJJJJJJ)", () => {
   let tracker: HydrateFailureTracker;
 
   beforeEach(() => {
@@ -112,8 +112,8 @@ describe("resumeErrors pattern", () => {
     expect(tracker.getAll()).toEqual({});
   });
 
-  test("scenario 6 — hydrate failures could carry a typed cause", () => {
-    // The engine's recordHydrateFailure could be extended
+  test("scenario 6 — Sprint 3S: hydrate failures could carry a typed cause", () => {
+    // After Sprint 3S the engine's recordHydrateFailure could be extended
     // to accept a { message, cause } payload so RN can branch on the
     // failure type (storage-missing vs open-fail). The tracker itself
     // doesn't enforce the shape; this test documents that the emit
@@ -121,7 +121,7 @@ describe("resumeErrors pattern", () => {
     // whatever message it's given.
     tracker.recordFailure(
       "drive_typed",
-      "Storage directory missing (typed)",
+      "Storage directory missing (typed via Sprint 3S)",
     );
     expect(tracker.emit).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -12,7 +12,7 @@ export type BottomToolbarProps = {
 };
 
 /**
- * Floating bottom toolbar: three circular icon-only buttons sitting on
+ * v5 floating bottom toolbar: three circular icon-only buttons sitting on
  * a lighter parent panel (`theme.card` fill + border), lifted off the
  * bottom edge so it reads as a floating bar rather than flush chrome.
  */

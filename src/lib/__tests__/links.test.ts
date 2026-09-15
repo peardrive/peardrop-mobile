@@ -76,7 +76,7 @@ describe("extractKey", () => {
   });
 });
 
-// The strict boundary parser for externally-supplied links.
+// the strict boundary parser for externally-supplied links.
 // A pasted link came from a human; an intent-filter link carrying
 // BROWSABLE can come from any web page, so this one gets no slack.
 describe("parseIncomingShareLink", () => {
@@ -138,7 +138,7 @@ describe("parseIncomingShareLink", () => {
     });
   });
 
-  // One explicit allowlist entry, so the whole incoming-link
+  // one explicit allowlist entry, so the whole incoming-link
   // chain has an end-to-end proof that needs no network.
   describe("the demo allowlist entry", () => {
     it("pins the literal that lib/demo.ts DEMO_LINK must match", () => {

@@ -26,6 +26,12 @@ class MainApplication : Application(), ReactApplication {
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
               add(BuildInfoPackage())
+              // the foreground service ships. The <service>
+              // element now lives in the real main manifest, so this is no
+              // longer gated on DEV_INSTRUMENTATION — the 7D arrangement,
+              // where module and manifest entry were armed together by one
+              // property, is replaced by both being unconditional.
+              add(TransferServicePackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"

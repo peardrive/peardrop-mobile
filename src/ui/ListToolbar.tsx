@@ -44,7 +44,7 @@ export type ListToolbarProps = {
 };
 
 /**
- * List toolbar: search field + filter dropdown + sort control. Filter/
+ * v5 list toolbar: search field + filter dropdown + sort control. Filter/
  * sort open bottom-anchored menus (data-driven, themed). All colors from
  * theme tokens.
  */

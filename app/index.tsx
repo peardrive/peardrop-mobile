@@ -73,7 +73,7 @@ export default function App() {
               <ShareLinkFlowProvider>
                 <Tabs />
                 <SharePreviewModal />
-                {/* Drains peardrop:// links parked by
+                {/* drains peardrop:// links parked by
                     app/+native-intent.ts into the resolve-and-preview
                     flow above. Renders nothing, and sits outside <Tabs />
                     so the splash's nav.reset() can't unmount it. Note
@@ -88,7 +88,7 @@ export default function App() {
                     the user returned to; renders nothing until there is
                     something to say. */}
                 <BackgroundRestrictionPrompt />
-                {/* QR scanner is embedded directly in ReceiveSheet;
+                {/* v5: QR scanner is embedded directly in ReceiveSheet;
                     the standalone QrScanModal is no longer mounted. */}
               </ShareLinkFlowProvider>
             </BackendProvider>

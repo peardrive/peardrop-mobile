@@ -1,8 +1,8 @@
-// Helper for extracting a display-safe string from an engine
-// error result. `out.error` from any bridge call is a
+// helper for extracting a display-safe string from an engine
+// error result. After Sprint 3S, `out.error` from any bridge call is a
 // structured object of shape `{category, cause, message, detail?}` —
-// not a raw string. Rendering `out.error` directly produces
-// "[object Object]". This helper pulls
+// not a raw string. Existing RN callsites used to render `out.error`
+// directly (which now produces "[object Object]"). This helper pulls
 // the `.message` field out, falls back to stringifying the value if it
 // isn't shaped as expected, and returns null if the input is nullish.
 //

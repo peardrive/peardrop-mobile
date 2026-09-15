@@ -56,9 +56,25 @@ import {
   log as debugLog,
 } from "../lib/debugLog";
 import { subscribeDebugLogging } from "./debugLogStorage";
+import { initDeviceIdentityLog } from "../lib/deviceIdentity";
+import {
+  describeActivity,
+  isTransferActive,
+  msUntilActivityCouldChange,
+} from "../lib/transferActivity";
+import {
+  isForegroundServiceAvailable,
+  isScreenOn,
+  startForegroundService,
+  stopForegroundService,
+} from "../lib/foregroundService";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
+import { parseAliveReading } from "../lib/aliveTicks";
 import { evaluateFreeze } from "../lib/freezeDetect";
-import { recordFreeze } from "./backgroundHealthStorage";
+import { DEFAULT_STALL_MS, evaluateStall } from "../lib/transferStall";
+import { recordFreeze, recordServiceWindow } from "./backgroundHealthStorage";
+import { SERVICE_FREEZE_THRESHOLD } from "../lib/backgroundHealthModel";
+import { gradeWindow, tickRatio } from "../lib/freezeGrade";
 import { runReceivedReconcile } from "./reconcileReceivedRunner";
 import type { EngineDriveLike } from "../lib/reconcileReceived";
 import { addSent } from "./statsStorage";
@@ -105,7 +121,7 @@ export type BackendAPI = {
   abortOpen: (
     driveId?: string
   ) => Promise<{ ok: boolean; aborted?: number; error?: string }>;
-  /** Bring an inactive drive back online (joins swarm, announces). */
+  /** bring an inactive drive back online (joins swarm, announces). */
   activateDrive: (driveId: string) => Promise<{
     ok: boolean;
     error?: string;
@@ -113,7 +129,7 @@ export type BackendAPI = {
     shareLink?: string;
     key?: string;
   }>;
-  /** Take an active drive offline without destroying its data. */
+  /** take an active drive offline without destroying its data. */
   deactivateDrive: (driveId: string) => Promise<{ ok: boolean; error?: string }>;
   refreshStatus: () => Promise<void>;
   refreshDrives: () => Promise<void>;
@@ -131,7 +147,7 @@ const BackendContext = createContext<BackendAPI | null>(null);
 const DRIVE_ORIGIN_SET_MAX = 64;
 
 /**
- * Cadence of the RN-side control heartbeat. Deliberately the
+ * cadence of the RN-side control heartbeat. Deliberately the
  * same 2 s as the worklet's own tick (backend/backend.mjs) so the two
  * streams are read side by side without mental arithmetic.
  */
@@ -169,13 +185,53 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   );
   const [drives, setDrives] = useState<DriveRecord[]>([]);
   const [transfers, setTransfers] = useState<TransferSummary[]>([]);
+  /**
+   * a synchronously-current mirror of `transfers`, for readers
+   * that cannot be React subscribers — specifically the AppState →
+   * background handler, whose effect does not list `transfers` in its
+   * dependency array and would otherwise close over a stale array.
+   * Written ONLY by `commitTransfers` below.
+   */
+  const transfersRef = useRef<TransferSummary[]>([]);
+  /**
+   * whether the service was started for the CURRENT background
+   * window. Phase 3 reads this to attribute a freeze — a freeze with no
+   * service running is not evidence the mechanism failed, it is Android
+   * behaving correctly toward an idle app.
+   */
+  const serviceStartedForWindowRef = useRef<boolean>(false);
+  /**
+   * completion-path persistence still in flight.
+   *
+   * Serialized rather than parallel so the stop path has a single thing to
+   * await, and so two completions landing together cannot interleave their
+   * read-modify-write of the lifetime stats blob.
+   */
+  const pendingStatsWriteRef = useRef<Promise<void>>(Promise.resolve());
+  /**
+   * worst observed gap between worklet heartbeats in the current
+   * background window.
+   *
+   * `evaluateFreeze` only sees two tick counts, so it cannot distinguish a
+   * window that ticked steadily from one that stalled for two minutes and
+   * then caught up — and the 0.5 threshold passed exactly such a run. This
+   * is the missing shape of the distribution, reduced to the one number
+   * worth carrying.
+   *
+   * Updated on every tick regardless of build: two number writes, far
+   * cheaper than the debugLog call next to it, which IS gated.
+   */
+  const heartbeatGapRef = useRef<{ lastAt: number; maxGapMs: number }>({
+    lastAt: 0,
+    maxGapMs: 0,
+  });
   const [activeDriveIds, setActiveDriveIds] = useState<Set<string>>(new Set());
   const [inactiveDriveIds, setInactiveDriveIds] = useState<Set<string>>(new Set());
   const [failedHydrationIds, setFailedHydrationIds] = useState<Set<string>>(new Set());
 
   const logId = useRef(0);
   /**
-   * The in-memory ring (120 lines, no timestamps, no
+   * the existing in-memory ring (120 lines, no timestamps, no
    * levels, gone on restart) stays exactly as it was for the dev-facing
    * `logs` array — and now also fans out to the file writer. That single
    * wrap gave all ~25 pre-existing call sites in this file real timestamps
@@ -203,13 +259,44 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     return "unknown";
   }, []);
 
+  /**
+   * the ONLY way to write `transfers`.
+   *
+   * `transfersRef` must never drift from `transfers`. It is read
+   * synchronously by the AppState → background handler to decide whether to
+   * start the foreground service, and a stale read there produces a wrong
+   * service decision that nothing downstream can detect — the service either
+   * runs for an idle app or fails to run for a live transfer, and both look
+   * like normal operation.
+   *
+   * So the ref is not synced at each call site, and not synced by an effect
+   * (which lags by a commit, and a background transition can land inside that
+   * lag). It is written inside the updater itself, which makes it correct the
+   * instant the next value is computed — before React even commits — and
+   * makes it structurally impossible for a mutation site to update one
+   * without the other.
+   *
+   * `setTransfers` must not be called directly anywhere else. All three
+   * historical call sites now route through here.
+   */
+  const commitTransfers = useCallback(
+    (next: (prev: TransferSummary[]) => TransferSummary[]) => {
+      setTransfers((prev) => {
+        const value = next(prev);
+        transfersRef.current = value;
+        return value;
+      });
+    },
+    []
+  );
+
   const upsertTransfer = useCallback(
     (driveId: string, update: TransferUpdate) => {
-      setTransfers((prev) =>
+      commitTransfers((prev) =>
         upsertTransferReducer(prev, driveId, update, originFor)
       );
     },
-    [originFor]
+    [commitTransfers, originFor]
   );
 
   const refreshStatus = useCallback(async () => {
@@ -298,12 +385,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * Recover received files the engine wrote to disk but RN never
+   * recover received files the engine wrote to disk but RN never
    * recorded. Fetches the drive list fresh rather than reading the `drives`
    * state, so a resume that races the state update still reconciles against
    * the engine's current truth.
    *
-   * Event-driven on purpose. RN's `setInterval` was measured frozen for the
+   * Event-driven on purpose. 6H measured RN's `setInterval` frozen for the
    * whole of a backgrounded window, so a polling reconcile would only ever
    * run when the app was already in the foreground — exactly when the
    * foreground transition has already fired.
@@ -321,6 +408,17 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    */
   const freezeMarkRef = useRef<{ at: number; ticks: number } | null>(null);
 
+  /**
+   * When the app most recently became foreground-active. Read by the stall
+   * watchdog, which may not rule until a full uninterrupted foreground
+   * window has elapsed — see src/lib/transferStall.ts for why.
+   *
+   * Seeded at mount: a fresh launch is a foreground start, and the guard
+   * correctly suppresses the watchdog for its first 30 s, during which
+   * nothing can legitimately have stalled anyway.
+   */
+  const foregroundSinceRef = useRef<number>(Date.now());
+
   const readAliveTicks = useCallback(async (): Promise<{
     ticks: number;
     intervalMs: number;
@@ -331,28 +429,101 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         RPC_HYPERDRIVE_STATUS,
         {} as Record<string, never>
       );
-      const ticks = obj?.status?.aliveTicks;
-      const intervalMs = obj?.status?.aliveTickMs;
-      if (typeof ticks !== "number" || typeof intervalMs !== "number") return null;
-      return { ticks, intervalMs };
+      // Requires `started === true`, not just well-typed counters: a failed
+      // engineInit leaves aliveTicks pinned at 0 while status calls keep
+      // succeeding, which every long background window would then read as
+      // 100% frozen. See src/lib/aliveTicks.ts.
+      return parseAliveReading(obj?.status);
     } catch {
       return null;
     }
   }, []);
 
+  /**
+   * Every background/resume cycle emits exactly one paired trace: one line
+   * here on the way out, one in `checkForFreeze` on the way back.
+   *
+   * Before this, four of the five outcomes on this path were silent — a
+   * failed status RPC, a missing mark, a failed resume read and a clean run
+   * all produced nothing at all, so "no freeze" and "never measured" were
+   * indistinguishable in the log. Three runs of the 2026-09-06 session came
+   * back silent and could not be read either way; they were the Autostart
+   * runs, the ones that mattered.
+   *
+   * Deliberately NOT gated on IS_DEBUG_BUILD. `rn.freeze` already ships
+   * ungated and `aliveTicks` ships in release, so the pair must work in any
+   * build — especially since the gate has now demonstrably been false on a
+   * device without saying so.
+   */
+  /**
+   * the service lifecycle decision for one background window.
+   *
+   * Called synchronously from the AppState → background handler. Reads
+   * `transfersRef` (never `transfers`, which that effect closes over stale)
+   * and the one predicate in `transferActivity.ts`.
+   *
+   * The decision is logged WHATEVER it is. A reader of an exported log must
+   * be able to reconstruct why the service did or did not run for a given
+   * window without inferring it backwards from the service's own outcome
+   * lines — which are absent exactly when the service never started, i.e.
+   * the case most in need of explanation.
+   */
+  const applyServiceForBackground = useCallback(() => {
+    const now = Date.now();
+    const list = transfersRef.current;
+    const active = isTransferActive(list, now);
+    debugLog(
+      "warn",
+      "rn.fgs",
+      `background decision ${describeActivity(list, now)} ` +
+        `service=${active ? "START" : "skip"} ` +
+        `available=${isForegroundServiceAvailable()} at=${now}`
+    );
+    serviceStartedForWindowRef.current = active;
+    if (active) void startForegroundService("appstate-background");
+    return active;
+  }, []);
+
   const markBackgrounded = useCallback(async () => {
+    // reset the gap window alongside the tick mark, so the worst
+    // gap reported at resume describes THIS background window and not a
+    // stall from some earlier one.
+    heartbeatGapRef.current = { lastAt: Date.now(), maxGapMs: 0 };
     const reading = await readAliveTicks();
     freezeMarkRef.current = reading
       ? { at: Date.now(), ticks: reading.ticks }
       : null;
+    debugLog(
+      "warn",
+      "rn.freeze",
+      reading
+        ? `mark taken ticks=${reading.ticks} tickMs=${reading.intervalMs} at=${Date.now()}`
+        : `mark FAILED at=${Date.now()} — engine status unreachable, ` +
+            `this background window CANNOT be judged`
+    );
   }, [readAliveTicks]);
 
   const checkForFreeze = useCallback(async () => {
     const mark = freezeMarkRef.current;
     freezeMarkRef.current = null;
-    if (!mark) return;
+    if (!mark) {
+      debugLog(
+        "warn",
+        "rn.freeze",
+        "no mark on resume — the background window was never measured"
+      );
+      return;
+    }
     const reading = await readAliveTicks();
-    if (!reading) return;
+    if (!reading) {
+      debugLog(
+        "warn",
+        "rn.freeze",
+        `resume read FAILED after ${Date.now() - mark.at}ms backgrounded — ` +
+          `verdict unavailable`
+      );
+      return;
+    }
 
     const verdict = evaluateFreeze({
       elapsedMs: Date.now() - mark.at,
@@ -361,13 +532,98 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       tickIntervalMs: reading.intervalMs,
     });
 
-    if (!verdict.frozen) return;
+    // attribute the window before ruling on it.
+    //
+    // Four states, not two. `service` says whether the mechanism was even
+    // engaged — a freeze with no service running is Android correctly
+    // freezing an idle app, not evidence that anything failed. `screen`
+    // separates a locked window from an on-screen one, which are different
+    // tests of the same mechanism; every measurement in this project's
+    // record that mattered was taken screen-locked.
+    const serviceRunning = serviceStartedForWindowRef.current;
+    serviceStartedForWindowRef.current = false;
+    const screenOn = await isScreenOn();
+    const attribution =
+      `${serviceRunning ? "service-running" : "no-service"}/` +
+      `${screenOn === null ? "screen-unknown" : screenOn ? "screen-on" : "screen-locked"}`;
+
+    // The evidence behind the verdict, logged whether or not it froze. The
+    // 0.5 threshold passed a run with a 115 s gap and a completion 49 s
+    // late; a boolean alone cannot tell that apart from a clean window, so
+    // the ratio and the worst gap go on every line.
+    const gaps = heartbeatGapRef.current;
+    const largestGapMs = Math.max(
+      gaps.maxGapMs,
+      gaps.lastAt > 0 ? Date.now() - gaps.lastAt : 0
+    );
+    const ratio = tickRatio(verdict);
+    const grade = gradeWindow(verdict, largestGapMs, reading.intervalMs);
+    const evidence =
+      `ticks ${verdict.observedTicks}/${verdict.expectedTicks} ` +
+      `ratio=${ratio === null ? "n/a" : ratio.toFixed(3)} ` +
+      `largest-gap=${largestGapMs}ms`;
+
+    if (!verdict.frozen) {
+      // `reason` distinguishes a genuine clean run from a window too short
+      // to judge and from an engine restart — all three were previously the
+      // same silence.
+      debugLog(
+        "info",
+        "rn.freeze",
+        `not frozen (${verdict.reason}) ticks ${verdict.observedTicks}/${verdict.expectedTicks} ` +
+          `over ${verdict.elapsedMs}ms backgrounded`
+      );
+      debugLog(
+        "info",
+        "rn.freeze.attr",
+        `${attribution} grade=${grade ?? "ungraded"} reason=${verdict.reason} ` +
+          `${evidence} elapsed=${verdict.elapsedMs}ms`
+      );
+      // Only a graded window with the service actually running moves the
+      // streak. `too-short` and `insufficient-signal` grade to null and
+      // prove nothing either way, so they must neither add nor clear.
+      if (serviceRunning && grade) {
+        const next = await recordServiceWindow(grade);
+        debugLog(
+          grade === "healthy" ? "info" : "warn",
+          "rn.freeze.attr",
+          grade === "healthy"
+            ? `service healthy window — streak reset to ${next.serviceFreezeStreak}`
+            : `service ${grade} window — streak ${next.serviceFreezeStreak}/${SERVICE_FREEZE_THRESHOLD}` +
+              (next.fallbackTriggeredAt > 0 ? " — FALLBACK TRIGGERED" : "")
+        );
+      }
+      return;
+    }
     await recordFreeze(verdict.elapsedMs, verdict.frozenFraction);
     debugLog(
       "warn",
       "rn.freeze",
       `frozen ${(verdict.frozenFraction * 100).toFixed(0)}% of ${verdict.elapsedMs}ms ` +
         `backgrounded (ticks ${verdict.observedTicks}/${verdict.expectedTicks})`
+    );
+    debugLog(
+      "warn",
+      "rn.freeze.attr",
+      `${attribution} grade=${grade ?? "ungraded"} reason=${verdict.reason} ` +
+        `${evidence} elapsed=${verdict.elapsedMs}ms`
+    );
+    if (!serviceRunning) {
+      // Explicit, because silence here would be indistinguishable from a bug.
+      debugLog(
+        "info",
+        "rn.freeze.attr",
+        "no-service freeze — streak untouched (an idle app being frozen is not a fault)"
+      );
+      return;
+    }
+    if (!grade) return;
+    const next = await recordServiceWindow(grade);
+    debugLog(
+      "warn",
+      "rn.freeze.attr",
+      `service ${grade} window — streak ${next.serviceFreezeStreak}/${SERVICE_FREEZE_THRESHOLD}` +
+        (next.fallbackTriggeredAt > 0 ? " — FALLBACK TRIGGERED" : "")
     );
   }, [readAliveTicks]);
 
@@ -475,13 +731,19 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     return res;
   }, []);
 
-  const clearTransfer = useCallback((driveId: string) => {
-    const id = String(driveId || "").trim();
-    if (!id) return;
-    setTransfers((prev) => prev.filter((t) => t.driveId !== id));
-    hostedIdsRef.current.delete(id);
-    receivedIdsRef.current.delete(id);
-  }, []);
+  const clearTransfer = useCallback(
+    (driveId: string) => {
+      const id = String(driveId || "").trim();
+      if (!id) return;
+      // via commitTransfers, so the ref the service decision reads
+      // loses the drive at the same instant the state does. A removed
+      // transfer can be the last active one, which makes this a stop trigger.
+      commitTransfers((prev) => prev.filter((t) => t.driveId !== id));
+      hostedIdsRef.current.delete(id);
+      receivedIdsRef.current.delete(id);
+    },
+    [commitTransfers]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -501,14 +763,14 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
             if (!req.data) return;
             const evt = JSON.parse(b4a.toString(req.data as unknown as Uint8Array)) as BackendEvent;
 
-            // Log lines from the Bare worklet. Handled first —
+            // log lines from the Bare worklet. Handled first —
             // it's the highest-frequency event type once debugging is on,
             // and it must never fall through into the UI state machine.
             if (evt.type === "log") {
               logFromBackend(evt);
               return;
             }
-            // Worklet liveness heartbeat. Handled next to `log`
+            // worklet liveness heartbeat. Handled next to `log`
             // for the same reason — high frequency while debugging is on,
             // and it must never reach the UI state machine. No state is
             // touched and no render is triggered; the log line IS the
@@ -527,13 +789,25 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
             // keeps emitting ticks whenever debug logging is on, including
             // in release (see the report's "still shipping" note).
             if (evt.type === "worklet-tick") {
+              // track the worst inter-tick gap. Ungated and
+              // before the debug branch — the freeze attribution needs this
+              // in every build, and it costs two number writes.
+              {
+                const at = Date.now();
+                const gaps = heartbeatGapRef.current;
+                if (gaps.lastAt > 0) {
+                  const gap = at - gaps.lastAt;
+                  if (gap > gaps.maxGapMs) gaps.maxGapMs = gap;
+                }
+                gaps.lastAt = at;
+              }
               if (IS_DEBUG_BUILD) {
                 debugLog(
                   "info",
                   "rn.heartbeat",
                   `worklet n=${evt.n ?? "?"} worklet-at=${evt.at ?? "?"} rn-at=${Date.now()}`
                 );
-              // Found by a 2-minute device run: RN's setInterval
+              // Sprint 6H, found by the 2-min device run: RN's setInterval
               // is driven by the Choreographer, which Android halts while
               // the app is backgrounded — debugLog's own 1 s flush timer
               // included. Entries then sit in memory until foreground, and
@@ -546,7 +820,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               // the drain from it. Foreground is left alone: the existing
               // flush timer already covers it, and flushing per tick there
               // would be pure churn.
-                // This forced a disk write every 2 s while
+                // this forced a disk write every 2 s while
                 // backgrounded. Diagnostic only — it must not reach users,
                 // so it lives inside the dev-build gate.
                 if (AppState.currentState !== "active") void flushDebugLog();
@@ -592,7 +866,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                   // Completion must come from an explicit upload-complete
                   // event so the UI can safely clamp at 99 until then.
                   completed: prev.completed,
-                  // Flip on first progress event. The UI uses
+                  // flip on first progress event. The UI uses
                   // this to distinguish "connected but no data flowing"
                   // from "data is moving" — the engine's percent itself
                   // is unreliable on hosted transfers because UDX sockets
@@ -620,7 +894,16 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                 if (hostedIdsRef.current.has(evt.driveId)) {
                   const delta =
                     typeof evt.totalBytes === "number" ? evt.totalBytes : 0;
-                  if (delta > 0) void addSent(delta);
+                  // tracked rather than fired-and-forgotten.
+                  // `upload-complete` is the event that flips the activity
+                  // predicate false and triggers the service stop, so this
+                  // write and the freeze window overlap. The stop path awaits
+                  // this chain before releasing the service.
+                  if (delta > 0) {
+                    pendingStatsWriteRef.current = pendingStatsWriteRef.current
+                      .then(() => addSent(delta))
+                      .catch(() => {});
+                  }
                 }
                 // Pulse a success haptic at the moment a transfer wraps.
                 // This fires for both hosts (a peer finished pulling our
@@ -683,7 +966,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "drive-hydrated") {
-              // Hydration spans both active and inactive
+              // hydration now spans both active and inactive
               // drives, and either origin. The state field tells us which
               // set the drive belongs in.
               appendLog(`Drive hydrated: ${evt.shareLink || evt.driveId || ""}`);
@@ -822,8 +1105,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "peer-rejected") {
-              // Must stay handled: when it was not, a path-traversal
-              // rejection vanished silently.
+              // previously emitted by the engine and
+              // handled nowhere — a path-traversal rejection vanished.
               appendLog(
                 `Peer rejected a file (${evt.cause ?? "unknown"})${evt.driveId ? ` on ${evt.driveId}` : ""}`
               );
@@ -908,13 +1191,22 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     );
                   }
 
+                  const at = Date.now();
                   return {
                     ...prev,
                     peerIds,
                     peersConnected: nextPeersConnected,
                     percent: shouldFinalize ? 100 : prev.percent,
                     completed: shouldFinalize ? true : prev.completed,
-                    lastEventAt: Date.now(),
+                    lastEventAt: at,
+                    // stamp only on the FALLING edge to zero. Two
+                    // peers dropping to one is not the last peer leaving, and
+                    // restamping there would extend the grace window every
+                    // time a peer churns.
+                    lastPeerLeftAt:
+                      nextPeersConnected === 0 && prev.peersConnected > 0
+                        ? at
+                        : prev.lastPeerLeftAt,
                   };
                 });
               }
@@ -923,12 +1215,20 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
             if (evt.type === "download-peer-disconnected") {
               appendLog("Sender disconnected");
               if (evt.driveId) {
-                upsertTransfer(evt.driveId, (prev) => ({
-                  ...prev,
-                  peerIds: [],
-                  peersConnected: 0,
-                  lastEventAt: Date.now(),
-                }));
+                upsertTransfer(evt.driveId, (prev) => {
+                  const at = Date.now();
+                  return {
+                    ...prev,
+                    peerIds: [],
+                    peersConnected: 0,
+                    lastEventAt: at,
+                    // same falling-edge rule as peer-disconnected.
+                    lastPeerLeftAt:
+                      prev.peersConnected > 0 || prev.peerIds.length > 0
+                        ? at
+                        : prev.lastPeerLeftAt,
+                  };
+                });
               }
               return;
             }
@@ -944,7 +1244,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         setReady(true);
         setStatus("ready");
         appendLog("Worklet ready; starting LISTEN…");
-        // The worklet boots with debug logging off. Push the
+        // the worklet boots with debug logging off. Push the
         // persisted flag down now, and on every later change, so backend
         // instrumentation matches the RN side from the first event.
         void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
@@ -956,7 +1256,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         sendOneWay(rpcRef.current, RPC_LISTEN);
         await refreshStatus();
         await refreshDrives();
-        // Boot-time recovery. Runs after refreshDrives so the
+        // boot-time recovery. Runs after refreshDrives so the
         // engine has hydrated its manifest and DRIVES_LIST reports real
         // localFiles rather than an empty pre-hydration list.
         await reconcileReceived("boot");
@@ -994,7 +1294,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   ]);
 
   /**
-   * Own the debug-logging lifecycle from the one provider that
+   * own the debug-logging lifecycle from the one provider that
    * spans the whole app. `initDebugLog()` is idempotent and, while the
    * flag is off, costs exactly one subscription — no timer, no buffer, no
    * file handle. Every flag change is mirrored into the worklet so the two
@@ -1002,6 +1302,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    */
   useEffect(() => {
     initDebugLog();
+    // the device-identity line, on the rising edge of the same
+    // flag. Registered AFTER initDebugLog so `log()` is already live when it
+    // fires — subscribers run in registration order, and applyEnabled sets
+    // its enabled flag before its first await. Ungated, like the build line:
+    // an exported log has to say which device produced it.
+    initDeviceIdentityLog();
     return subscribeDebugLogging((enabled) => {
       debugEnabledRef.current = enabled;
       if (!rpcRef.current) return;
@@ -1013,7 +1319,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * The RN-side CONTROL heartbeat. Same 2 s cadence as the
+   * the RN-side CONTROL heartbeat. Same 2 s cadence as the
    * worklet's, talks to nothing, and that is the whole point.
    *
    * Without it a worklet-tick gap is ambiguous: the worklet may have been
@@ -1067,7 +1373,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Stall detector. Hosted transfers can stay in
+  // / HH.3: stall detector. Hosted transfers can stay in
   // "Sending…" forever because the receiver continues seeding the drive
   // back into the swarm — `socket.on("close")` never fires on the
   // sender's side, so the existing peer-disconnect safety net at line
@@ -1119,8 +1425,19 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
 
     const onChange = (next: AppStateStatus) => {
       if (next === "active") {
+        // Restart the stall watchdog's clock. The timer that drives it was
+        // halted for the whole background window, so every in-flight
+        // transfer's `lastEventAt` is stale through no fault of its own;
+        // without this the first tick after resume rules on all of them.
+        foregroundSinceRef.current = Date.now();
+        // stop trigger #1 — the app is visible again, so the
+        // service has nothing left to protect. Unconditional: cheap when it
+        // was never started, and the OS may have stopped it behind our back
+        // (onTimeout does exactly that), so "we think it isn't running" is
+        // not a reason to skip the call.
+        void stopForegroundService("appstate-active");
         void refreshSwarm();
-        // The foreground transition is the moment to recover
+        // the foreground transition is the moment to recover
         // anything the engine finished while we were away — including a
         // download whose RN-side write never completed because the process
         // was killed mid-chain.
@@ -1129,9 +1446,17 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         startInterval();
       } else {
         stopInterval();
-        // Snapshot on the way out. Still alive at this point, so the status
-        // call succeeds; once frozen there would be nothing to ask.
-        if (next === "background") void markBackgrounded();
+        if (next === "background") {
+          // START TRIGGER. Synchronous and first — this is the
+          // last moment the process is reliably executing, and the predicate
+          // is deliberately I/O-free so it cannot be defeated by a freeze
+          // that lands mid-decision. `markBackgrounded` below awaits an RPC
+          // and is allowed to fail; this must not.
+          applyServiceForBackground();
+          // Snapshot on the way out. Still alive at this point, so the status
+          // call succeeds; once frozen there would be nothing to ask.
+          void markBackgrounded();
+        }
       }
     };
     const sub = AppState.addEventListener("change", onChange);
@@ -1139,53 +1464,131 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       stopInterval();
       sub.remove();
     };
-  }, [ready, refreshSwarm, reconcileReceived, checkForFreeze, markBackgrounded]);
+  }, [
+    ready,
+    refreshSwarm,
+    reconcileReceived,
+    checkForFreeze,
+    markBackgrounded,
+    applyServiceForBackground,
+  ]);
 
   useEffect(() => {
-    const STALL_MS = 30_000;
     const intervalId = setInterval(() => {
       const now = Date.now();
-      setTransfers((prev) => {
+      const foregroundSince = foregroundSinceRef.current;
+      // Cheap pre-check: while the app has not been foreground long enough,
+      // no transfer can be ruled on, so skip the state update entirely
+      // rather than mapping the list to produce no change.
+      if (now - foregroundSince < DEFAULT_STALL_MS) return;
+      // via commitTransfers. This watchdog flips `completed` and
+      // `stalled`, both of which the activity predicate reads, so the ref
+      // must move with it.
+      commitTransfers((prev) => {
         let mutated = false;
         const next = prev.map((t) => {
-          if (t.completed) return t;
-          if (!t.progressEverReceived) return t;
-          if (now - t.lastEventAt < STALL_MS) return t;
           // SILENT WATCHDOG #2. After 30 s of no events a
           // hosted transfer silently declares itself complete and a
           // received one silently flips to "stalled". Both were invisible;
           // both are prime suspects in "said Sent but nothing arrived".
+          //
+          // The decision itself now lives in src/lib/transferStall.ts,
+          // which additionally refuses to rule until the app has been
+          // foregrounded for the whole threshold — a backgrounded window
+          // freezes this timer, so without that guard every resume
+          // falsified every in-flight transfer.
+          const verdict = evaluateStall({
+            now,
+            lastEventAt: t.lastEventAt,
+            foregroundSince,
+            completed: t.completed,
+            progressEverReceived: t.progressEverReceived,
+            stalled: t.stalled,
+            origin: t.origin,
+          });
+          if (verdict === "none") return t;
           const idleMs = now - t.lastEventAt;
-          if (t.origin === "hosted") {
+          const shape =
+            `(percent=${t.percent} bytes=${t.bytesTransferred}/${t.totalBytes ?? "?"} ` +
+            `peers=${t.peersConnected} foreground=${now - foregroundSince}ms)`;
+          if (verdict === "hosted-complete") {
             mutated = true;
             debugLog(
               "warn",
               "rn.watchdog",
-              `stall watchdog drive=${t.driveId} HOSTED → completed after ${idleMs}ms idle ` +
-                `(percent=${t.percent} bytes=${t.bytesTransferred}/${t.totalBytes ?? "?"} peers=${t.peersConnected})`
+              `stall watchdog drive=${t.driveId} HOSTED → completed after ${idleMs}ms idle ${shape}`
             );
             return { ...t, completed: true, lastEventAt: now };
           }
-          if (t.origin === "received" && !t.stalled) {
-            mutated = true;
-            debugLog(
-              "warn",
-              "rn.watchdog",
-              `stall watchdog drive=${t.driveId} RECEIVED → stalled after ${idleMs}ms idle ` +
-                `(percent=${t.percent} bytes=${t.bytesTransferred}/${t.totalBytes ?? "?"} peers=${t.peersConnected})`
-            );
-            return { ...t, stalled: true, lastEventAt: now };
-          }
-          return t;
+          mutated = true;
+          debugLog(
+            "warn",
+            "rn.watchdog",
+            `stall watchdog drive=${t.driveId} RECEIVED → stalled after ${idleMs}ms idle ${shape}`
+          );
+          return { ...t, stalled: true, lastEventAt: now };
         });
         return mutated ? next : prev;
       });
     }, 5_000);
     return () => clearInterval(intervalId);
-  }, []);
+  }, [commitTransfers]);
 
   /**
-   * The suspend probe — lifecycle diagnostics only.
+   * STOP TRIGGERS #2 and #3 — the predicate going false while the
+   * app is still backgrounded.
+   *
+   * #2 is the last active transfer completing. That arrives as a `transfers`
+   * change (upload-complete, the peer-disconnect finalize, the stall
+   * watchdog, or a drive being cleared), so this effect's dependency on
+   * `transfers` catches it.
+   *
+   * #3 is the idle-host grace window expiring, which is the one transition
+   * that happens on a clock rather than an event. `msUntilActivityCouldChange`
+   * says when, and the timeout below re-runs the same evaluation then.
+   *
+   * Only runs when the service was actually started for this window — an app
+   * that never started one has nothing to release, and calling stop on every
+   * transfer change in the foreground would be pure noise.
+   */
+  useEffect(() => {
+    if (!serviceStartedForWindowRef.current) return;
+    if (AppState.currentState === "active") return;
+
+    const evaluate = () => {
+      const now = Date.now();
+      const list = transfersRef.current;
+      if (isTransferActive(list, now)) return false;
+      debugLog(
+        "warn",
+        "rn.fgs",
+        `releasing service — ${describeActivity(list, now)} at=${now}`
+      );
+      serviceStartedForWindowRef.current = false;
+      // let the completion write land before the service goes.
+      // The predicate went false BECAUSE a transfer completed, so that
+      // event's storage write is in flight right now, and releasing the
+      // service is what lets the OS freeze us mid-write.
+      void (async () => {
+        await pendingStatsWriteRef.current;
+        await stopForegroundService("predicate-false");
+      })();
+      return true;
+    };
+
+    if (evaluate()) return;
+
+    const wait = msUntilActivityCouldChange(transfersRef.current, Date.now());
+    if (wait === null) return;
+    // +250 ms so the timer fires just past the boundary rather than on it,
+    // where `now - lastPeerLeftAt < GRACE` would still be true by a
+    // millisecond and the service would be held until the next event.
+    const timer = setTimeout(evaluate, wait + 250);
+    return () => clearTimeout(timer);
+  }, [transfers]);
+
+  /**
+   * the suspend probe — lifecycle diagnostics only.
    *
    * bare-kit registers a module-scope AppState listener
    * (node_modules/react-native-bare-kit/index.js:332) that calls `suspend()`
@@ -1195,11 +1598,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * invocation order, so the seq numbers are how the real order is
    * recovered rather than assumed.
    *
-   * There is deliberately no counter-`resume()` here. Device runs showed
-   * it made no difference in either direction — the worklet froze with it
-   * on and off under battery restriction, and ran clean with it on and off
-   * without. It was fighting SmartPower's process freeze, which `resume()`
-   * has no bearing on.
+   * the counter-`resume()` this used to perform is GONE. Device
+   * runs on 2026-08-24 showed it made no difference in either direction —
+   * the worklet froze with it on and off under battery restriction, and ran
+   * clean with it on and off without. It was fighting SmartPower's process
+   * freeze, which `resume()` has no bearing on. Its Settings toggle and
+   * storage module went with it.
    *
    * Gated to debug builds instead of a persisted toggle. In a
    * release build the flag is false, so the body below is
@@ -1269,8 +1673,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Observe only. No counter-`resume()` fires here on `background`;
-      // the transition line below is the whole payload.
+      // Observe only. Sprint 6M removed the counter-`resume()` that used to
+      // fire here on `background`; the transition line below is the whole
+      // remaining payload.
       const onChange = (next: AppStateStatus) => {
         const prev = lastState;
         lastState = next;

@@ -39,7 +39,7 @@ export type IconName =
 
 /**
  * Emoji-based icon kept for any code path that still wants a glyph.
- * Prefer `fileIconName` (Ionicons) for new rendering.
+ * Prefer `fileIconName` (Ionicons) for new rendering — see Sprint 3G.
  */
 export function fileIcon(name: string): string {
   const ext = fileExt(name);
@@ -95,7 +95,7 @@ export function previewModeFor(name: string): PreviewMode {
  * shorter than 3+ext, returns the unchanged name (caller would have already
  * known not to truncate that aggressively).
  *
- * Used on the Share-tab bundle cards.
+ * Used by Phase EEE (Sprint 2D) on the Share-tab bundle cards.
  */
 export function truncateMiddle(name: string, maxLen: number = 28): string {
   const s = String(name || "");

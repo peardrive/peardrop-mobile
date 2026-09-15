@@ -22,17 +22,23 @@ export type BottomSheetProps = {
    * Shows a filled circle-X close button top-right when true. Defaults to a
    * bare muted close.
    *
-   * Both branches draw a `muted` glyph, so the fill is the only thing
+   * Both branches now draw a `muted` glyph, so the fill is the only thing
    * that varies — hence the name.
    *
-   * The fill is deliberately NOT `theme.danger`. Dismissing a sheet
-   * destroys nothing, and every other dismiss control in the app is muted
-   * (see `closeMuted` below, Toast, TransferCard), so a red circle read as
-   * a destructive warning it had no business making. It was also a
-   * contrast failure in Paper and Pear, where a near-black `onPrimary`
-   * glyph sat on `#b91c1c` at ~2.8:1. `theme.danger` is still correct for
-   * genuinely destructive controls — ConfirmModal's destructive button,
-   * SwipeableRow's delete, FolderContentsModal's "Stop sharing".
+   * Called `dangerClose` until Sprint 6W, because the circle used to be
+   * filled with `theme.danger`. Dismissing a sheet destroys nothing, and
+   * every other dismiss control in the app is muted (see `closeMuted`
+   * below, Toast, TransferCard), so the red read as a destructive warning
+   * it had no business making. It was also a contrast failure in Paper and
+   * Pear, where a near-black `onPrimary` glyph sat on `#b91c1c` at ~2.8:1.
+   * 6V moved it to a neutral `tabBadgeBg` fill; 6W renamed the prop to
+   * match. `theme.danger` is still correct for genuinely destructive
+   * controls — ConfirmModal's destructive button, SwipeableRow's delete,
+   * FolderContentsModal's "Stop sharing".
+   *
+   * Note: `design_process/*.md` still describe this as `dangerClose` with a
+   * red circle-X. Those are a record of the original deck, not of current
+   * behaviour.
    */
   filledClose?: boolean;
   /** Show the drag handle at top of sheet. Default true. */
@@ -58,7 +64,7 @@ export type BottomSheetProps = {
  * guaranteed opaque across every theme (many themes' `theme.card` is a
  * translucent rgba, which would let the underlying UI bleed through the
  * sheet body — the exact bug that surfaced in Send/Receive/Kebab on
- * translucent.) Same lesson as the original SharePreviewModal.
+ * v5.) Same lesson as Phase Y in the original SharePreviewModal.
  */
 export default function BottomSheet({
   visible,

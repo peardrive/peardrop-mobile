@@ -90,7 +90,7 @@ export function subscribeDevMode(listener: Listener): () => void {
 /**
  * React hook for dev-mode state. Returns `{ enabled, toggle }`.
  *
- * Hard-locked to `enabled: false` for
+ * hard-locked to `enabled: false` for
  * the release candidate. The Settings toggle that flipped this is gone,
  * the TestBed entry point is gone, and any user who previously had the
  * AsyncStorage flag set to "true" will now see the polished user-mode UI

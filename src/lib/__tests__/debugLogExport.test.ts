@@ -1,7 +1,7 @@
 import { runExportFlow, runManualReset, type ExportDeps } from "../debugLogExport";
 
 /**
- * Sprint 5I: the guarantee this whole module exists to enforce.
+ * the guarantee this whole module exists to enforce.
  *
  * Android's share sheet resolves on dismissal and reports neither the
  * chosen target nor a cancel — so "the export succeeded" is not knowable.

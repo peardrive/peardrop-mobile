@@ -1,7 +1,7 @@
 import RNFS from "react-native-fs";
 
 /**
- * Per-share record of the local cache paths the user's picked
+ * per-share record of the local cache paths the user's picked
  * files live at. The engine's manifest only stores in-drive storage paths
  * (relative to corestore), so without this side-store we can't preview or
  * "open in another app" for files the user originally shared.

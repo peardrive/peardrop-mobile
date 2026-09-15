@@ -215,7 +215,7 @@ export default function QrScanModal() {
     void resolveFromScan(data);
   };
 
-  // "Enter link manually" closes the scanner AND signals the
+  // v5 polish: "Enter link manually" closes the scanner AND signals the
   // Receive sheet to reopen with the paste input focused.
   const enterManually = () => requestManualEntry();
 

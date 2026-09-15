@@ -42,7 +42,7 @@ import { wrapError } from "./engine-errors.mjs";
 
 const { IPC } = BareKit;
 
-// Extract a display-safe string from a structured res.error
+// extract a display-safe string from a structured res.error
 // so the `emit({type:"error", message: ...})` sideband keeps carrying a
 // plain string (RN treats event.message as text). Falls back to the
 // object's toString if it lacks a .message field.
@@ -53,7 +53,7 @@ function messageOf(err) {
   return String(err);
 }
 
-// Last-line-of-defense wrapper for the top-level RPC handler
+// last-line-of-defense wrapper for the top-level RPC handler
 // catches. The bridge already produces typed errors for anything that
 // bubbles out of the engine; this fires only for programmer errors
 // (unknown state, opcode-level bugs).
@@ -124,13 +124,13 @@ function emit(payload) {
   request.send(safeJson(payload));
 }
 
-// The worklet never touches the log file — it ships lines over
+// the worklet never touches the log file — it ships lines over
 // this same event channel and the RN side does the single write. Wired
 // once here, immediately after `rpc` exists.
 setLogEmit(emit);
 
 // ---------------------------------------------------------------------
-// Worklet liveness heartbeat
+// worklet liveness heartbeat
 // ---------------------------------------------------------------------
 //
 // The question: does this worklet keep executing while the app is off

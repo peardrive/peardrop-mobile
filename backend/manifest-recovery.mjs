@@ -1,8 +1,9 @@
 // Manifest load/save for the mobile engine.
 //
-// A non-destructive four-rule loader mirroring desktop v0.24.0's
-// approach. The filename stays "manifest-recovery.mjs" so engine
-// imports don't churn, but "recovery" is not what this module
+// reduced from a full recovery chain to a
+// non-destructive four-rule loader that mirrors desktop v0.24.0's
+// approach. The filename stayed "manifest-recovery.mjs" so engine
+// imports don't churn, but "recovery" is no longer what this module
 // does — it just loads and saves.
 //
 // The four rules:
@@ -23,13 +24,19 @@
 //      boots; that is fine (they're small; they preserve forensic
 //      state; the user can inspect them).
 //
-// Why there is no recovery chain: desktop v0.24.0 deleted its own
-// four-step chain after production data loss — the `validateAndSync`
-// pruning step deletes every manifest entry when the drives folder is
-// transiently unreadable. Atomic manifest writes close the "torn
-// write" motivator, the rebuild-from-scan path was theoretical, and
-// partial-JSON salvage covered the same failure mode atomic writes
-// close. So the chain is replaced by this loader.
+// Why the reduction: Sprint 3D landed a four-step recovery chain
+// (partial-JSON salvage, rebuild-from-drives-folder, etc.) ported from
+// desktop v0.23.1. Desktop v0.24.0 subsequently deleted that same
+// chain, citing production data loss — the `validateAndSync` pruning
+// step would delete every manifest entry when the drives folder was
+// transiently unreadable. Sprint 3P closed the specific "torn write"
+// motivator for the recovery chain via atomic manifest writes; the
+// rebuild-from-scan path was theoretical (no known real user hit it);
+// the partial-JSON salvage covered the same failure mode Sprint 3P
+// closed. So the whole chain was replaced with this loader.
+//
+// See Unify_process/proposal.md §3 (the decision point) and Sprint 3Q
+// changelog for the full rationale.
 
 import fs from "bare-fs/promises";
 
@@ -127,7 +134,7 @@ export async function loadManifest(manifestPath) {
   };
 }
 
-// Separate serialization chain from the engine's saveManifest.
+// separate serialization chain from the engine's saveManifest.
 // This save is only used if a caller of loadManifest wants to persist
 // its result immediately (e.g. after a first-boot empty-manifest
 // creation). Errors are swallowed — the caller can retry.

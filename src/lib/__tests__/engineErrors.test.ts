@@ -1,4 +1,4 @@
-// Tripwire for the EngineError base class + wrap/failure
+// tripwire for the EngineError base class + wrap/failure
 // helpers. backend/engine-errors.mjs uses only vanilla JS and no
 // bare-fs, so Jest could theoretically load the module directly — but
 // keeping to the tripwire convention (mirror in TS, exercise the same
@@ -74,7 +74,7 @@ function failure(
 
 // --- Tests --- //
 
-describe("EngineError tripwire", () => {
+describe("EngineError (Sprint 3S tripwire)", () => {
   test("scenario 1 — construct with category/cause/message/detail", () => {
     const err = new EngineError({
       category: "receive.stall",
@@ -198,7 +198,7 @@ describe("EngineError tripwire", () => {
 // The RN-side helper for extracting a display string from a wire-shaped
 // error must handle both raw strings (legacy paths) and structured
 // objects (new default).
-describe("errorMessage helper (RN-side)", () => {
+describe("errorMessage helper (Sprint 3S RN-side)", () => {
   test("null / undefined return null", () => {
     expect(errorMessage(null)).toBeNull();
     expect(errorMessage(undefined)).toBeNull();

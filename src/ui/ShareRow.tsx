@@ -42,7 +42,7 @@ export type ShareRowProps = {
   /** Row divider at top. `false` on the first row of the list. */
   showTopDivider?: boolean;
   /**
-   * Multi-select: when true, the row swaps the kebab for a leading
+   * v5 multi-select: when true, the row swaps the kebab for a leading
    * checkbox and forwards taps to `onPress` as a toggle-selection
    * shortcut. Chevron stays for bundles (still expandable).
    */
@@ -52,7 +52,7 @@ export type ShareRowProps = {
 };
 
 /**
- * List row. Thumbnail tile (image preview or type icon), name + color-
+ * v5 list row. Thumbnail tile (image preview or type icon), name + color-
  * coded status sub-line, optional inline star + pin, optional inline stop-
  * circle while sharing, kebab. Wraps in SwipeableRow at the call site.
  */
@@ -225,7 +225,7 @@ function createStyles(theme: AppTheme) {
       width: 48,
       height: 48,
       borderRadius: 12,
-      // Filled tile (cardStrong) for non-image thumbs so video/audio/doc
+      // v5: filled tile (cardStrong) for non-image thumbs so video/audio/doc
       // read as tiles-with-glyph rather than thin outlined icons. Folders
       // override with theme.secondary at the call site.
       backgroundColor: theme.cardStrong,

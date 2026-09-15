@@ -8,7 +8,7 @@ import { appendDownloadResults, loadDownloaded } from "./receivedFilesStorage";
 import { log as debugLog } from "../lib/debugLog";
 
 /**
- * Apply the reconcile diff to storage.
+ * apply the reconcile diff to storage.
  *
  * Split from the pure diff in `lib/reconcileReceived.ts` so the decision
  * logic stays unit-testable and this file holds only the effects. Nothing
@@ -38,7 +38,7 @@ export async function runReceivedReconcile(
     const { groups, totalFiles } = reconcileReceivedFiles({ drives, recorded });
     if (totalFiles === 0) return 0;
 
-    // Verify each candidate is actually on disk before writing
+    // verify each candidate is actually on disk before writing
     // it. Without this, a file the user deleted stays in the engine's
     // `localFiles` forever, so every reconcile re-proposed it, wrote a dead
     // entry, and the next `loadDownloaded` discarded it — correct in the UI

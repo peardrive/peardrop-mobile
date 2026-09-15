@@ -18,7 +18,7 @@ import path from "bare-path";
 
 import { EngineError } from "./engine-errors.mjs";
 
-// PathTraversalError is an EngineError subclass. The
+// PathTraversalError is now an EngineError subclass. The
 // name "PathTraversalError" is kept because it appears in test tripwires
 // and reads cleanly in stack traces; the extra typing (category, cause,
 // toJSON) comes from the base class.

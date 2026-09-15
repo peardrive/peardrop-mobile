@@ -51,7 +51,7 @@ type ShareLinkFlowApi = {
   qrVisible: boolean;
   setQrVisible: (v: boolean) => void;
   /**
-   * Bumped when the QR scanner's "Enter link manually" affordance
+   * v5 polish: bumped when the QR scanner's "Enter link manually" affordance
    * is tapped. MainScreen watches this and opens the Receive sheet with the
    * paste input auto-focused. One-shot signal — consumers read the number,
    * open on change, no explicit clear needed.
@@ -81,7 +81,7 @@ type ShareLinkFlowApi = {
    */
   alreadyDownloadedNames: string[];
   /**
-   * File names the preview modal should pre-check when it
+   * file names the preview modal should pre-check when it
    * opens — typically populated by the "tap a missing child file"
    * smart re-grab flow. null = no preselection (modal applies its
    * default selection rules).
@@ -89,7 +89,7 @@ type ShareLinkFlowApi = {
   pendingPreselection: string[] | null;
   setPendingPreselection: (names: string[] | null) => void;
   /**
-   * The moment-of-completion signal for a download. Set to
+   * the moment-of-completion signal for a download. Set to
    * `{ shareKey, names, at }` immediately after `markFilesDownloaded`
    * fires. Consumers (MainScreen) read it once and call
    * `consumeCompletedDownload` to clear, which makes it a one-shot
@@ -139,9 +139,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   const setPendingPreselection = useCallback((names: string[] | null) => {
     setPendingPreselectionState(names && names.length > 0 ? names : null);
   }, []);
-  // One-shot completion signal. Not a time window — the question is
-  // "what's the just-completed download?", not "did this share have a
-  // recent download?". Consumers
+  // one-shot completion signal. Replaces the Sprint 3J 30-second
+  // window approach — instead of "did this share have a recent download?",
+  // the new model is "what's the just-completed download?" Consumers
   // read once on state change and call consumeCompletedDownload to clear.
   const [lastCompletedDownload, setLastCompletedDownload] =
     useState<{ shareKey: string; names: string[]; at: number } | null>(null);
@@ -165,7 +165,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   }, []);
 
   /**
-   * Classify the dedup match between the resolved manifest and
+   * classify the dedup match between the resolved manifest and
    * the user's existing downloaded files. Three outcomes:
    *
    * - "full":    every manifest file is already on disk under this link →
@@ -194,7 +194,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       if (candidates.length === 0 || manifestNames.length === 0) {
         return { kind: "none", alreadyNames: [], matchedIds: [] };
       }
-      // Manifest entries from Hyperdrive (and the demo
+      // fix: manifest entries from Hyperdrive (and the demo
       // synthetic manifest) carry leading-slash paths like "/welcome.txt",
       // but appendDownloadResults strips paths via baseName() — stored
       // DownloadedItem.name is "welcome.txt" without the slash. Without
@@ -225,7 +225,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     [],
   );
 
-  // Persist / refresh the per-share record from a resolved
+  // persist / refresh the per-share record from a resolved
   // manifest. The new record's file list comes from the engine (canonical
   // current state of the share); any per-file `isDownloaded` / `localPath`
   // metadata the user already had is preserved by name match.
@@ -291,7 +291,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       manifest: OpenLinkResult,
       normalizedLink: string,
     ) => {
-      // Empty-manifest defense. Hyperdrive's `drive.update({ wait:
+      // empty-manifest defense. Hyperdrive's `drive.update({ wait:
       // true })` resolves on head metadata, NOT on content blob replication.
       // After it resolves, the engine tries `/.peardrop.json` (whose blob
       // may not have streamed yet — drive.get's silent catch swallows the
@@ -307,7 +307,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       // the Phase K "Try again" button. By the time they retry, the
       // connection is warm and replication has had a moment to progress.
       if (!manifest.files || manifest.files.length === 0) {
-        // The RN half of the empty-manifest bug. The
+        // the RN half of the empty-manifest bug. The
         // engine logs why the manifest came back empty; this records what
         // the user actually saw and that we purged the half-formed drive.
         debugLog(
@@ -325,7 +325,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         );
         return;
       }
-      // A successful resolve clears the link input — the
+      // LLLLLL: a successful resolve clears the link input — the
       // user has moved past "I'm typing a link" into "I'm looking at what's
       // in the share." Failures leave the link in place so retry has
       // something to work with. Same for the smart-regrab preselection:
@@ -396,7 +396,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         // If the probe fails we fall through to a normal resolve with no
         // dedup behavior (better than blocking the share over a JSON read).
       }
-      // Per-share dedup. The storage canonicalizes by share
+      // per-share dedup. The new storage canonicalizes by share
       // key, so a paste of a previously-grabbed link returns an existing
       // record with the right `isDownloaded` flags. Legacy disk-based
       // dedup stays as a fallback for shares that predate the new storage.
@@ -541,7 +541,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       if (!sessionDriveId) return;
       setDownloadAllBusy(true);
       setLinkError(null);
-      // Close the preview modal IMMEDIATELY so the transfer
+      // close the preview modal IMMEDIATELY so the transfer
       // card on the Receive screen (driven by upload-progress events)
       // becomes visible while the download runs. Previously we awaited
       // startDownload before closing — meaning the modal sat there
@@ -552,7 +552,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       // modal early doesn't lose error visibility.
       setPreviewVisible(false);
       try {
-        // Partition the in-scope file names into "already on
+        // partition the in-scope file names into "already on
         // disk under this link" and "needs fetching from the peer". The
         // alreadyDownloadedNames set was populated during runResolve from
         // the (shareLink, name) intersection. If the user manually
@@ -606,7 +606,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
             fetchedFiles,
             lastResolvedLink || undefined,
           );
-          // Also flip the per-share file flags so the bundle row
+          // also flip the per-share file flags so the bundle row
           // updates in place (instead of a fresh row appearing). The share
           // record was upserted during the resolve, so the entry exists.
           const sharedKey = lastResolvedLink ? extractKey(lastResolvedLink) : null;
@@ -637,7 +637,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           showToast(msg);
         }
 
-        // One completion signal per grab, regardless of whether
+        // one completion signal per grab, regardless of whether
         // any bytes actually moved over the wire. The user's act of tapping
         // Grab is the trigger — the routing effect in MainScreen expands
         // the bundle if needed and blinks the selected rows. This covers

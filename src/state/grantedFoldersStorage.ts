@@ -10,7 +10,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  * Each one still costs exactly one folder-picker dialog and no manifest
  * permission.
  *
- * This module replaces the single-URI `downloadsGrantStorage`.
+ * This module replaces the single-URI `downloadsGrantStorage` from
  * The old key is migrated in on first read so nobody has to
  * re-grant a folder they already granted.
  *
@@ -19,7 +19,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  */
 
 const STORAGE_KEY = "peardrop.granted-folder-uris";
-/** The legacy single-folder key. Read once, then folded into the list. */
+/** Sprint 5E's single-folder key. Read once, then folded into the list. */
 const LEGACY_KEY = "peardrop.downloads-tree-uri";
 
 let cache: string[] | undefined;
@@ -51,7 +51,7 @@ async function readFromStorage(): Promise<string[]> {
         return [];
       }
     }
-    // No list yet: fold in the legacy single-folder grant if present.
+    // No list yet: fold in the Sprint 5E single-folder grant if present.
     const legacy = await AsyncStorage.getItem(LEGACY_KEY);
     if (legacy && legacy.trim()) {
       const migrated = [legacy.trim()];

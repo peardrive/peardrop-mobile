@@ -1,5 +1,5 @@
 /**
- * Render a simulate-completion delay for the Settings label.
+ * render a simulate-completion delay for the Settings label.
  *
  * Lives here rather than beside the storage module because that module
  * imports AsyncStorage, which the jest config cannot load — a pure

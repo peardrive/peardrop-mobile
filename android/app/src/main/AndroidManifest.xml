@@ -6,7 +6,21 @@
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
   <!--
-    Photo-picker permission shape.
+    the foreground service that keeps a backgrounded transfer
+    running. Promoted out of src/instrumented/ — it now ships.
+
+    Measured 2026-09-13, screen locked, unplugged, phone untouched: the
+    background-armed service sustained the engine on both major vendors with
+    no user interaction, and on the Redmi outperformed the Autostart
+    permission it replaces (2.0 s worst gap against Autostart's own 29 s).
+
+    The base FOREGROUND_SERVICE permission is not declared here: it already
+    arrives from expo-video's library manifest. Only the dataSync subtype is
+    ours.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+  <!--
+    Photo-picker permission shape (Sprint 2D continued, 2026-05-14).
 
     Goal: on Android 14+ the system PhotoPicker shows a "PearDrop only
     has access to a few photos" banner whenever the app declares ANY
@@ -48,7 +62,7 @@
   </queries>
   <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false">
     <!--
-      Notification small icon + accent. Hand-written to match
+      notification small icon + accent. Hand-written to match
       exactly what expo-notifications' config plugin emits at prebuild
       (plugin/build/withNotificationsAndroid.js) so a future regeneration
       produces the same four entries rather than a diff:
@@ -57,7 +71,7 @@
       The plugin writes both the FCM and the expo-local key for each,
       so all four are listed even though this app has no FCM.
       Mirrored in app.json's expo-notifications plugin entry — same
-      belt-and-braces pattern used for the peardrop:// scheme.
+      belt-and-braces pattern 6E used for the peardrop:// scheme.
     -->
     <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/notification_icon"/>
     <meta-data android:name="expo.modules.notifications.default_notification_icon" android:resource="@drawable/notification_icon"/>
@@ -77,7 +91,7 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="peardrop.mobile"/>
         <!--
-          The share-link scheme the engine actually mints
+          the share-link scheme the engine actually mints
           (`peardrop://<64-hex>`, hyperdrive-engine.mjs createShareLink).
           `peardrop.mobile` stays first and untouched — expo-router and the
           dev client resolve their root URL from it. Android matches an
@@ -92,5 +106,15 @@
         <data android:scheme="peardrop"/>
       </intent-filter>
     </activity>
+    <!--
+      `stopWithTask=true`: swiping the app away is an explicit
+      "I'm done", and an ongoing notification surviving that reads as a leak.
+      Not exported — nothing outside this app has any business starting it.
+    -->
+    <service
+      android:name=".TransferService"
+      android:exported="false"
+      android:stopWithTask="true"
+      android:foregroundServiceType="dataSync"/>
   </application>
 </manifest>

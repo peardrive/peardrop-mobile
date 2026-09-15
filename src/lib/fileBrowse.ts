@@ -1,5 +1,5 @@
 /**
- * Pure list logic for the in-app file picker.
+ * pure list logic for the in-app file picker.
  *
  * The picker shows two sections: "Recent" (files this app has shared
  * before — real usage history, no permission needed) and "Downloads"
@@ -193,7 +193,7 @@ export function selectionSummary(
 }
 
 /**
- * What to draw in a row's leading slot.
+ * what to draw in a row's leading slot.
  *
  * Images get a real thumbnail (the platform `Image` can render the uri
  * directly — no generation step, no extra access). Everything else gets a
@@ -276,7 +276,7 @@ export function folderDisplayName(treeUri: string): string {
 }
 
 /**
- * Incremental reveal.
+ * incremental reveal.
  *
  * The Downloads listing can be large, and every image row mounts a real
  * `Image`. Rendering all of them at once is the jank risk, so the screen

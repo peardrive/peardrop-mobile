@@ -136,7 +136,7 @@ describe("handler registration", () => {
     enqueueIntent(share(LINK));
 
     expect(links).toEqual([LINK]);
-    // The notification intent waits for the handler to register.
+    // The notification intent waits for 6D to register its handler.
     expect(pendingIntentCount()).toBe(1);
 
     const taps: string[] = [];
@@ -215,7 +215,7 @@ describe("dedupe", () => {
   });
 });
 
-// The gate can hold an intent for an unbounded stretch, so
+// the gate can hold an intent for an unbounded stretch, so
 // handlers need to know how long it sat. The holder supplies the
 // timestamp and nothing else — the staleness policy is the consumer's.
 describe("timestamps", () => {

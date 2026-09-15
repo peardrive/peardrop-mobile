@@ -1,4 +1,4 @@
-// Sprint 5I: the export → (confirm) → reset orchestrator.
+// the export → (confirm) → reset orchestrator.
 //
 // RN-free by design. Every side effect arrives as an injected function so
 // the ordering guarantee below is a pure unit test with fakes, not an

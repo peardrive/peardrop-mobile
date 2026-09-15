@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
 
 import ConfirmModal from "./ConfirmModal";
-import { describeDuration } from "../lib/freezeDetect";
-import { openBackgroundSettings } from "../lib/openBackgroundSettings";
+import {
+  FALLBACK_CANCEL_LABEL,
+  FALLBACK_CONFIRM_LABEL,
+  fallbackCopyFor,
+} from "../lib/fallbackCopy";
+import { fallbackBrand, openFallbackSettings } from "../lib/openBackgroundSettings";
 import {
   markPrompted,
   shouldPrompt,
@@ -11,20 +15,28 @@ import {
 } from "../state/backgroundHealthStorage";
 
 /**
- * Offers the user the setting that stops the OS freezing this app.
- *
- * Shown only after a freeze has actually been observed. A permission request
- * at onboarding is asking about a problem the user has not had yet and gets
- * dismissed reflexively; a message that refers to something which just
- * happened to them does not.
- *
- * Shown ONCE, ever — on the first detected freeze, whichever
- * button is tapped. It is an offer, not a campaign; if the answer is no,
- * asking again is nagging. The Settings row is permanent, so declining here
- * costs the user nothing: the option stays where they can find it.
+ * Offers the per-OEM setting that stops this device freezing the app.
  *
  * Mounted app-wide rather than inside a screen, so it can appear on whatever
  * the user returned to. Renders nothing until there is something to say.
+ *
+ * ## Sprint 8A: this is now a LAST resort, not a first one
+ *
+ * 7A/7B showed this on the first detected freeze, because nothing else was
+ * trying to solve the problem. The foreground service now does, and on every
+ * device measured on 2026-09-13 it solved it without asking the user for
+ * anything. A lone freeze is therefore no longer grounds to send someone
+ * into system settings.
+ *
+ * `shouldPrompt` is gated on the fallback having triggered — three weighted
+ * service-attributed bad windows, meaning the service ran and this specific
+ * device stopped the app anyway. That is a real problem on a real device,
+ * and the copy says so plainly without promising the setting will fix it,
+ * because the mechanism that was supposed to fix it has already failed here.
+ *
+ * Still shown ONCE per prompt version, whichever button is tapped. It is an
+ * offer, not a campaign. Declining costs nothing: the Settings row appears
+ * at the same moment and stays.
  */
 export default function BackgroundRestrictionPrompt() {
   const [health, setHealth] = useState<BackgroundHealth | null>(null);
@@ -40,7 +52,10 @@ export default function BackgroundRestrictionPrompt() {
 
   const onOpenSettings = useCallback(() => {
     setVisible(false);
-    void openBackgroundSettings();
+    // One destination per manufacturer, each landing on a specific screen.
+    // The ladder and the copy read the same brand predicate, so the setting
+    // named in the body is the one on the screen that opens.
+    void openFallbackSettings();
   }, []);
 
   const onNotNow = useCallback(() => {
@@ -48,27 +63,21 @@ export default function BackgroundRestrictionPrompt() {
     // Nothing to record: `markPrompted` already fired when the prompt was
     // shown, so this is the last time we ask regardless of which button was
     // tapped. No "don't ask again" checkbox either — that would offer the
-    // user a decision the app has already made for them. The permanent
-    // Settings row is the way back.
+    // user a decision the app has already made for them. The Settings row,
+    // which appears once the fallback triggers, is the way back.
   }, []);
 
   if (!visible || !health) return null;
 
-  const duration = describeDuration(health.lastElapsedMs);
+  const copy = fallbackCopyFor(fallbackBrand());
 
   return (
     <ConfirmModal
       visible={visible}
-      title="PearDrop stopped while you were away"
-      body={
-        `Your phone paused PearDrop for ${duration} while it wasn't on screen, ` +
-        `so transfers couldn't continue.\n\n` +
-        `You can let it keep running in the background. Open settings, find ` +
-        `PearDrop's battery setting, and choose the option that doesn't ` +
-        `restrict it.`
-      }
-      confirmLabel="Open settings"
-      cancelLabel="Not now"
+      title={copy.title}
+      body={copy.body}
+      confirmLabel={FALLBACK_CONFIRM_LABEL}
+      cancelLabel={FALLBACK_CANCEL_LABEL}
       tone="primary"
       onConfirm={onOpenSettings}
       onCancel={onNotNow}

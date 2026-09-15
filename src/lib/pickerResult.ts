@@ -1,5 +1,5 @@
 /**
- * Pure decision logic for what happens after the OS-native
+ * pure decision logic for what happens after the OS-native
  * send-side picker returns.
  *
  * The picker itself is system UI we can't touch; everything we control is
@@ -73,7 +73,7 @@ export function pickerExitPlan(
         proceed: true,
       };
     case "cancelled":
-      // Contract: a deliberate back-out is silent —
+      // contract: a deliberate back-out is silent —
       // no toast, no error. The only noise is the one-time hint teaching
       // the return gesture, for the OEM pickers that ship no visible back
       // affordance.

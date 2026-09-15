@@ -26,7 +26,7 @@ const DRIVE_MANIFEST_MAX_SIZE = 64 * 1024;
 const DRIVE_MANIFEST_MAX_FILES = 1000;
 const MANIFEST_DOWNLOAD_SKIP = "/.peardrop.json";
 
-// Per-file stall watchdog on receive. If a peer
+// LLLLLLL: per-file stall watchdog on receive. If a peer
 // drops mid-file, hyperdrive's read stream waits forever for blocks
 // that never arrive. This value (matched to desktop v0.24.0's
 // downloader.js:36 STALL_TIMEOUT_MS) fails the file after 60 s of no
@@ -41,7 +41,7 @@ const DriveState = {
   // In-flight receiver-open. Persisted so the corestore folder is cleaned
   // up on next boot if the open didn't complete.
   SEEKING: "seeking",
-  // Data preserved locally, NOT announcing on the swarm. Both
+  // data preserved locally, NOT announcing on the swarm. Both
   // hosted (user stopped) and received (download finished) drives can land
   // here. Activate transitions them back to ACTIVE; Delete (engineStopDrive
   // with purge) is the only destructive path.
@@ -58,7 +58,7 @@ function normalizeState(s) {
 }
 
 /**
- * Every drive-state transition goes through here.
+ * every drive-state transition goes through here.
  *
  * Before this, `meta.state = DriveState.X` was assigned in nine places
  * with no record anywhere — a drive could go active → inactive → purged
@@ -92,7 +92,7 @@ const pendingConnections = new Map();
 const uploadTrackers = new Map();
 const fakeSessions = new Map();
 
-// Transient hydrate failures are tracked in memory,
+// JJJJJJJ: transient hydrate failures are tracked in memory,
 // not persisted to the manifest. A drive whose corestore folder is
 // briefly unreadable at boot (permission blip, race with an OS scan)
 // used to get `state: "failed"` written to disk, which permanently
@@ -127,7 +127,7 @@ function peardropLayout(root) {
 }
 
 async function loadManifest() {
-  // The load path is non-destructive. The reader parses
+  // the load path is now non-destructive. The reader parses
   // the manifest and returns it (or an empty manifest with a .corrupted
   // backup if the file was unreadable). It does not read the drives
   // folder; it does not prune entries. Per-drive missing-storage is
@@ -157,7 +157,7 @@ async function loadManifest() {
   }
 }
 
-// Drop any entry stuck
+// relocated from manifest-recovery.mjs. Drop any entry stuck
 // in CREATING or SEEKING (crash mid-share-create or mid-open) and rm
 // its corestore folder if we know where it is. Called once from
 // loadManifest during engineInit; not exposed.
@@ -168,7 +168,7 @@ async function cleanupInFlightManifestEntries() {
     if (stale.has(meta?.state)) toRemove.push([driveId, meta]);
   }
   if (toRemove.length === 0) return;
-  // This path DELETES user-visible drives and their
+  // this path DELETES user-visible drives and their
   // corestore folders at boot. It was entirely silent — a drive vanishing
   // between sessions had no trace at all. Log each removal individually.
   bwarn(
@@ -196,7 +196,7 @@ async function cleanupInFlightManifestEntries() {
   await saveManifest();
 }
 
-// Serialize saves through a chain so a burst of state
+// serialize saves through a chain so a burst of state
 // transitions (e.g., a rapid create-share followed by activate) can't
 // interleave temp-file writes. Each save awaits the previous one's
 // rename; the .catch(() => {}) isolates the next save from a failure
@@ -207,7 +207,7 @@ function saveManifest() {
   const next = _saveChain
     .catch(() => {})
     .then(() => atomicWriteJson(manifestPath, manifest));
-  // Almost every caller wraps this in `try { … } catch {}`
+  // almost every caller wraps this in `try { … } catch {}`
   // — a correct best-effort, and previously a blind spot at each of those
   // sites. Reporting the failure here covers all of them at once without
   // changing anyone's control flow (the returned promise is unchanged;
@@ -253,7 +253,7 @@ export async function engineInit(documentRoot) {
   initialized = true;
   startAliveTicker();
 
-  // Kick off rehydration in the background. Don't
+  // kick off rehydration in the background. Don't
   // await — engineInit must return promptly so the RN side can flip to
   // "listening" and accept user input. drive-hydrated events stream out
   // as each drive comes online (sequential with ~500 ms spacing).
@@ -327,10 +327,10 @@ function emitUploadProgressSnapshot(tracker) {
   });
 }
 
-// Upload progress comes from real Hyperdrive bytes-uploaded events, not a
-// socket.bytesWritten sampler. Hyperswarm sockets are UDX streams that
-// don't expose bytesWritten with Node-net semantics, so a sampler emits
-// percent=0 forever. This hooks directly into the
+// replace the broken socket.bytesWritten sampler
+// with real Hyperdrive bytes-uploaded events. Hyperswarm sockets are UDX
+// streams that don't expose bytesWritten with Node-net semantics, so the
+// old tracker emitted percent=0 forever. Now we hook directly into the
 // blobs core's 'upload' event — the same signal Hyperdrive's own Monitor
 // class uses — and attribute bytes to peers via remotePublicKey, which
 // matches the 12-hex peerId derived from swarm peerInfo.publicKey.
@@ -366,7 +366,7 @@ function bindHyperdriveUploadTracking(session) {
     // does its own accurate per-byte progress.
     if (!peer.completed && peer.sentBytes >= tracker.driveSize * 0.95) {
       peer.completed = true;
-      // This 95% threshold is a heuristic standing in for
+      // this 95% threshold is a heuristic standing in for
       // an exact byte match, because Hyperdrive's block accounting doesn't
       // sum to raw totalBytes (block overhead, varying block sizes) — the
       // same class of drift that made the old UDX `socket.bytesWritten`
@@ -417,7 +417,7 @@ function bindHyperdriveUploadTracking(session) {
   };
 }
 
-// Mirror of bindHyperdriveUploadTracking for the
+// mirror of bindHyperdriveUploadTracking for the
 // receive side. `engineDownload` was emitting one progress event per
 // file *after* `drive.get(key)` resolved — and drive.get blocks until
 // every block of that file has been replicated. For a single big file
@@ -562,7 +562,7 @@ function attachHostSwarm(session) {
       connectedAt: Date.now(),
       completed: false,
     });
-    // Peer lines carry driveId + peerId + the live
+    // peer lines now carry driveId + peerId + the live
     // peer count. "Peer connected" on its own never told us which drive
     // or how many were already attached.
     binfo(
@@ -597,8 +597,8 @@ function attachHostSwarm(session) {
   bindHyperdriveUploadTracking(session);
 
   const done = drive.findingPeers();
-  // Announce must stay traced — without it, "peers stopped finding me"
-  // has no evidence at all. Log the join and the flush result.
+  // announce was completely untraced — "peers stopped
+  // finding me" had no evidence at all. Log the join and the flush result.
   binfo("engine.swarm", `join drive=${driveId} announcing discoveryKey`);
   swarm.join(drive.discoveryKey);
   swarm.flush().then(
@@ -615,7 +615,7 @@ function attachHostSwarm(session) {
   return swarm;
 }
 
-// Rehydrate previously-active drives from disk on
+// rehydrate previously-active drives from disk on
 // engine boot. Approach A — corestore rehydration. The corestore under
 // `peardrop/drives/<driveId>/` already contains every block ever written,
 // so we just reopen it, recreate the Hyperdrive with the recorded key,
@@ -628,15 +628,16 @@ function attachHostSwarm(session) {
 // "I don't want this anymore" signal.
 //
 // Hydration is sequential with a small inter-drive delay to avoid swarm
-// strain on boot. Failure on a single drive is non-fatal: the manifest
-// entry is left untouched and the failure lands
+// strain on boot. Failure on a single drive is non-fatal: since
+// the manifest entry is left untouched and the failure lands
 // in the in-memory `resumeErrors` map instead, so the next boot
 // re-attempts. A drive that succeeded on this boot has any stale
 // resumeError cleared.
 function recordHydrateFailure(driveId, message, detail) {
   resumeErrors.set(driveId, { error: message, at: Date.now() });
-  // resumeErrors must carry more than a bare message string: give the
-  // trace the typed category/cause shape the rest of the taxonomy uses.
+  // resumeErrors used to carry a bare message string with
+  // no category/cause, and nothing logged it. Give the trace the typed
+  // shape the rest of the taxonomy uses.
   berror(
     "engine.hydrate",
     `hydrate failed drive=${driveId} category=drive.hydrate-fail cause=hydrate-fail ` +
@@ -658,13 +659,13 @@ export async function engineHydrateDrives() {
     };
   }
 
-  // Hydrate both ACTIVE (full hydration — open store, attach swarm)
+  // hydrate both ACTIVE (full hydration — open store, attach swarm)
   // AND INACTIVE entries (light hydration — RN learns the drive exists, no
   // swarm contact). The legacy STOPPED state is mapped to INACTIVE so older
   // manifests behave correctly.
-  // The filter must not drop drives silently — a bad key or a missing
-  // storagePath would mean the drive simply never appears, with nothing
-  // anywhere saying why. Each rejection names its reason.
+  // the filter used to drop drives silently — a bad key
+  // or a missing storagePath meant the drive simply never appeared, with
+  // nothing anywhere saying why. Each rejection now names its reason.
   const all = Object.values(manifest.drives || {});
   const entries = all.filter((d) => {
     if (!d || typeof d !== "object") {
@@ -704,7 +705,7 @@ export async function engineHydrateDrives() {
       try {
         await fs.access(entry.storagePath);
       } catch {
-        // Non-destructive. Do not mark the entry as
+        // JJJJJJJ: non-destructive. Do not mark the entry as
         // "failed" in the manifest — a transient error (permission blip,
         // race with an OS scan) used to permanently demote the drive.
         // Track the failure in memory only; emit the standard event so
@@ -722,7 +723,7 @@ export async function engineHydrateDrives() {
         // Light hydration: announce the entry to RN without joining the
         // swarm or opening the corestore. The corestore is only touched
         // again when the user activates the drive.
-        // Also clear any stale resumeError — the
+        // JJJJJJJ: also clear any stale resumeError — the
         // drive light-hydrated cleanly this boot.
         resumeErrors.delete(entry.driveId);
         emitEvent({
@@ -763,7 +764,7 @@ export async function engineHydrateDrives() {
       session.swarm = swarm;
 
       activeDrives.set(entry.driveId, session);
-      // A successful hydrate clears any stale
+      // JJJJJJJ: a successful hydrate clears any stale
       // resumeError left over from a prior boot's transient failure.
       resumeErrors.delete(entry.driveId);
       emitEvent({
@@ -776,7 +777,7 @@ export async function engineHydrateDrives() {
       });
       hydrated++;
     } catch (err) {
-      // Non-destructive. Do not persist "failed".
+      // JJJJJJJ: non-destructive. Do not persist "failed".
       recordHydrateFailure(entry.driveId, String(err?.message || err), err);
       failed++;
     }
@@ -793,7 +794,7 @@ export async function engineHydrateDrives() {
   return { ok: true, hydrated, failed, considered: entries.length };
 }
 
-// Nudge every active drive's swarm to re-announce.
+// nudge every active drive's swarm to re-announce.
 // Called by RN on AppState background→active transitions and on a 90 s
 // foreground interval. Cheap: swarm.flush() pushes any pending announces
 // and refreshes the DHT presence.
@@ -814,7 +815,7 @@ export async function engineRefreshSwarm() {
   const flushes = [];
   let rejoined = 0;
 
-  // This runs on a 90 s foreground interval and on every
+  // this runs on a 90 s foreground interval and on every
   // background→active transition, and it was entirely silent. When a
   // tester reports "it worked, then peers stopped finding me", this is
   // the loop whose behaviour we need to see.
@@ -894,7 +895,7 @@ export async function engineShareFromPaths(paths, relPaths) {
     return cleaned || null;
   };
 
-  // Stat the files up-front instead of reading their bytes.
+  // stat the files up-front instead of reading their bytes.
   // Stat validates readability and captures the authoritative size for
   // the manifest — keeping the pre-existing "fail fast if anything is
   // unreadable" semantic without holding any file content in memory.
@@ -981,7 +982,7 @@ export async function engineShareFromPaths(paths, relPaths) {
   setDriveState(metadata, DriveState.CREATING, "engineShareFromPaths: begin");
   await saveManifest();
 
-  // The wire caps a drive manifest at 1000 entries. Over
+  // the wire caps a drive manifest at 1000 entries. Over
   // that, the receiver silently sees a truncated list — worth a loud line
   // on the sending side too, not just the receiver's truncation hint.
   if (fileList.length > DRIVE_MANIFEST_MAX_FILES) {
@@ -995,7 +996,7 @@ export async function engineShareFromPaths(paths, relPaths) {
     let totalBytes = 0;
     const fileEntries = [];
 
-    // Stream each file in sequentially. The size already came
+    // stream each file in sequentially. The size already came
     // from fs.stat above so the manifest entry doesn't depend on byte
     // counters flowing through the pipe. Sequential by design — parallel
     // transfers were explicitly descoped from this sprint.
@@ -1086,7 +1087,7 @@ export async function engineShareFromPaths(paths, relPaths) {
     } catch (e) {
       swallowed("engine.share", "rm drivePath on create-fail", e);
     }
-    // Normalize the rethrow so uncaught bubbles have typed
+    // normalize the rethrow so uncaught bubbles have typed
     // shape too. Preserves the underlying err via detail.code.
     throw wrapError(err, {
       category: "share.drive-create-fail",
@@ -1130,7 +1131,7 @@ export async function engineOpenDrive(shareLink) {
   await drive.ready();
   bdebug("engine.open", `corestore+hyperdrive opened drive=${driveId} at ${drivePath}`);
 
-  // D3.4: persist a SEEKING entry so the corestore folder isn't an orphan
+  // persist a SEEKING entry so the corestore folder isn't an orphan
   // if the user kills the app before the open resolves. The cleanup pass
   // on next boot removes any SEEKING entries with their storagePath.
   manifest.drives[driveId] = {
@@ -1152,7 +1153,7 @@ export async function engineOpenDrive(shareLink) {
   await saveManifest();
 
   const swarm = new Hyperswarm();
-  // Receive-side peer count, so the log can distinguish
+  // receive-side peer count, so the log can distinguish
   // "no peer ever arrived" from "a peer arrived and then dropped".
   const connectedPeerIds = new Set();
 
@@ -1195,7 +1196,7 @@ export async function engineOpenDrive(shareLink) {
     driveId,
     aborted: false,
     cleanup: async () => {
-      // Four best-effort teardown steps, each otherwise a
+      // four best-effort teardown steps, each previously a
       // bare `catch {}`. Behaviour unchanged; the failures are now visible.
       bdebug("engine.open", `cleanup start drive=${driveId}`);
       try {
@@ -1218,7 +1219,7 @@ export async function engineOpenDrive(shareLink) {
       } catch (e) {
         swallowed("engine.open", `rm ${drivePath}`, e);
       }
-      // D3.4: drop the SEEKING manifest entry so we don't leak a stale
+      // drop the SEEKING manifest entry so we don't leak a stale
       // record pointing at a folder we just removed.
       if (manifest.drives[driveId]) {
         delete manifest.drives[driveId];
@@ -1269,7 +1270,7 @@ export async function engineOpenDrive(shareLink) {
     }
     pendingConnections.delete(driveId);
     await pendingConnection.cleanup();
-    // Distinguish user-cancellation from other open failures.
+    // distinguish user-cancellation from other open failures.
     // The abort race throws with "Connection cancelled by user" — the
     // cause label makes it easy for RN to hide the toast on cancel.
     const isCancel = /cancell?ed/i.test(String(err?.message || ""));
@@ -1325,7 +1326,7 @@ export async function engineOpenDrive(shareLink) {
       ) {
         shareName = manifestData.name;
         totalBytes = manifestData.totalBytes || 0;
-        // D5.1: surface a truncation hint when the manifest declares more
+        // surface a truncation hint when the manifest declares more
         // files than the 1000-entry cap allows. The cap is wire-level
         // (DRIVE_MANIFEST_MAX_FILES) and applies equally to both sides;
         // before this hint, mobile silently dropped the overflow.
@@ -1340,7 +1341,7 @@ export async function engineOpenDrive(shareLink) {
           );
         }
         files = manifestData.files.slice(0, DRIVE_MANIFEST_MAX_FILES).map((f) => {
-          // D1.1: when `path` is missing from the manifest entry, fall back
+          // when `path` is missing from the manifest entry, fall back
           // to the basename. Previous behavior produced `name: "/"` which
           // the receiver can't `drive.get`. Matches desktop's fallback.
           const rawPath = f.path || f.name || "";
@@ -1386,7 +1387,7 @@ export async function engineOpenDrive(shareLink) {
     }
   }
 
-  // Transition the SEEKING entry to ACTIVE rather than deleting
+  // transition the SEEKING entry to ACTIVE rather than deleting
   // it. The receiver drive is now a first-class manifest entry — preserved
   // across restarts, eligible for explicit activate/deactivate. After
   // engineDownload completes the entry settles into INACTIVE.
@@ -1423,7 +1424,7 @@ export async function engineOpenDrive(shareLink) {
   };
   activeDrives.set(driveId, session);
 
-  // Stream live progress events as blocks land,
+  // stream live progress events as blocks land,
   // not just one event per file-completion. Hooks blobs.core / db.core
   // 'download' so the receiver UI shows real movement on big files.
   bindHyperdriveDownloadTracking(session);
@@ -1493,7 +1494,7 @@ export async function engineStopDrive(driveId, opts = { purge: true }) {
   const purge = opts.purge !== false;
   binfo("engine.stop", `stop drive=${driveId} purge=${purge} (purge deletes local storage)`);
 
-  // Detach the download-event listener (if any) before closing
+  // detach the download-event listener (if any) before closing
   // the drive so blobs.core doesn't keep firing into a stale closure.
   if (typeof session._unhookDownload === "function") {
     try {
@@ -1576,7 +1577,7 @@ async function uniquePath(destPath) {
   return destPath;
 }
 
-// D2.4: same disambiguation pattern for folders (no extension splitting).
+// same disambiguation pattern for folders (no extension splitting).
 async function uniqueFolderPath(destPath) {
   try {
     await fs.access(destPath);
@@ -1596,7 +1597,7 @@ async function uniqueFolderPath(destPath) {
   return destPath;
 }
 
-// Stream a file from disk into the drive. Replaces the
+// stream a file from disk into the drive. Replaces the
 // `fs.readFile(...) → drive.put(name, buf)` pair, which held the whole
 // file in memory and OOM'd on media around 200-300 MB.
 //
@@ -1630,12 +1631,12 @@ function pipeFileToDrive(srcPath, drive, driveStoragePath) {
   });
 }
 
-// Stream a file out of the drive to disk. Replaces the
+// stream a file out of the drive to disk. Replaces the
 // `drive.get(key) → fs.writeFile(path, buf)` pair on the receiver side.
 // On any pipe error the partial output file is unlinked so the user
 // doesn't end up with a half-written file in their downloads.
 //
-// A stall watchdog guards this. If the peer drops
+// LLLLLLL: added a stall watchdog. If the peer drops
 // mid-file, hyperdrive's read stream waits forever for blocks that
 // never arrive and this promise would hang the whole engineDownload
 // loop. Arm a STALL_TIMEOUT_MS setTimeout on the read stream; re-arm
@@ -1643,7 +1644,7 @@ function pipeFileToDrive(srcPath, drive, driveStoragePath) {
 // reject with a file-stall cause so the outer catch can unlink the
 // partial file and move on to the next entry. Matched to desktop
 // v0.24.0's downloader.js:155-184.
-// FileStallError is an EngineError subclass. The name
+// FileStallError is now an EngineError subclass. The name
 // stays for stack-trace clarity and test-tripwire stability; category /
 // cause / toJSON come from the base class.
 class FileStallError extends EngineError {
@@ -1711,7 +1712,7 @@ function pipeDriveToFile(drive, driveKey, destPath) {
   });
 }
 
-// D2.3: sender controls the share name. Strip anything that could traverse
+// sender controls the share name. Strip anything that could traverse
 // out of the destination directory or break the host filesystem before
 // using it as a folder name.
 function sanitizeFolderName(raw) {
@@ -1764,7 +1765,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
     filesToDownload.push({ key: entry.key });
   }
 
-  // D2.3 + D2.4 + D2.5: match desktop's folder-share UX. When the share
+  // + D2.4 + D2.5: match desktop's folder-share UX. When the share
   // represents a folder (multi-file, or a single-entry share with a
   // folder-style name), wrap downloads under <outDir>/<shareName>/ and
   // disambiguate against existing folders. Cached on the session so a
@@ -1815,7 +1816,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
   // The RN side now classifies transfers by drive origin (hosted vs
   // received), so emitting a fake self-peer only confused the UI.
 
-  // Compute the selected-file total so the live download
+  // compute the selected-file total so the live download
   // tracker (bindHyperdriveDownloadTracking) emits percent against the
   // *current download call's* expected bytes, not the whole-drive total.
   // Otherwise downloading 1 file out of 3 would cap the percent at ~33%
@@ -1852,7 +1853,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
   for (const file of selected) {
     let filePath = null;
     try {
-      // Peer-provided keys are untrusted. safePathWithin
+      // KKKKKKK: peer-provided keys are untrusted. safePathWithin
       // rejects `..` traversal, absolute paths, drive-letter escapes, and
       // NUL-byte tricks. On rejection the file is skipped and pushed to
       // failedFiles with a peer-path-traversal cause; the download loop
@@ -1875,7 +1876,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
       }
       const fileStart = Date.now();
 
-      // Stream from the drive into the file. Replaces the
+      // stream from the drive into the file. Replaces the
       // `drive.get(key) → fs.writeFile(path, buf)` pair, which OOM'd on
       // media. The pipe completes successfully even for 0-byte entries
       // (hyperdrive's createReadStream pushes null with no data).
@@ -1884,7 +1885,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
       // Authoritative size from disk; we don't trust byte counters that
       // flow through the stream because hyperdrive's block accounting
       // can drift from raw file bytes (the same drift that makes the
-      // sender-side 95% completion threshold necessary).
+      // sender-side 95% completion threshold necessary in Phase GG).
       let fileSize = 0;
       try {
         const stats = await fs.stat(filePath);
@@ -1905,7 +1906,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
         size: fileSize,
       });
     } catch (fileError) {
-      // With streams a torn write can leave a partial file
+      // with streams a torn write can leave a partial file
       // on disk. Unlink best-effort so the user doesn't end up with a
       // half-written file in their downloads.
       if (filePath) {
@@ -1915,7 +1916,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
           swallowed("engine.download", `unlink partial ${filePath}`, e);
         }
       }
-      // Carry a typed cause when we have one so RN
+      // KKKKKKK: carry a typed cause when we have one so RN
       // can distinguish a peer-hostile path from a local disk failure.
       // Emit `peer-rejected` for path-traversal so the UI can surface it
       // separately from ordinary transfer errors. Non-typed failures
@@ -1973,7 +1974,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
   // computing percent against this call's expected bytes.
   session._dlExpected = 0;
 
-  // Settle the manifest entry into INACTIVE so the drive
+  // settle the manifest entry into INACTIVE so the drive
   // persists across restarts. The local file paths are saved on the entry
   // so the kebab can offer "Open in another app" later. Tear down the swarm
   // since the user's primary intent (grab the files) is satisfied; they can
@@ -2061,7 +2062,7 @@ export function engineStatus() {
 }
 
 export function engineListDrives() {
-  // Every drive in the manifest is reported (active + inactive),
+  // every drive in the manifest is reported (active + inactive),
   // not just the in-process active sessions. RN's unified list reads from
   // this; per-drive state determines visual treatment.
   const drives = [];
@@ -2089,7 +2090,7 @@ export function engineListDrives() {
   return drives;
 }
 
-// Take an inactive (or never-attached) manifest entry and bring
+// take an inactive (or never-attached) manifest entry and bring
 // its drive online — reopen corestore, recreate Hyperdrive against the
 // recorded key, attach a swarm. Hosted and received drives are symmetric
 // from this entry-point: both end up as a host on the swarm announcing
@@ -2191,7 +2192,7 @@ export async function engineActivateDrive(driveId) {
   }
 }
 
-// Tear down the swarm + drive session but keep storage and the
+// tear down the swarm + drive session but keep storage and the
 // manifest entry intact. Distinct from engineStopDrive({purge:true}) which
 // is the destructive Delete path.
 export async function engineDeactivateDrive(driveId) {
@@ -2298,9 +2299,9 @@ export function engineFakeUploadTest(opts = {}) {
   // and decides the notification wording.
   const driveId = opts.__driveId ? String(opts.__driveId) : generateDriveId("fake");
 
-  // Delayed start, so a tester can background the app before the
-  // completion lands. The timer is deliberately worklet-side: RN's
-  // `setInterval` was measured frozen for 558-669 s while backgrounded, so an
+  // delayed start, so a tester can background the app before the
+  // completion lands. The timer is deliberately worklet-side: 6H measured
+  // RN's `setInterval` frozen for 558-669 s while backgrounded, so an
   // RN-side delay would not fire until the app returned to the foreground
   // and would test nothing. The worklet's own timers kept perfect 2 s
   // cadence across the same windows.

@@ -1,4 +1,4 @@
-// Tripwire for the non-destructive manifest loader.
+// tripwire for the non-destructive manifest loader.
 // backend/manifest-recovery.mjs uses bare-fs; Jest can't load it. This
 // test mirrors the same load logic against node:fs.promises and asserts
 // the "never prune, never touch drive folders" guarantees that are the
@@ -81,7 +81,7 @@ async function loadManifest(
 
 // --- Tests --- //
 
-describe("loadManifest — non-destructive loader tripwire", () => {
+describe("loadManifest (Sprint 3Q — non-destructive loader tripwire)", () => {
   let tmp: string;
   let manifestPath: string;
 

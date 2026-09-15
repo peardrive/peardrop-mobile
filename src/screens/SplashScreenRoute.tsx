@@ -26,7 +26,7 @@ export default function SplashScreenRoute() {
         index: 0,
         routes: [{ name: done ? "Main" : "Onboarding" }],
       });
-      // A link tapped from another app can be delivered before
+      // a link tapped from another app can be delivered before
       // this reset runs, and the reset would discard anything acted on
       // earlier. So incoming intents are held (see lib/pendingIntents)
       // and released here, after the reset — but only for a returning

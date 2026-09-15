@@ -21,7 +21,7 @@ import { EngineError, wrapError } from "./engine-errors.mjs";
 let storedBaseDir = null;
 let bridgeStarted = false;
 
-// Wrap any thrown value in an EngineError before returning
+// wrap any thrown value in an EngineError before returning
 // the failure shape to the RPC layer. `bridge.unexpected` catches
 // programmer errors that leak past the engine's own typed sites; the
 // engine's typed errors pass through untouched (wrapError is a no-op).

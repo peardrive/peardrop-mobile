@@ -22,7 +22,7 @@ import { DEFAULT_THEME_ID, themes } from "../ui/themes";
 export const TRANSFER_CHANNEL_ID = "transfers";
 
 /**
- * The accent Android tints the notification's small icon with.
+ * the accent Android tints the notification's small icon with.
  *
  * Read from the theme rather than restated as a hex, so the notification
  * cannot drift away from the app. `paper` is `DEFAULT_THEME_ID`; a fixed
@@ -80,7 +80,7 @@ export async function ensureNotificationsReady(): Promise<void> {
         await Notifications.setNotificationChannelAsync(TRANSFER_CHANNEL_ID, {
           name: "Transfers",
           importance: Notifications.AndroidImportance.DEFAULT,
-          // The notification LED / edge-light colour. Distinct
+          // the notification LED / edge-light colour. Distinct
           // from the small-icon tint below — this one is a channel property
           // and Android freezes it at creation, so changing it later needs
           // a channel id change (which is out of scope and would orphan
@@ -134,7 +134,7 @@ export async function notifyTransferComplete(options: {
         title: options.title,
         body: options.body,
         sound: true,
-        // Tints the small icon. ExpoNotificationBuilder resolves
+        // tints the small icon. ExpoNotificationBuilder resolves
         // `notificationContent.color ?: <manifest meta-data>`, so this wins
         // over the build-time default and works even on a build whose
         // manifest predates the meta-data.

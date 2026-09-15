@@ -1,4 +1,4 @@
-// Structured engine errors.
+// structured engine errors.
 //
 // One base class, one convention. Every engine failure — thrown or
 // returned via {ok:false, error} — is an EngineError with:
@@ -24,7 +24,7 @@
 // in Unify_process/proposal.md §5.5. Keep the two in sync when adding
 // categories.
 //
-// The taxonomy self-records. Every EngineError logs
+// the taxonomy now self-records. Every EngineError logs
 // itself at construction with category + cause + detail intact, so the
 // ~25 `failure()` sites, the 11 bridge wrappers and `outerCatchReply`
 // all became instrumented in one edit — no per-site logging needed. This
@@ -40,7 +40,7 @@ export class EngineError extends Error {
     this.category = String(category ?? "internal.unexpected");
     this.cause = String(cause ?? "unknown");
     if (detail !== undefined) this.detail = detail;
-    // Self-record. `blog` is a no-op when debugging is off, so
+    // self-record. `blog` is a no-op when debugging is off, so
     // this costs one boolean test on the error path when the flag is down.
     blog("error", "engine.error", describeError(this));
   }

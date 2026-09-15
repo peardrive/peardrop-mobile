@@ -39,7 +39,7 @@ export type FolderContentsFile = {
   isActiveShare?: boolean;
   /** When true, the row is dimmed (not-on-device / missing). */
   dim?: boolean;
-  /** Child-blink flash. */
+  /** child-blink flash. */
   blink?: boolean;
   onPress?: () => void;
   onRightControlPress?: () => void;

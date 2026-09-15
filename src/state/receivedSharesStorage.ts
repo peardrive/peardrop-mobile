@@ -7,7 +7,7 @@ import {
 } from "./receivedFilesStorage";
 
 /**
- * Per-share identity model. The unit is the share, not the
+ * Per-share identity model (Sprint 3J). The unit is the share, not the
  * individual file: one record per unique share key (the 64-hex public
  * key from the peardrop:// link). Each share carries the manifest's file
  * list, with per-file flags + local-path metadata for the ones that have
@@ -38,7 +38,7 @@ export type ReceivedShare = {
   firstSeenAt: number;
   lastUpdatedAt: number;
   files: ReceivedShareFile[];
-  /** Organizational flags. Records loaded from disk that
+  /** organizational flags. Records loaded from disk that
    *  predate this sprint return undefined here — readers treat absent
    *  values as `false`. */
   isPinned?: boolean;
@@ -333,7 +333,7 @@ export async function deleteShare(shareKey: string): Promise<ReceivedShare[]> {
   return next;
 }
 
-/** Flip a share's pin flag. Updates lastUpdatedAt? No — pinning
+/** flip a share's pin flag. Updates lastUpdatedAt? No — pinning
  *  is meta, not new content; `lastUpdatedAt` should not move (otherwise
  *  pinning would reorder the recency sort within the pinned group). */
 export async function setSharePinned(

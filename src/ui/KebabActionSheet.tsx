@@ -20,7 +20,7 @@ export type KebabActionItem = {
 };
 
 /**
- * Identity header at the top of the kebab sheet — matches the design
+ * v5: identity header at the top of the kebab sheet — matches the design
  * deck's "who is this action list about" cue. Thumbnail rendering mirrors
  * ShareRow so the item reads identically wherever it appears.
  */

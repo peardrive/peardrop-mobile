@@ -139,20 +139,20 @@ function createStyles(theme: AppTheme) {
     statusLine: { color: theme.muted, marginBottom: 10, fontSize: 12 },
     middleSection: { marginTop: 2, minHeight: 120 },
     sectionLabel: { color: theme.muted, fontSize: 12, fontWeight: "600", marginBottom: 8, letterSpacing: 0.4 },
-    // Phase O: shape for the SwipeableRow wrapper around a standalone
+    // shape for the SwipeableRow wrapper around a standalone
     // bundle card — full rounded corners so the swipe-reveal red backing
     // matches the bundle card's rounding.
     bundleSwipeWrap: {
       borderRadius: 16,
     },
-    // When paired with a transfer card below,
+    // when paired with a transfer card below,
     // round only the top corners so the swipe-reveal backing matches
     // the bundle card's flattened bottom edge.
     bundleSwipeWrapPaired: {
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
     },
-    // Minimal launcher card. Tap opens the QR/action
+    // minimal launcher card. Tap opens the QR/action
     // modal; swipe-to-delete (Phase O) still handles stop/remove. Dormant
     // and failed states are now signaled through opacity + a small icon
     // rather than prose.
@@ -181,15 +181,15 @@ function createStyles(theme: AppTheme) {
       marginTop: 4,
     },
     bundleStateIcon: { marginRight: 2 },
-    // A filename summary, not a hex verify-tail.
-    // Same visual treatment (muted, small) but
+    // renamed semantically from a hex verify-tail
+    // to a filename summary. Same visual treatment (muted, small) but
     // without the tabular-nums variant — filenames aren't digit grids.
     bundleVerify: {
       color: theme.muted,
       fontSize: 12,
       flexShrink: 1,
     },
-    // Peer-connected indicator. A small filled
+    // peer-connected indicator. A small filled
     // circle in the bundleSubRow next to the verify tail. Pulses opacity
     // while at least one peer is connected; vanishes when none. Color is
     // theme.primary to read as "active" without being alarming.
@@ -215,7 +215,7 @@ function createStyles(theme: AppTheme) {
       alignItems: "center",
       justifyContent: "center",
     },
-    // Visual pairing of bundle + transfer. When a
+    // visual pairing of bundle + transfer. When a
     // hosted bundle has an active transfer card, render the transfer
     // directly beneath it with flattened touching edges so they read as
     // one stacked unit. The SwipeableRow still wraps the bundle card
@@ -295,7 +295,7 @@ export default function HomeScreen() {
   const [folderBusy, setFolderBusy] = useState(false);
   const [bundles, setBundles] = useState<ShareBundle[]>([]);
   const [expandedDriveIds, setExpandedDriveIds] = useState<Record<string, boolean>>({});
-  // The QR modal is the action hub. Open by id so
+  // the QR modal is the action hub. Open by id so
   // the modal can also drive Stop-sharing without a separate path.
   const [qrBundleId, setQrBundleId] = useState<string | null>(null);
   const [peekTopmost, setPeekTopmost] = useState(false);
@@ -310,7 +310,7 @@ export default function HomeScreen() {
     // Show only transfers originating from drives we host. Anything that
     // came in via a share link belongs on the Receive tab.
     const hosted = transfers.filter((t) => t.origin === "hosted");
-    // Phase V: in user mode, hide hosted transfers that are still in their
+    // in user mode, hide hosted transfers that are still in their
     // seeded state (no peer has ever connected, no progress, not completed).
     // The bundle card by itself communicates "share is live, waiting for
     // someone to grab it" — surfacing a separate "Waiting for the other
@@ -345,7 +345,7 @@ export default function HomeScreen() {
 
   const onPeekDone = useCallback(() => setPeekTopmost(false), []);
 
-  // Pulsing dot animation for the "peer connected"
+  // pulsing dot animation for the "peer connected"
   // indicator on bundle cards. One shared Animated.Value loops opacity
   // 0.35 ↔ 1.0 over 1200 ms; every visible indicator uses it, so the
   // pulse is in sync across cards. Native driver: yes (opacity only).
@@ -394,7 +394,7 @@ export default function HomeScreen() {
     return m;
   }, [transfers]);
 
-  // First time the user opens a picker and backs
+  // first time the user opens a picker and backs
   // out without selecting anything, show a one-time educational toast.
   // Some Android pickers (Google Drive especially) don't expose an
   // obvious back button — users got stuck repeatedly. We can't add UI to
@@ -446,7 +446,7 @@ export default function HomeScreen() {
   // fires we leave the card alone; the next completion cycle schedules
   // its own clear.
   //
-  // Phase R adjustment: was 4 s. Real-world transfers complete in well under
+  // adjustment: was 4 s. Real-world transfers complete in well under
   // a second (Hyperdrive replication is fast for small drives), and the
   // engine's 1 Hz socket.bytesWritten sampler doesn't track Hyperdrive bytes
   // accurately, so the card flashes "Sending" → "Sent" too quickly to
@@ -504,7 +504,7 @@ export default function HomeScreen() {
         return;
       }
       if (res.canceled) {
-        // Silent on cancel, except for the first-ever cancel
+        // silent on cancel, except for the first-ever cancel
         // where we surface a one-time hint about returning from pickers.
         maybeShowPickerBackHint();
         return;
@@ -512,8 +512,8 @@ export default function HomeScreen() {
 
       const out = await sharePaths(paths);
       if (!out.ok || !out.shareLink) {
-        // Phase V: out.error was the raw backend message (e.g., "Cannot read
-        // file (...): EACCES"). out.error is a structured
+        // out.error was the raw backend message (e.g., "Cannot read
+        // file (...): EACCES"). Sprint 3S: out.error is now a structured
         // {category, cause, message, detail?} object; errorMessage extracts
         // the display string. Dev mode surfaces the raw engine message;
         // production shows the friendly fallback.
@@ -649,7 +649,7 @@ export default function HomeScreen() {
   async function onPickPhotos() {
     setPhotoBusy(true);
     try {
-      // Use expo-image-picker for true multi-select on
+      // use expo-image-picker for true multi-select on
       // Android (Storage Access Framework via DocumentPicker treats most
       // single-tap photo selections as "pick and exit," which doesn't match
       // user expectations). expo-image-picker on Android 13+ launches the
@@ -657,7 +657,7 @@ export default function HomeScreen() {
       // Done button); Android ≤12 falls back to MediaStore which needs
       // READ_EXTERNAL_STORAGE — declared capped to API 32 in AndroidManifest.
       //
-      // On older Android, launchImageLibraryAsync can throw
+      // fix: on older Android, launchImageLibraryAsync can throw
       // outright (permission denied, vendor-customized gallery missing, OEM
       // ROM quirk). Wrap it in try/catch so we fall back to DocumentPicker
       // with `type: "image/*"` rather than dead-ending the user. The
@@ -710,7 +710,7 @@ export default function HomeScreen() {
       }
 
       if (userCanceled) {
-        // Silent on cancel, except for the first-ever cancel
+        // silent on cancel, except for the first-ever cancel
         // where we surface a one-time hint about returning from pickers.
         maybeShowPickerBackHint();
         return;
@@ -779,7 +779,7 @@ export default function HomeScreen() {
     // disappears. Used by both the "Stop sharing" / "Clear" header button
     // and the swipe-delete affordance.
     //
-    // "live" is derived from activeDriveIds — a
+    // "live" is now derived from activeDriveIds — a
     // bundle marked `dormant: true` at load time may have since been
     // rehydrated by the engine and is therefore live. We always call
     // cancelTransfer(purge: true) when there's a driveId: the engine's
@@ -826,7 +826,7 @@ export default function HomeScreen() {
     );
   }
 
-  // Split visibleTransfers into (a) transfers
+  // split visibleTransfers into (a) transfers
   // that pair with a known bundle and (b) orphans (transfer exists but
   // no bundle on screen — e.g. a transfer that landed before its bundle
   // hydrated, or one for a bundle the user already cleared). The
@@ -854,7 +854,7 @@ export default function HomeScreen() {
           <Text style={styles.sub}>Send, track, receive — one home for it all.</Text>
 
           {/*
-           * Phase V: backend lifecycle status ("booting" / "listening" /
+           * backend lifecycle status ("booting" / "listening" /
            * "ready" / "error" / "boot error") is engineering vocabulary —
            * useful while debugging, meaningless to a non-technical user.
            * Gated behind dev mode. The `ready` boolean still drives the
@@ -930,7 +930,7 @@ export default function HomeScreen() {
               const isFailed =
                 !!bundle.driveId && failedHydrationIds.has(bundle.driveId);
               const isDormant = !!bundle.driveId && !isLive && !isFailed;
-              // Human-readable filename summary
+              // human-readable filename summary
               // replaces the old `…7f43c` hex tail. Single file → name
               // (truncated middle). Multi → first name + "+ N more".
               // Fallback to "shared files" if the bundle has no file
@@ -949,7 +949,7 @@ export default function HomeScreen() {
                 bundle.files.length === 1
                   ? "1 file"
                   : `${bundle.files.length} files`;
-              // Peer-connected indicator state for this bundle.
+              // peer-connected indicator state for this bundle.
               const bundleTransfer = bundle.driveId
                 ? transferByDriveId.get(bundle.driveId)
                 : undefined;
@@ -967,7 +967,7 @@ export default function HomeScreen() {
                   ? `, ${peerCount === 1 ? "one pear connected" : `${peerCount} pears connected`}`
                   : ""
               }`;
-              // Does this bundle have an active
+              // does this bundle have an active
               // transfer to pair with? If so, the bundle card flattens
               // its bottom edge and we render the transfer card flush
               // beneath it as one stacked unit.
@@ -1072,7 +1072,7 @@ export default function HomeScreen() {
               );
             })}
 
-            {/* Orphan transfers — transfers with no
+            {/* orphan transfers — transfers with no
              * matching bundle on screen. Rare (transient hydration race,
              * or bundle cleared while a transfer is mid-flight). Rendered
              * separately so they're not invisible. */}
@@ -1083,7 +1083,7 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* The picker buttons at the top already
+            {/* the picker buttons at the top already
              * communicate "this is where shares come from"; an extra
              * instructional empty-state was prose-as-decoration. Render
              * nothing when the list is empty; the page is intentionally

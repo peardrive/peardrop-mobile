@@ -2,7 +2,7 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/iconBackground"/>
     <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-    <!-- Themed-icon support (Android 13+). Ignored by older
+    <!-- themed-icon support (Android 13+). Ignored by older
          launchers, so it is safe to declare unconditionally. -->
     <monochrome android:drawable="@mipmap/ic_launcher_monochrome"/>
 </adaptive-icon>

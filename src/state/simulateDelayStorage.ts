@@ -4,11 +4,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
 
 /**
- * Which delay the simulated-completion test uses.
+ * which delay the simulated-completion test uses.
  *
- * A hard-coded 15 s passes the battery-restriction scenario for the
- * wrong reason: every background window it produces is 14-57 s, while
- * the OS freeze was measured arriving around 80 s. A
+ * 6I hard-coded 15 s, and 6I's device run passed the battery-restriction
+ * scenario for the wrong reason: every background window it produced was
+ * 14-57 s, while 6H measured the OS freeze arriving around 80 s. A
  * completion scheduled at 15 s always fires before the phone gets round to
  * freezing the process, so that scenario could not fail. Closing the hole
  * needs two to three minutes, and rebuilding to change a constant is the

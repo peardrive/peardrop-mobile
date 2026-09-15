@@ -91,6 +91,27 @@ react {
 def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBuilds') ?: false).toBoolean()
 
 /**
+ * Opt-in instrumented build:
+ *
+ *   ./gradlew -p android assembleRelease -PdevInstrumentation=true
+ *
+ * Arms the dev-only instrumentation gate (src/lib/devGate.ts, via
+ * BuildInfoModule) on a build that is NOT debuggable. Every device
+ * measurement in this project so far was taken on `android:debuggable="true"`,
+ * and some OEM power managers treat debuggable packages differently — this
+ * is the only way to separate that variable from what is being measured.
+ *
+ * Defaults to false: a plain `assembleRelease` is unaffected.
+ *
+ * The artifact is renamed below so it cannot be mistaken for a shippable
+ * release APK. It must never be published.
+ */
+def devInstrumentation = (findProperty('devInstrumentation') ?: 'false').toBoolean()
+if (devInstrumentation) {
+    logger.lifecycle("WARNING: -PdevInstrumentation=true - instrumentation gate armed in a RELEASE build. This artifact is for measurement only and MUST NOT be published.")
+}
+
+/**
  * The preferred build flavor of JavaScriptCore (JSC)
  *
  * For example, to use the international variant, you can use:
@@ -149,6 +170,7 @@ android {
         versionName "0.1.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+        buildConfigField "boolean", "DEV_INSTRUMENTATION", "${devInstrumentation}"
     }
     signingConfigs {
         debug {
@@ -184,6 +206,30 @@ android {
             crunchPngs enablePngCrunchInRelease.toBoolean()
         }
     }
+    // the 7D conditional manifest overlay is gone.
+    //
+    // FOREGROUND_SERVICE_DATA_SYNC and the <service> element moved into
+    // src/main/AndroidManifest.xml, because the service now ships. There is
+    // nothing left for src/instrumented/ to carry, so the source set and the
+    // `sourceSets.release.manifest.srcFile` line that pointed at it were
+    // both removed. `-PdevInstrumentation=true` still arms the dev gate via
+    // BuildConfig.DEV_INSTRUMENTATION above; it no longer affects the
+    // manifest at all.
+
+    // Rename the instrumented artifact so it cannot be confused with a
+    // shippable release APK, either on disk or in a handover message. The
+    // name is deliberately shouty and deliberately not `app-release.apk`.
+    // Only engaged when the property is set, so normal builds keep their
+    // conventional output names.
+    if (devInstrumentation) {
+        applicationVariants.configureEach { variant ->
+            variant.outputs.configureEach { output ->
+                output.outputFileName =
+                    "peardrop-INSTRUMENTED-DO-NOT-PUBLISH-${variant.versionName}.apk"
+            }
+        }
+    }
+
     packagingOptions {
         jniLibs {
             def enableLegacyPackaging = findProperty('expo.useLegacyPackaging') ?: 'false'

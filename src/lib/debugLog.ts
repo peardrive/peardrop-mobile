@@ -16,9 +16,10 @@ import {
   isDebugLoggingEnabledSync,
   subscribeDebugLogging,
 } from "../state/debugLogStorage";
+import { buildIdentity, describeBuild } from "./devGate";
 
 /**
- * The single file writer.
+ * the single file writer.
  *
  * Two realms, one sink. RN calls `log()` directly; the Bare backend ships
  * its lines over the RPC event channel ({type:"log"}) and BackendProvider
@@ -225,6 +226,20 @@ async function applyEnabled(next: boolean): Promise<void> {
     startTimer();
     attachAppState();
     log("info", "debug", "=== debug logging enabled ===");
+    // Build identity, second line of every session, always.
+    //
+    // Emitted here rather than from a boot effect because this is the
+    // moment the log begins to exist: `subscribeDebugLogging` replays the
+    // current value on subscribe, so a run that started with the flag
+    // already on passes through here at boot, and a run where the user
+    // flips it mid-session records the identity at that point instead.
+    // Either way the line cannot be missing.
+    //
+    // Deliberately NOT gated on IS_DEBUG_BUILD. Its entire purpose is to
+    // state whether that gate is on, which is worthless if the gate can
+    // suppress it — a 2026-09-06 session lost five runs to exactly that
+    // blind spot.
+    log("warn", "build", describeBuild());
   } else {
     // Falling edge: capture the closing line, drain, then tear everything
     // down so an off flag really does cost nothing.
@@ -312,7 +327,7 @@ export async function buildExportBundle(
   const live = await readIfPresent(LIVE_PATH);
   if (!rotated && !live) return null;
 
-  const contents = buildBundle(label, Date.now(), [rotated, live]);
+  const contents = buildBundle(label, Date.now(), [rotated, live], buildIdentity());
   const fileName = buildLogFilename(label, Date.now());
   const uri = `${RNFS.CachesDirectoryPath}/${fileName}`;
 

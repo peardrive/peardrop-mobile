@@ -17,7 +17,7 @@ export function fileType(name: string): string {
   return fileExt(name) || "file";
 }
 
-// Subscribe pattern so consumers (ReceiveScreen) get live
+// subscribe pattern so consumers (ReceiveScreen) get live
 // updates when files are appended or deleted. Without this, the file list
 // is only refreshed on focus / on transfer-completed effects — which
 // misses the demo path entirely (no backend events fire) and creates a
@@ -111,7 +111,7 @@ export async function appendDownloadResults(
   files: { name: string; path: string; size: number }[],
   shareLink?: string,
   /**
-   * Override the recorded timestamp. Defaults to now, which is
+   * override the recorded timestamp. Defaults to now, which is
    * right for a live download. The reconcile pass passes the engine's own
    * `lastActivityAt` instead — recovered files really did arrive earlier,
    * and dating them "now" would float them to the top of the recency sort

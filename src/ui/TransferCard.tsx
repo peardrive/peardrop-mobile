@@ -63,7 +63,7 @@ export function TransferCard({
   // they don't think the transfer is frozen.
   const isFinalizing = !transfer.completed && !isStalled && rawPct >= 99;
 
-  // Hosted percent is unreliable. The engine's tracker reads
+  // hosted percent is unreliable. The engine's tracker reads
   // `socket.bytesWritten` on Hyperswarm UDX sockets — which doesn't expose
   // bytes the same way Node net.Socket does, so the tracker often reads 0
   // forever and the percent never advances. For hosted transfers, suppress
@@ -126,7 +126,7 @@ export function TransferCard({
             {showRate && etaSec != null ? ` · ${formatEta(etaSec)} left` : ""}
           </Text>
         </View>
-        {/* Spinner instead of percent for hosted active states.
+        {/* spinner instead of percent for hosted active states.
          * Percent stays for received (where it's accurate) and for any
          * completed/stalled state on either side. */}
         {hostedActiveCoarse ? (
@@ -147,7 +147,7 @@ export function TransferCard({
         ) : null}
       </View>
 
-      {/* Hide the progress bar for hosted active states — the
+      {/* hide the progress bar for hosted active states — the
        * underlying percent is the lying-zero from socket.bytesWritten, so
        * a static empty bar is misleading. Bar still shows for received
        * transfers (real bytes) and for completed states on either side. */}

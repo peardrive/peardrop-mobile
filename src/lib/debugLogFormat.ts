@@ -1,4 +1,4 @@
-// Sprint 5I: pure formatting + size-cap math for the debug logging
+// pure formatting + size-cap math for the debug logging
 // subsystem. Deliberately RN-free (no react-native, no react-native-fs,
 // no expo-*) so Jest can exercise it under `testEnvironment: "node"` —
 // see jest.config.js, which only picks up `.ts` under src/.
@@ -194,25 +194,70 @@ export function buildLogFilename(label: string, date: Date | number): string {
 }
 
 /**
+ * Which build produced a log, and whether its instrumentation was armed.
+ *
+ * Plain data, supplied by the caller, so this module keeps its RN-free
+ * property — `src/lib/devGate.ts` reads the native constants and hands the
+ * result in. See `BuildIdentity` there; the shapes are deliberately the same.
+ */
+export type BuildContext = {
+  appVersion: string;
+  appVersionCode: number | null;
+  buildType: string;
+  isDebugBuild: boolean;
+  isDebuggable: boolean | null;
+  gateSource: string;
+  platform: string;
+};
+
+function yesNo(v: boolean | null): string {
+  return v === null ? "unknown" : v ? "yes" : "no";
+}
+
+/**
  * Header prepended to an export bundle. Gives whoever reads the file the
  * context that isn't in any individual line, and states plainly that the
  * contents are unscrubbed (Sprint 5I ships raw logs by decision — see the
  * privacy note in the sprint summary).
+ *
+ * The `instrument:` line is the one that matters most. A 2026-09-06 session
+ * produced five logs containing no instrumentation at all, because the
+ * installed APK was a release build — correct behaviour, invisible in the
+ * file, and it cost the whole session. ARMED / NOT ARMED is therefore stated
+ * in words, on its own line, before anything else a reader might trust.
+ *
+ * `build` is optional so existing callers and tests keep working; when it is
+ * absent the header simply omits those lines rather than printing "unknown"
+ * four times.
  */
 export function buildBundleHeader(
   label: string,
   at: number,
-  segments: number
+  segments: number,
+  build?: BuildContext
 ): string {
-  return [
+  const lines = [
     "==== PearDrop debug log ====",
     `label:     ${String(label ?? "").trim() || "(none)"}`,
     `exported:  ${formatTimestamp(at)}`,
     `segments:  ${segments}`,
+  ];
+  if (build) {
+    const code = build.appVersionCode === null ? "?" : build.appVersionCode;
+    lines.push(
+      `app:       ${build.appVersion} (${code}) ${build.buildType} / ${build.platform}`,
+      `instrument: ${build.isDebugBuild ? "ARMED" : "NOT ARMED"} — heartbeats and probe are ` +
+        `${build.isDebugBuild ? "present" : "ABSENT"} from this log`,
+      `debuggable: ${yesNo(build.isDebuggable)}`,
+      `gate-src:  ${build.gateSource}`
+    );
+  }
+  lines.push(
     "note:      raw log — may contain file paths, file names and share keys.",
     "============================",
-    "",
-  ].join("\n");
+    ""
+  );
+  return lines.join("\n");
 }
 
 /**
@@ -225,8 +270,9 @@ export function buildBundleHeader(
 export function buildBundle(
   label: string,
   at: number,
-  segmentsOldestFirst: string[]
+  segmentsOldestFirst: string[],
+  build?: BuildContext
 ): string {
   const present = segmentsOldestFirst.filter((s) => s && s.length > 0);
-  return buildBundleHeader(label, at, present.length) + present.join("");
+  return buildBundleHeader(label, at, present.length, build) + present.join("");
 }

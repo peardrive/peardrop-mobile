@@ -146,8 +146,8 @@ function createReceiveStyles(theme: AppTheme) {
       flexGrow: 1,
       justifyContent: "center",
     },
-    // Without an empty state the page reads as broken-empty on device.
-    // A minimal
+    // had no empty state; on-device testing showed
+    // the page looked broken-empty. Reinstated 2026-05-14 as a minimal
     // icon + warm message centered in the list area. No instructional
     // prose — the link input at the bottom already says what to do.
     emptyWrap: {
@@ -276,7 +276,7 @@ function createReceiveStyles(theme: AppTheme) {
     transferCardWrap: { marginTop: 10 },
     previewBackdrop: {
       flex: 1,
-      // Phase Y: standardized at 0.5 to match SharePreviewModal. Was 0.6.
+      // standardized at 0.5 to match SharePreviewModal. Was 0.6.
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "center",
       padding: 12,
@@ -286,7 +286,7 @@ function createReceiveStyles(theme: AppTheme) {
       borderRadius: 16,
       borderWidth: 1,
       borderColor: theme.border,
-      // Phase Y: theme.bg (opaque) instead of theme.card (5–8% alpha) so
+      // theme.bg (opaque) instead of theme.card (5–8% alpha) so
       // file content behind the modal can't bleed through. Same fix as
       // SharePreviewModal.
       backgroundColor: theme.bg,
@@ -332,7 +332,7 @@ function createReceiveStyles(theme: AppTheme) {
       gap: 12,
     },
     audioMeta: { color: theme.muted, fontSize: 12 },
-    // Full media-control row centered horizontally. Skip
+    // full media-control row centered horizontally. Skip
     // buttons flank the play/pause; all three are circular tap targets
     // sized for a typical thumb (44 px).
     audioControlsRow: {
@@ -431,7 +431,7 @@ export default function ReceiveScreen() {
   const haveSeenInitialEmitRef = useRef(false);
   const flatListRef = useRef<FlatList<DownloadedItem>>(null);
   // 1 = full accent overlay, 0 = transparent. Drives the highlight flash
-  // for both dedup hits and new-arrival flashes. One
+  // for both dedup hits (Phase P) and new-arrival flashes (Phase DD). One
   // shared animation; merging both sources into one render set means the
   // effect doesn't double-fire when both happen in the same tick.
   const highlightAnim = useRef(new Animated.Value(0)).current;
@@ -464,7 +464,7 @@ export default function ReceiveScreen() {
     p.loop = false;
   });
 
-  // Poll the audio player's currentTime / duration at 4 Hz
+  // poll the audio player's currentTime / duration at 4 Hz
   // while the audio preview is open. expo-audio's `useAudioPlayerStatus`
   // exposes `playing` / `didJustFinish` reactively but not currentTime,
   // so we read it directly from the player at a steady cadence to drive
@@ -511,7 +511,7 @@ export default function ReceiveScreen() {
     loadDownloaded().then(setDownloaded).catch(() => {});
   }, []);
 
-  // Live-subscribe to the downloads index so the file list
+  // live-subscribe to the downloads index so the file list
   // updates as soon as appendDownloadResults / deleteDownloaded run —
   // no tab-switch required. Demo path benefits especially (no backend
   // events fire there). On each emit we diff IDs vs. the previous emit;
@@ -604,7 +604,7 @@ export default function ReceiveScreen() {
     return () => clearTimeout(timer);
   }, [activeDownloadTransfer, clearTransfer, refreshList, showToast]);
 
-  // Stall detector toast. When the BackendProvider's stall
+  // Phase HH.3: stall detector toast. When the BackendProvider's stall
   // detector flips `stalled: true` on a received transfer (>30 s without
   // events after data was previously flowing), surface a friendly error.
   // The transfer card itself stays visible so the user can see what
@@ -849,7 +849,7 @@ export default function ReceiveScreen() {
     [highlightSet, highlightAnim, onDeleteDownloaded, onPreviewFile, onPeekDone, peekTopmost, styles, theme.muted]
   );
 
-  // Rendering nothing reads as "broken-empty" on
+  // Reinstated 2026-05-14: rendering nothing read as "broken-empty" on
   // device. Minimal warm empty state — icon + a short title + a one-line
   // hint. The link input below remains the call-to-action.
   const downloadedEmpty = useMemo(

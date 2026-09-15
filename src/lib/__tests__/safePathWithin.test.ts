@@ -1,4 +1,4 @@
-// Tripwire for the safePathWithin guard against
+// KKKKKKK tripwire for the safePathWithin guard against
 // peer path-traversal on receive. backend/path-safe.mjs uses bare-path;
 // Jest can't load it. We mirror the same logic under node:path and
 // exercise the six documented scenarios. Any change to the .mjs must
@@ -6,7 +6,7 @@
 
 import path from "node:path";
 
-// Mirror of backend/path-safe.mjs's PathTraversalError. Also
+// Mirror of backend/path-safe.mjs's PathTraversalError. Sprint 3S: also
 // carries category (via the shared EngineError base). We keep the mirror
 // simple — instance-of check + a category field satisfies the tripwire.
 class PathTraversalError extends Error {
@@ -41,7 +41,7 @@ function safePathWithin(root: string, relPath: unknown): string {
   );
 }
 
-describe("safePathWithin tripwire", () => {
+describe("safePathWithin (Sprint 3R KKKKKKK tripwire)", () => {
   const root = process.platform === "win32" ? "C:\\dl" : "/dl";
 
   test("scenario 1 — plain filename is accepted", () => {
@@ -106,7 +106,7 @@ describe("safePathWithin tripwire", () => {
     expect(() => safePathWithin(root, undefined)).toThrow(PathTraversalError);
   });
 
-  test("scenario 10 — rejection error carries typed cause + category", () => {
+  test("scenario 10 — rejection error carries typed cause + category (Sprint 3S)", () => {
     try {
       safePathWithin(root, "../evil");
       fail("expected throw");

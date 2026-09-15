@@ -10,7 +10,7 @@ import {
 import { INTENT_SHARE_LINK_REJECTED } from "../lib/links";
 
 /**
- * How long a rejection stays worth mentioning.
+ * how long a rejection stays worth mentioning.
  *
  * Rejections go through the same launch-flow gate as valid links, so one
  * tapped before onboarding is held until onboarding completes. Below this
@@ -22,7 +22,7 @@ import { INTENT_SHARE_LINK_REJECTED } from "../lib/links";
 const REJECTION_MAX_AGE_MS = 30_000;
 
 /**
- * The drain side of the incoming-link plumbing.
+ * the drain side of the incoming-link plumbing.
  *
  * Renders nothing. Its whole job is to connect the React-free intent
  * holder (`lib/pendingIntents`) to the resolve-and-preview flow that the
@@ -51,7 +51,7 @@ const REJECTION_MAX_AGE_MS = 30_000;
  * BROWSABLE, so any web page can fire a `peardrop://` URL at the app, and
  * the user must see what a share contains before anything is fetched.
  *
- * The failure surface. `ShareLinkFlowContext` reports a
+ * adds the failure surface. `ShareLinkFlowContext` reports a
  * failed resolve by setting `linkError`, which renders only inside
  * `SharePreviewModal`, `ReceiveSheet`, and `ReceiveScreen` — none of
  * which are mounted after a cold-start link that failed. The result was
@@ -61,7 +61,7 @@ const REJECTION_MAX_AGE_MS = 30_000;
  * Nothing in `ShareLinkFlowContext` changed to make that possible: the
  * state it needs is already on the context, read-only.
  *
- * The second surface: links that never got as far as a
+ * adds the second surface: links that never got as far as a
  * resolve because they failed validation. Those now arrive as their own
  * intent kind and get one generic toast. Between the two, every incoming
  * link that reaches the app either visibly works or visibly explains

@@ -7,7 +7,7 @@ export type BackendEvent =
   | { type: "error"; message: string }
   | { type: "debug"; where?: string; msg?: string }
   /**
-   * A log line from the Bare worklet realm. The worklet never
+   * a log line from the Bare worklet realm. The worklet never
    * writes the log file itself (two realms appending to one path tears);
    * it ships lines here and BackendProvider feeds the single RN-side
    * writer. Supersedes the vestigial `debug` member above, which was
@@ -61,14 +61,14 @@ export type BackendEvent =
   | { type: "peer-disconnected"; driveId?: string; peerId?: string }
   | { type: "download-peer-disconnected"; driveId?: string }
   /**
-   * The engine emits this when a peer-supplied key fails the
-   * path-traversal guard. It must stay in this union and stay handled:
-   * when it was missing, a security-relevant event was silently
-   * discarded.
+   * the engine has emitted this since Sprint 3R when a
+   * peer-supplied key fails the path-traversal guard — but it was missing
+   * from this union and handled nowhere in src/, so a security-relevant
+   * event was silently discarded. Now typed and logged.
    */
   | { type: "peer-rejected"; driveId?: string; cause?: string; key?: string }
   /**
-   * Worklet liveness heartbeat. Emitted by backend.mjs on a 2 s
+   * worklet liveness heartbeat. Emitted by backend.mjs on a 2 s
    * interval while the debug-logging flag is on, and by nothing else.
    *
    * `n` is a monotonic counter within one enable→disable run; `at` is the
@@ -140,7 +140,7 @@ export type OpenLinkResult = {
   shareName?: string | null;
   totalBytes?: number;
   hasManifest?: boolean;
-  /** D5.1: set when the share's manifest declares more files than the
+  /** set when the share's manifest declares more files than the
    *  1000-entry cap allows. UI may surface a "shown N of M" hint. */
   truncated?: { available: number; shown: number };
 };
@@ -181,7 +181,7 @@ export type TransferSummary = {
   /** True only on explicit upload-complete (never implied by percent ≥ 100). */
   completed: boolean;
   /**
-   * True once at least one upload-progress event has been
+   * true once at least one upload-progress event has been
    * processed for this transfer. Lets the UI distinguish "connected but
    * no flow yet" from "data is moving" without trusting the engine's
    * unreliable `socket.bytesWritten`-based percent. Also gates the stall
@@ -189,7 +189,7 @@ export type TransferSummary = {
    */
   progressEverReceived: boolean;
   /**
-   * True when a received transfer that was previously
+   * Phase HH.3: true when a received transfer that was previously
    * progressing has had no events for >30 s. Triggers the "Couldn't
    * finish the download — the other side may have disconnected." toast
    * in ReceiveScreen exactly once, then stays true so the toast doesn't
@@ -199,4 +199,15 @@ export type TransferSummary = {
    */
   stalled: boolean;
   lastEventAt: number;
+  /**
+   * when `peersConnected` last fell to zero, or null if it never
+   * has. Feeds `transferActivity.ts`'s idle-host grace window.
+   *
+   * `lastEventAt` is deliberately NOT reused for this. It is bumped by every
+   * event, so it cannot distinguish "the last peer left nine minutes ago"
+   * from "something unrelated happened two seconds ago" — and the grace
+   * window is the difference between releasing the foreground service and
+   * holding it.
+   */
+  lastPeerLeftAt: number | null;
 };

@@ -1,4 +1,4 @@
-// Atomic manifest write primitive.
+// atomic manifest write primitive.
 //
 // The pattern: write to <path>.tmp, then rename onto <path>. On POSIX
 // (Android's runtime, via libuv's uv_fs_rename → rename(2)) a same-
@@ -43,7 +43,7 @@ export async function atomicWriteJson(path, data) {
     try {
       await fs.unlink(tmpPath);
     } catch {}
-    // Rethrow with typed shape so callers (both engine save
+    // rethrow with typed shape so callers (both engine save
     // sites and the recovery module) surface a manifest.write-fail
     // instead of a raw fs error. Preserves EACCES/ENOSPC via detail.code.
     throw wrapError(err, {

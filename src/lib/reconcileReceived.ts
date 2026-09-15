@@ -1,7 +1,7 @@
 import { baseName } from "./files";
 
 /**
- * Work out which received files the engine has on disk but the
+ * work out which received files the engine has on disk but the
  * RN record never learned about.
  *
  * The bug: `engineDownload` merges `downloadedFiles` into `meta.localFiles`,

@@ -38,7 +38,7 @@ export type FakeUploadOpts = {
   stallDurationMs?: number;
   earlyCompletePeers?: number;
   /**
-   * Defer the whole simulation by this many ms, so the tester
+   * defer the whole simulation by this many ms, so the tester
    * has time to background the app before `upload-complete` fires. The
    * RPC still returns immediately, carrying the driveId. Timer lives in
    * the worklet — RN's own timers are frozen while backgrounded.

@@ -28,7 +28,7 @@ export type ResolveDeps = {
    */
   timerRef?: ResolveTimerRef;
   /**
-   * Optional breadcrumb sink. Injected rather than
+   * optional breadcrumb sink. Injected rather than
    * imported so this module stays RN-free and testable under
    * `testEnvironment: "node"` — importing src/lib/debugLog here would drag
    * in react-native-fs and break resolveGuard's existing unit tests.
