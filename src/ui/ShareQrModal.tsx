@@ -62,6 +62,21 @@ export type ShareQrModalProps = {
   /** Whether the drive is currently seeding. Controls which action button
    *  set the modal renders at the bottom. */
   isActive?: boolean;
+  /**
+   * May this modal show the QR and the Copy Link button at all? Not the same
+   * question as `isActive`: boot hydration puts every received drive in the
+   * active set with no swarm attached, so a copy this phone announces nothing
+   * about would otherwise offer a link no peer can resolve. This gates only
+   * the link surfaces; `isActive` still chooses the bottom action set.
+   */
+  canOfferLink?: boolean;
+  /**
+   * Which half of the app this row belongs to. The hosted copy talks about
+   * seeding and offers Start sharing, which is true only of a share you
+   * created. A received row carries a synthetic id the engine cannot
+   * activate, so it must not be told to start sharing.
+   */
+  presentation?: "hosted" | "received";
   onClose: () => void;
   /** Copy the link to the clipboard. Rendered as the primary bottom
    *  action when the drive is active. */
@@ -112,17 +127,19 @@ export default function ShareQrModal({
   title,
   header,
   isActive,
+  canOfferLink,
+  presentation = "hosted",
   onClose,
   onCopy,
   onRemove,
   onActivate,
   info,
 }: ShareQrModalProps) {
+  const isReceivedPresentation = presentation === "received";
   const { theme } = useAppTheme();
   const insets = useSafeAreaInsets();
-  // Top inset: safe-area (status bar) + a fixed 24 breathing gap so the
-  // card floats clear of the top edge of the app instead of butting up
-  // against the status bar / notch.
+  // Safe-area plus a fixed gap, so the card floats clear of the status bar
+  // and notch rather than butting up against them.
   const topInset = insets.top + 24;
   // BottomToolbar footprint clearance so the card never overlaps the
   // floating Send / Receive / Settings toolbar.
@@ -132,11 +149,9 @@ export default function ShareQrModal({
     [theme, topInset, bottomToolbarClearance],
   );
   const [confirming, setConfirming] = useState(false);
-  // Actions row is absolutely positioned so it can never eat into the
-  // ScrollView's flex allocation (the RN flex + ScrollView interaction
-  // was previously overlapping the last section). Measuring its height
-  // lets us reserve exactly the right paddingBottom on the scroll body
-  // so the tail of the content clears the pinned buttons.
+  // The actions row is absolutely positioned so it never eats into the
+  // scroll view's flex allocation. Measuring its height reserves exactly the
+  // padding the scroll body needs to clear the pinned buttons.
   const [actionsHeight, setActionsHeight] = useState(0);
 
   const statusLabel = formatStatus(info?.status);
@@ -163,9 +178,8 @@ export default function ShareQrModal({
   const isBundle = !!header?.isBundle;
   const transferring = !!info?.transferring;
 
-  // Header status chip — Active / Sharing / Not active. Only surfaced on
-  // folders (per polish: single-file rows carry their type on the subline
-  // already and the Share info section duplicates the status text).
+  // Header status chip, surfaced only on folders: a single-file row already
+  // carries its type on the subline and its status in the Share info block.
   const chipLabel = transferring
     ? "Sharing"
     : isActive
@@ -199,6 +213,12 @@ export default function ShareQrModal({
   const headerTitle = title ?? defaultTitle;
 
   const hasLink = link.length > 0;
+  /**
+   * `?? isActive` rather than `|| isActive`: an explicit `false` from the
+   * caller must win, and `||` would quietly fall back to `isActive` for
+   * exactly the received rows this gate exists for.
+   */
+  const linkOfferable = (canOfferLink ?? isActive) === true;
 
   return (
     <Modal
@@ -307,9 +327,8 @@ export default function ShareQrModal({
               style={styles.scroll}
               contentContainerStyle={[
                 styles.body,
-                // Reserve exactly the actions row's height + a small
-                // margin so the last section (Share info / Files) is
-                // always visible above the pinned buttons.
+                // Reserve the actions row's height plus a margin, so the
+                // last section stays visible above the pinned buttons.
                 { paddingBottom: actionsHeight + 12 },
               ]}
               keyboardShouldPersistTaps="handled"
@@ -319,7 +338,7 @@ export default function ShareQrModal({
                 *  Active drives show the live QR; inactive drives show
                 *  the same-sized placeholder tile so the modal footprint
                 *  stays consistent across states. */}
-              {isActive && hasLink ? (
+              {linkOfferable && hasLink ? (
                 <View style={styles.qrBlock}>
                   <View style={styles.qrWrap}>
                     <QRCode
@@ -342,20 +361,31 @@ export default function ShareQrModal({
                 <View style={styles.qrBlock}>
                   <View
                     style={styles.hintTile}
-                    accessibilityLabel="Not currently sharing"
+                    accessibilityLabel={
+                      isReceivedPresentation
+                        ? "Received share"
+                        : "Not currently sharing"
+                    }
                   >
                     <Ionicons
-                      name="link-outline"
+                      name={
+                        isReceivedPresentation
+                          ? "download-outline"
+                          : "link-outline"
+                      }
                       size={64}
                       color={theme.muted}
                     />
                     <Text style={styles.hintTileTitle}>
-                      Not currently sharing
+                      {isReceivedPresentation
+                        ? "Received share"
+                        : "Not currently sharing"}
                     </Text>
                   </View>
                   <Text style={styles.hintBody}>
-                    Start sharing to generate a link and QR you can hand
-                    to another pear.
+                    {isReceivedPresentation
+                      ? "A copy someone sent you. There's no link to hand on from here."
+                      : "Start sharing to generate a link and QR you can hand to another pear."}
                   </Text>
                 </View>
               )}
@@ -388,7 +418,12 @@ export default function ShareQrModal({
               {!isBundle ? (
                 <View style={styles.section}>
                   <Text style={styles.sectionLabel}>Share info</Text>
-                  {statusLabel ? (
+                  {/* Status and Peers are suppressed on a received row: both
+                    *  describe seeding, and a received row's synthetic id
+                    *  appears in neither the active set nor the transfer map,
+                    *  so they could only ever show fixed values dressed up as
+                    *  readings. Source stays, being true of a received copy. */}
+                  {statusLabel && !isReceivedPresentation ? (
                     <View style={styles.infoRow}>
                       <Text style={styles.infoRowLabel}>Status</Text>
                       <View style={styles.infoStatusValue}>
@@ -417,10 +452,12 @@ export default function ShareQrModal({
                       </Text>
                     </View>
                   ) : null}
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoRowLabel}>Peers</Text>
-                    <Text style={styles.infoRowValue}>{peerCount}</Text>
-                  </View>
+                  {!isReceivedPresentation ? (
+                    <View style={styles.infoRow}>
+                      <Text style={styles.infoRowLabel}>Peers</Text>
+                      <Text style={styles.infoRowValue}>{peerCount}</Text>
+                    </View>
+                  ) : null}
                 </View>
               ) : null}
 
@@ -439,7 +476,11 @@ export default function ShareQrModal({
                 setActionsHeight(e.nativeEvent.layout.height)
               }
             >
-              {isActive ? (
+              {/* The Copy button follows the link gate; the Start/Remove pair
+                *  follows `isActive`. They agree on a hosted row. On a
+                *  received row that is active but not announcing they differ,
+                *  and the answer is no link and no Start sharing. */}
+              {linkOfferable ? (
                 onCopy ? (
                   <Pressable
                     style={styles.primaryBtn}
@@ -455,7 +496,7 @@ export default function ShareQrModal({
                     <Text style={styles.primaryBtnText}>Copy Link</Text>
                   </Pressable>
                 ) : null
-              ) : (
+              ) : isActive ? null : (
                 <>
                   {onActivate ? (
                     <Pressable
@@ -516,11 +557,9 @@ function createStyles(
     backdrop: {
       flex: 1,
       backgroundColor: "rgba(0,0,0,0.5)",
-      // Horizontal centering only. Vertical layout is driven by the
-      // explicit paddings below + card's flex:1, so justifyContent
-      // must NOT be "center" — that collapses the card's flex growth
-      // in some RN versions and lets the pinned actions overlap the
-      // scrolling middle.
+      // Horizontal centering only: vertical layout comes from the paddings
+      // below, and centering here collapses the card's flex growth so the
+      // pinned actions overlap the scrolling middle.
       alignItems: "center",
       paddingHorizontal: theme.pad,
       // Safe-area + breathing room above so the card never touches the
@@ -530,10 +569,8 @@ function createStyles(
       // floating BottomToolbar (Send / Receive / Settings buttons).
       paddingBottom: bottomClearance,
     },
-    // Card takes the full available vertical space (constrained by the
-    // backdrop's paddings above). That gives every state — folder/file ×
-    // active/inactive — the same modal footprint; only the middle
-    // ScrollView content differs.
+    // The card fills the vertical space the backdrop's paddings leave, so
+    // every state has the same modal footprint and only the middle differs.
     card: {
       flex: 1,
       width: "100%",
@@ -602,9 +639,8 @@ function createStyles(
       marginTop: 2,
       fontWeight: "500",
     },
-    // Compact pill sitting under the folder subline. Borrows the row's
-    // color-coded tone (primary / warning / muted) for both the dot and
-    // the outline so status reads at a glance from the modal header.
+    // Compact pill under the folder subline. Dot and outline share the row's
+    // tone, so status reads at a glance from the modal header.
     statusChip: {
       flexDirection: "row",
       alignItems: "center",
@@ -626,10 +662,8 @@ function createStyles(
       fontWeight: "700",
       letterSpacing: 0.4,
     },
-    // ScrollView occupies whatever the pinned regions leave over.
-    // `minHeight: 0` is a defensive-flex-basis hint so RN never
-    // grants the scroll a min-content height that would overlap
-    // the actions below.
+    // The scroll takes whatever the pinned regions leave. `minHeight: 0`
+    // stops it claiming a min-content height that overlaps the actions.
     scroll: { flex: 1, minHeight: 0 },
     // Trailing padding so the last section (Share info or Files)
     // isn't visually flush with the pinned actions row.
@@ -649,9 +683,9 @@ function createStyles(
       textAlign: "center",
       paddingHorizontal: 8,
     },
-    // Same-sized rounded tile as the QR wrap so the block stays visually
-    // balanced whether the item is active or dormant. Painted with the
-    // themed subtle-surface so it clearly reads as a placeholder rather
+    // Same-sized rounded tile as the QR wrap, so the block stays balanced
+    // whether the item is active or dormant. The subtle surface keeps it
+    // reading as a placeholder rather
     // than a scannable code.
     hintTile: {
       width: QR_SIZE + 24,
@@ -717,9 +751,8 @@ function createStyles(
       height: 8,
       borderRadius: 4,
     },
-    // Actions row pinned at the bottom of the card via absolute
-    // positioning. Using the card's own padding for left/right/bottom
-    // so the buttons align with the rest of the card's chrome.
+    // Actions row pinned at the bottom by absolute positioning, using the
+    // card's own padding so the buttons align with the rest of its chrome.
     actions: {
       gap: 8,
       position: "absolute",

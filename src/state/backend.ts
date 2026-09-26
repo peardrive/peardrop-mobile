@@ -7,7 +7,11 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState, type AppStateStatus } from "react-native";
+import {
+  AppState,
+  type AppStateStatus,
+  DeviceEventEmitter,
+} from "react-native";
 
 import b4a from "b4a";
 import RPC from "bare-rpc";
@@ -18,9 +22,11 @@ import type {
   BackendEvent,
   BridgeStatus,
   DownloadResult,
+  DriveActivateResult,
   DriveRecord,
   OpenLinkResult,
   SharePathsResult,
+  TickGap,
   TransferOrigin,
   TransferSummary,
 } from "./types";
@@ -37,44 +43,70 @@ import {
   RPC_HYPERDRIVE_STOP,
   RPC_HYPERDRIVE_OPEN,
   RPC_HYPERDRIVE_ABORT,
+  RPC_HYPERDRIVE_CANCEL,
   RPC_HYPERDRIVE_DOWNLOAD,
   RPC_HYPERDRIVE_STATUS,
   RPC_DRIVES_LIST,
   RPC_DRIVES_PAUSE,
   RPC_DRIVES_RESUME,
   RPC_TEST_FAKE_UPLOAD,
+  RPC_TEST_FAKE_DOWNLOAD,
   RPC_REFRESH_SWARM,
   RPC_SET_DEBUG_LOGGING,
 } from "../../rpc-commands.mjs";
 
-import { invoke, sendOneWay, type FakeUploadOpts } from "../lib/rpc";
+import {
+  invoke,
+  sendOneWay,
+  type FakeUploadOpts,
+  type FakeDownloadOpts,
+  type FakeDownloadResult,
+} from "../lib/rpc";
+import { upsertShare } from "./receivedSharesStorage";
 import {
   flush as flushDebugLog,
   initDebugLog,
+  logChangeGated,
   logFromBackend,
   logStructuredError,
+  parseWorkletBundleId,
+  setWorkletBundleId,
   log as debugLog,
 } from "../lib/debugLog";
-import { subscribeDebugLogging } from "./debugLogStorage";
+import { awaitDebugLogging, subscribeDebugLogging } from "./debugLogStorage";
 import { initDeviceIdentityLog } from "../lib/deviceIdentity";
 import {
+  activeTransfers,
+  decideServiceTransition,
   describeActivity,
+  IDLE_HOST_GRACE_MS,
+  IDLE_HOST_GRACE_WAKE_PAD_MS,
   isTransferActive,
   msUntilActivityCouldChange,
+  nextLastPeerLeftAt,
 } from "../lib/transferActivity";
 import {
+  drainPendingCancel,
+  EVENT_CANCEL_ALL,
   isForegroundServiceAvailable,
   isScreenOn,
   startForegroundService,
   stopForegroundService,
+  updateServiceProgress,
 } from "../lib/foregroundService";
+import {
+  classifyNotificationPost,
+  describeTransferNotification,
+  type LastPost,
+} from "../lib/notificationProgress";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
 import { parseAliveReading } from "../lib/aliveTicks";
 import { evaluateFreeze } from "../lib/freezeDetect";
 import { DEFAULT_STALL_MS, evaluateStall } from "../lib/transferStall";
 import { recordFreeze, recordServiceWindow } from "./backgroundHealthStorage";
 import { SERVICE_FREEZE_THRESHOLD } from "../lib/backgroundHealthModel";
-import { gradeWindow, tickRatio } from "../lib/freezeGrade";
+import { tickRatio } from "../lib/freezeGrade";
+import { decideFreezeWindow } from "./freezeWindowPolicy";
 import { runReceivedReconcile } from "./reconcileReceivedRunner";
 import type { EngineDriveLike } from "../lib/reconcileReceived";
 import { addSent } from "./statsStorage";
@@ -83,11 +115,50 @@ import { notifyTransferComplete } from "../lib/notifications";
 
 import bundle from "../../app/app.bundle.mjs";
 
+/**
+ * Content hash of the packed worklet, parsed once at module load. It is what
+ * tells a fresh RN bundle running over a stale worklet from a matched pair.
+ * The artifact is a compile-time import, so the value cannot change during a
+ * session.
+ */
+export const WORKLET_BUNDLE_ID: string | null = parseWorkletBundleId(
+  bundle as unknown as string
+);
+// Set at module scope rather than in an effect: the log writer needs it before
+// the first effect can run.
+setWorkletBundleId(WORKLET_BUNDLE_ID);
+
+/**
+ * The engine status reply, plus the identity of the bundle it is running.
+ * `BridgeStatus` is what the worklet says about itself; `workletBundleId` is
+ * what RN knows about the code it handed over. The pairing is the point —
+ * either half alone is not a complete build statement.
+ */
+export type WorkletStatus = BridgeStatus & { workletBundleId?: string };
+
 export type BackendAPI = {
   ready: boolean;
   status: string;
   logs: string[];
-  hyperdriveStatus: BridgeStatus | null;
+  /**
+   * The engine status reply, carrying `workletBundleId` alongside what the
+   * worklet says about itself.
+   */
+  hyperdriveStatus: WorkletStatus | null;
+  /**
+   * True when the engine cannot read the manifest and is running on an empty
+   * placeholder: it refuses every manifest write, and share creation and
+   * receive fail. The UI blocks those two actions. This is where the RN side
+   * reads that state — do not re-derive it.
+   */
+  manifestUnavailable: boolean;
+  /**
+   * Content hash of the packed worklet. Read it here and do not re-derive it:
+   * a second reader of `app/app.bundle.mjs` can be fresh while the running
+   * worklet is stale, which is the trap this value exists to detect. `null`
+   * means the header could not be parsed. Never a guess.
+   */
+  workletBundleId: string | null;
   /** Unified list of every drive the engine knows about (active + inactive,
    *  hosted + received). Source of truth for the main page list. */
   drives: DriveRecord[];
@@ -98,7 +169,15 @@ export type BackendAPI = {
   /** driveIds whose hydration failed (corestore missing, corrupted, etc.). */
   failedHydrationIds: Set<string>;
   transfers: TransferSummary[];
-  sharePaths: (paths: string[], relPaths?: string[]) => Promise<SharePathsResult>;
+  /**
+   * `shareName` travels to the receiver. Omit it and the engine generates a
+   * default name instead.
+   */
+  sharePaths: (
+    paths: string[],
+    relPaths?: string[],
+    shareName?: string,
+  ) => Promise<SharePathsResult>;
   openLink: (link: string) => Promise<OpenLinkResult>;
   startDownload: (payload: {
     driveId: string;
@@ -113,22 +192,37 @@ export type BackendAPI = {
     driveId?: string;
     error?: string;
   }>;
+  /** simulated receive. Debug builds only. */
+  runFakeDownloadTest: (opts?: FakeDownloadOpts) => Promise<FakeDownloadResult>;
+  /** Stop and destroy. This is the delete path — see the implementation. */
   cancelTransfer: (
     driveId: string,
     opts?: { purge?: boolean }
   ) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * stop an in-flight transfer, keeping the share and the bytes
+   * already written. This is what a Cancel button calls.
+   */
+  cancelInFlight: (driveId: string) => Promise<{
+    ok: boolean;
+    error?: string;
+    unwinding?: boolean;
+    alreadyInactive?: boolean;
+  }>;
   clearTransfer: (driveId: string) => void;
   abortOpen: (
     driveId?: string
   ) => Promise<{ ok: boolean; aborted?: number; error?: string }>;
-  /** bring an inactive drive back online (joins swarm, announces). */
-  activateDrive: (driveId: string) => Promise<{
-    ok: boolean;
-    error?: string;
-    driveId?: string;
-    shareLink?: string;
-    key?: string;
-  }>;
+  /**
+   * Bring an inactive drive back online. Hosted drives announce, received
+   * drives join client-only, and `{ serve: true }` is the explicit opt-in that
+   * makes a received copy announce. Only `mode === "server"` means a peer can
+   * find it; `already` means the swarm was already in the requested mode.
+   */
+  activateDrive: (
+    driveId: string,
+    opts?: { serve?: boolean }
+  ) => Promise<DriveActivateResult>;
   /** take an active drive offline without destroying its data. */
   deactivateDrive: (driveId: string) => Promise<{ ok: boolean; error?: string }>;
   refreshStatus: () => Promise<void>;
@@ -139,19 +233,40 @@ export type BackendAPI = {
 const BackendContext = createContext<BackendAPI | null>(null);
 
 /**
- * Max drive IDs we'll remember in either origin set. Belt-and-braces cap in
- * case a drive-stopped event never arrives (backend crash, RPC stall) — the
- * set would otherwise grow for the life of the app. 64 is comfortably above
- * realistic concurrent-drive counts.
+ * Cap on drive IDs held in either origin set, in case a drive-stopped event
+ * never arrives and the set would otherwise grow for the life of the app. 64
+ * is comfortably above realistic concurrent-drive counts.
  */
 const DRIVE_ORIGIN_SET_MAX = 64;
 
 /**
- * cadence of the RN-side control heartbeat. Deliberately the
- * same 2 s as the worklet's own tick (backend/backend.mjs) so the two
- * streams are read side by side without mental arithmetic.
+ * Cadence of the RN-side control heartbeat. Deliberately the same interval as
+ * the worklet's own tick, so the two streams can be read side by side.
  */
 const RN_HEARTBEAT_INTERVAL_MS = 2000;
+
+/**
+ * The freeze grader's gap input, and the only place it is derived. An entry
+ * whose `tick` is above the mark closed inside the window. Returns `null`,
+ * never `0`, when no `tickGaps` arrived at all: not measured is a different
+ * claim from measured and no gap seen, which is `0`.
+ */
+export function largestWorkletTickGapMs(
+  tickGaps: TickGap[] | undefined,
+  sinceTick: number
+): number | null {
+  if (!Array.isArray(tickGaps)) return null;
+  let largest = 0;
+  for (const entry of tickGaps) {
+    if (!entry) continue;
+    // `Number.isFinite` because NaN is a number, and a NaN reaching a
+    // threshold comparison manufactures a clean verdict. Validate at entry.
+    if (!Number.isFinite(entry.tick) || !Number.isFinite(entry.gapMs)) continue;
+    if (entry.tick <= sinceTick) continue;
+    if (entry.gapMs > largest) largest = entry.gapMs;
+  }
+  return largest;
+}
 
 function rememberDriveOrigin(set: Set<string>, driveId: string): void {
   if (!driveId) return;
@@ -169,57 +284,62 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   const workletRef = useRef<InstanceType<typeof Worklet> | null>(null);
   const rpcRef = useRef<InstanceType<typeof RPC> | null>(null);
 
-  // Origin tracking: authoritative way to tell if a drive is ours (hosted)
-  // or came from someone else's share link (received). The backend doesn't
-  // reliably distinguish these in events, so we record intent at call sites.
+  // Origin tracking: the authoritative way to tell a hosted drive from one
+  // received via a link. Backend events do not reliably distinguish them.
   const hostedIdsRef = useRef<Set<string>>(new Set());
   const receivedIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * Drive ids belonging to a simulated download. Read only by the
+   * foreground-service decision line, so an exported log can never show a
+   * real-looking receive that was synthetic.
+   */
+  const simulatedDriveIdsRef = useRef<Set<string>>(new Set());
   /** Latest debugging-flag value, readable from the boot effect. */
   const debugEnabledRef = useRef(false);
 
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState("booting");
   const [logs, setLogs] = useState<string[]>([]);
-  const [hyperdriveStatus, setHyperdriveStatus] = useState<BridgeStatus | null>(
+  const [hyperdriveStatus, setHyperdriveStatus] = useState<WorkletStatus | null>(
     null
   );
   const [drives, setDrives] = useState<DriveRecord[]>([]);
   const [transfers, setTransfers] = useState<TransferSummary[]>([]);
   /**
-   * a synchronously-current mirror of `transfers`, for readers
-   * that cannot be React subscribers — specifically the AppState →
-   * background handler, whose effect does not list `transfers` in its
-   * dependency array and would otherwise close over a stale array.
-   * Written ONLY by `commitTransfers` below.
+   * A synchronously-current mirror of `transfers`, for readers that cannot be
+   * React subscribers — the AppState background handler would otherwise close
+   * over a stale array. Written only by `commitTransfers` below.
    */
   const transfersRef = useRef<TransferSummary[]>([]);
   /**
-   * whether the service was started for the CURRENT background
-   * window. Phase 3 reads this to attribute a freeze — a freeze with no
-   * service running is not evidence the mechanism failed, it is Android
-   * behaving correctly toward an idle app.
+   * Whether the service was started for the current background window. A
+   * freeze with no service running is not evidence the mechanism failed; it
+   * is Android behaving correctly toward an idle app.
    */
   const serviceStartedForWindowRef = useRef<boolean>(false);
   /**
-   * completion-path persistence still in flight.
-   *
-   * Serialized rather than parallel so the stop path has a single thing to
-   * await, and so two completions landing together cannot interleave their
-   * read-modify-write of the lifetime stats blob.
+   * Mirror of `drives` for the notification's name lookup. Same reason as
+   * `transfersRef`: the feed runs inside `commitTransfers`, which cannot be a
+   * React subscriber. Written beside the single `setDrives` call.
+   */
+  const drivesRef = useRef<DriveRecord[]>([]);
+  /**
+   * What was last pushed to the ongoing notification, and when. Null means
+   * nothing posted in this service window, so the first update of the next
+   * window always posts instead of being suppressed as a duplicate.
+   */
+  const lastNotificationRef = useRef<LastPost | null>(null);
+  /**
+   * Completion-path persistence still in flight. Serialized so the stop path
+   * has a single thing to await, and so two completions landing together
+   * cannot interleave their read-modify-write of the lifetime stats blob.
    */
   const pendingStatsWriteRef = useRef<Promise<void>>(Promise.resolve());
   /**
-   * worst observed gap between worklet heartbeats in the current
-   * background window.
-   *
-   * `evaluateFreeze` only sees two tick counts, so it cannot distinguish a
-   * window that ticked steadily from one that stalled for two minutes and
-   * then caught up — and the 0.5 threshold passed exactly such a run. This
-   * is the missing shape of the distribution, reduced to the one number
-   * worth carrying.
-   *
-   * Updated on every tick regardless of build: two number writes, far
-   * cheaper than the debugLog call next to it, which IS gated.
+   * Worst observed gap between worklet heartbeats in the current background
+   * window. Tick counts alone cannot tell a steadily-ticking window from one
+   * that stalled and then caught up. Updated in every build: two number
+   * writes, far cheaper than the gated log call beside it.
    */
   const heartbeatGapRef = useRef<{ lastAt: number; maxGapMs: number }>({
     lastAt: 0,
@@ -231,11 +351,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
 
   const logId = useRef(0);
   /**
-   * the existing in-memory ring (120 lines, no timestamps, no
-   * levels, gone on restart) stays exactly as it was for the dev-facing
-   * `logs` array — and now also fans out to the file writer. That single
-   * wrap gave all ~25 pre-existing call sites in this file real timestamps
-   * and persistence for free.
+   * The in-memory ring behind the dev-facing `logs` array, fanned out to the
+   * file writer so every call site in this file gets timestamps and
+   * persistence from the one wrap.
    */
   const appendLog = useCallback((line: string) => {
     const id = ++logId.current;
@@ -243,7 +361,19 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     debugLog("info", "rn.backend", line);
   }, []);
 
-  /** Structured-error variant — keeps category/cause/detail (B4). */
+  /**
+   * A state transition, on a tag the ring protects. Identical to `appendLog`
+   * except for the tag: `rn.backend` has too many hot call sites to be a
+   * priority tag, so the `setStatus` transitions get their own and the
+   * must-survive set can be classified by tag. Drive-level lines are not.
+   */
+  const appendStateLog = useCallback((line: string) => {
+    const id = ++logId.current;
+    setLogs((p) => [`${id}: ${line}`, ...p].slice(0, 120));
+    debugLog("info", "rn.state", line);
+  }, []);
+
+  /** Structured-error variant — keeps category, cause and detail. */
   const appendErrorLog = useCallback(
     (context: string, err: unknown) => {
       const id = ++logId.current;
@@ -260,34 +390,98 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * the ONLY way to write `transfers`.
-   *
-   * `transfersRef` must never drift from `transfers`. It is read
-   * synchronously by the AppState → background handler to decide whether to
-   * start the foreground service, and a stale read there produces a wrong
-   * service decision that nothing downstream can detect — the service either
-   * runs for an idle app or fails to run for a live transfer, and both look
-   * like normal operation.
-   *
-   * So the ref is not synced at each call site, and not synced by an effect
-   * (which lags by a commit, and a background transition can land inside that
-   * lag). It is written inside the updater itself, which makes it correct the
-   * instant the next value is computed — before React even commits — and
-   * makes it structurally impossible for a mutation site to update one
-   * without the other.
-   *
-   * `setTransfers` must not be called directly anywhere else. All three
-   * historical call sites now route through here.
+   * The only way to write `transfers`. The ref is written inside the updater,
+   * not at call sites and not in an effect, because the AppState background
+   * handler reads it synchronously to decide the foreground service and a
+   * stale read there is undetectable. Never call `setTransfers` elsewhere.
    */
+  /**
+   * Resolve a display name for a drive, or null. Best-effort by design: the
+   * manifest does not carry a received drive while its download is in flight,
+   * so `describeTransferNotification` reads correctly without it.
+   */
+  const driveDisplayName = useCallback((driveId: string): string | null => {
+    const record = drivesRef.current.find((d) => d.id === driveId);
+    if (!record) return null;
+    const named = typeof record.name === "string" ? record.name.trim() : "";
+    if (named) return named;
+    // A single-file share reads better as its file than as its drive.
+    const files = record.files;
+    if (Array.isArray(files) && files.length === 1) {
+      const only = files[0]?.name;
+      if (typeof only === "string" && only.trim()) return only.trim();
+    }
+    return null;
+  }, []);
+
+  /**
+   * Push the current transfer set to the ongoing notification. Engine-driven
+   * and never on a timer: RN timers record no ticks at all while backgrounded,
+   * so a timer-fed notification would stop updating exactly when it is the
+   * only thing the user can see. Engine callbacks keep running because the
+   * foreground service keeps the process scheduled.
+   */
+  const pushNotification = useCallback(
+    (list: TransferSummary[]) => {
+      const now = Date.now();
+      const content = describeTransferNotification(list, now, driveDisplayName);
+      // Both exits are recorded, change-gated on the decision plus the content:
+      // this runs once per transfer mutation, so an ungated line would flood
+      // the log it exists to make readable. The gate still forces one line per
+      // heartbeat window, so a quiet stretch reads as quiet, not as nothing.
+      if (!content) {
+        logChangeGated(
+          "info",
+          "rn.notify",
+          "notify",
+          "suppressed-empty",
+          `posted=suppressed-empty (nothing active to describe) transfers=${list.length}`,
+          now
+        );
+        return;
+      }
+      const decision = classifyNotificationPost(
+        lastNotificationRef.current,
+        content,
+        now
+      );
+      logChangeGated(
+        "info",
+        "rn.notify",
+        "notify",
+        `${decision}|${content.title}|${content.text}|${content.percent}|${content.cancelLabel}`,
+        `posted=${decision} title=${JSON.stringify(content.title)} ` +
+          `text=${JSON.stringify(content.text)} percent=${content.percent} ` +
+          `cancel=${JSON.stringify(content.cancelLabel)}`,
+        now
+      );
+      if (decision !== "posted") return;
+      lastNotificationRef.current = { at: now, content };
+      void updateServiceProgress(
+        content.title,
+        content.text,
+        content.percent,
+        // The Cancel action's label travels with the content it describes, so
+        // the button and the title cannot disagree about how many it stops.
+        content.cancelLabel
+      );
+    },
+    [driveDisplayName]
+  );
+
   const commitTransfers = useCallback(
     (next: (prev: TransferSummary[]) => TransferSummary[]) => {
       setTransfers((prev) => {
         const value = next(prev);
         transfersRef.current = value;
+        // Hung inside the updater beside the ref write: this is the one place
+        // every transfer mutation passes through, so no future call site can
+        // forget the feed. A StrictMode second pass is dropped as identical.
+        pushNotification(value);
         return value;
       });
     },
-    []
+    [pushNotification]
   );
 
   const upsertTransfer = useCallback(
@@ -299,10 +493,49 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     [commitTransfers, originFor]
   );
 
+  /**
+   * Mark a transfer as stopped by the user. One function for both callers, so
+   * a cancelled row has a single shape. `completed: true` because it is over,
+   * `cancelled: true` beside it so the celebratory path can opt out.
+   * `lastPeerLeftAt: null` is the load-bearing one: a non-null stamp holds the
+   * foreground service through the idle-host grace window, and the swarm is
+   * already destroyed, so nothing can reconnect. Only the service predicate
+   * reads that field; if anything else starts to, this write becomes wrong.
+   */
+  const markCancelled = useCallback(
+    /**
+     * Pass `null` — never 0 — when there is no count: the locally-settled
+     * path has no event behind it, and a zero there would tell the user
+     * "nothing saved" about files that are on disk.
+     */
+    (driveId: string, filesKept: number | null = null) => {
+      upsertTransfer(driveId, (prev) => ({
+        ...prev,
+        completed: true,
+        cancelled: true,
+        filesKept,
+        stalled: false,
+        peersConnected: 0,
+        peerIds: [],
+        lastPeerLeftAt: null,
+        lastEventAt: Date.now(),
+      }));
+    },
+    [upsertTransfer]
+  );
+
   const refreshStatus = useCallback(async () => {
     try {
       const obj = await invoke(rpcRef.current, RPC_HYPERDRIVE_STATUS, {} as Record<string, never>);
-      if (obj?.ok && obj.status) setHyperdriveStatus(obj.status);
+      if (obj?.ok && obj.status) {
+        // Merged onto the status reply so a consumer cannot read one without
+        // the other. Omitted when unparsed: a wrong attribution is worse.
+        setHyperdriveStatus(
+          WORKLET_BUNDLE_ID
+            ? { ...obj.status, workletBundleId: WORKLET_BUNDLE_ID }
+            : obj.status
+        );
+      }
     } catch (err: unknown) {
       appendErrorLog(`status: ${String((err as Error)?.message || err)}`, err);
     }
@@ -314,6 +547,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       if (obj?.ok && Array.isArray(obj.drives)) {
         const list = obj.drives as DriveRecord[];
         setDrives(list);
+        // Beside the only `setDrives` in the file, for the same reason
+        // `transfersRef` is written inside `commitTransfers`.
+        drivesRef.current = list;
         // Reconcile state sets against the engine's authoritative manifest.
         const nextActive = new Set<string>();
         const nextInactive = new Set<string>();
@@ -339,8 +575,18 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     }
   }, [appendErrorLog]);
 
-  const sharePaths = useCallback(async (paths: string[], relPaths?: string[]) => {
-    const res = await invoke(rpcRef.current, RPC_HYPERDRIVE_SHARE, { paths, relPaths });
+  const sharePaths = useCallback(async (
+    paths: string[],
+    relPaths?: string[],
+    // The name the user chose. Goes to the engine at creation, so it reaches
+    // the wire and the receiver rather than only local storage.
+    shareName?: string,
+  ) => {
+    const res = await invoke(rpcRef.current, RPC_HYPERDRIVE_SHARE, {
+      paths,
+      relPaths,
+      shareName,
+    });
     if (res?.ok && res.driveId) {
       rememberDriveOrigin(hostedIdsRef.current, res.driveId);
       // Seed a hosted transfer so the Share tab can show the bundle card
@@ -353,8 +599,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   const openLink = useCallback(async (link: string) => {
     const res = await invoke(rpcRef.current, RPC_HYPERDRIVE_OPEN, { link: link.trim() });
     if (res?.ok && res.driveId) {
-      // Mark the drive as "received" preemptively. We do this even before
-      // startDownload so any early peer events are attributed correctly.
+      // Marked "received" before startDownload so any early peer events are
+      // attributed to the right origin.
       rememberDriveOrigin(receivedIdsRef.current, res.driveId);
     }
     return res;
@@ -385,43 +631,36 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * recover received files the engine wrote to disk but RN never
-   * recorded. Fetches the drive list fresh rather than reading the `drives`
-   * state, so a resume that races the state update still reconciles against
-   * the engine's current truth.
-   *
-   * Event-driven on purpose. 6H measured RN's `setInterval` frozen for the
-   * whole of a backgrounded window, so a polling reconcile would only ever
-   * run when the app was already in the foreground — exactly when the
-   * foreground transition has already fired.
+   * Recover received files the engine wrote to disk but RN never recorded.
+   * Fetches the drive list fresh so a resume that races the state update
+   * still reconciles against the engine's current truth. Event-driven: RN's
+   * timers are frozen for the whole of a backgrounded window.
    */
   /**
-   * Background-freeze detection.
-   *
-   * On the way out, snapshot the wall clock and the engine's liveness
-   * counter. On the way back, ask for the counter again: wall-clock time
-   * passes whether we ran or were frozen, so the difference between elapsed
-   * time and ticks actually taken is the only available evidence.
-   *
-   * The status call is the same one the swarm refresh already makes, so this
-   * adds no message traffic of its own.
+   * Background-freeze detection. On the way out, snapshot the wall clock and
+   * the engine's liveness counter; on the way back, ask again. Wall-clock
+   * time passes whether the process ran or was frozen, so the difference
+   * between elapsed time and ticks taken is the only available evidence.
    */
   const freezeMarkRef = useRef<{ at: number; ticks: number } | null>(null);
 
   /**
-   * When the app most recently became foreground-active. Read by the stall
-   * watchdog, which may not rule until a full uninterrupted foreground
-   * window has elapsed — see src/lib/transferStall.ts for why.
-   *
-   * Seeded at mount: a fresh launch is a foreground start, and the guard
-   * correctly suppresses the watchdog for its first 30 s, during which
-   * nothing can legitimately have stalled anyway.
+   * When the app most recently became foreground-active. The stall watchdog
+   * may not rule until a full uninterrupted foreground window has elapsed.
+   * Seeded at mount, because a fresh launch is a foreground start.
    */
   const foregroundSinceRef = useRef<number>(Date.now());
 
   const readAliveTicks = useCallback(async (): Promise<{
     ticks: number;
     intervalMs: number;
+    /**
+     * The worklet's own inter-tick gap record, carried through untouched.
+     * `undefined` means a worklet that does not report one.
+     */
+    tickGaps?: TickGap[];
+    /** Since engine start, ms. For the log line only — not window-scoped. */
+    maxTickGapMs?: number;
   } | null> => {
     try {
       const obj = await invoke(
@@ -430,64 +669,112 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         {} as Record<string, never>
       );
       // Requires `started === true`, not just well-typed counters: a failed
-      // engineInit leaves aliveTicks pinned at 0 while status calls keep
-      // succeeding, which every long background window would then read as
-      // 100% frozen. See src/lib/aliveTicks.ts.
-      return parseAliveReading(obj?.status);
+      // init pins the tick counter at 0 while status calls keep succeeding.
+      const reading = parseAliveReading(obj?.status);
+      if (!reading) return null;
+      return {
+        ...reading,
+        tickGaps: obj?.status?.tickGaps,
+        maxTickGapMs: obj?.status?.maxTickGapMs,
+      };
     } catch {
       return null;
     }
   }, []);
 
   /**
-   * Every background/resume cycle emits exactly one paired trace: one line
-   * here on the way out, one in `checkForFreeze` on the way back.
-   *
-   * Before this, four of the five outcomes on this path were silent — a
-   * failed status RPC, a missing mark, a failed resume read and a clean run
-   * all produced nothing at all, so "no freeze" and "never measured" were
-   * indistinguishable in the log. Three runs of the 2026-09-06 session came
-   * back silent and could not be read either way; they were the Autostart
-   * runs, the ones that mattered.
-   *
-   * Deliberately NOT gated on IS_DEBUG_BUILD. `rn.freeze` already ships
-   * ungated and `aliveTicks` ships in release, so the pair must work in any
-   * build — especially since the gate has now demonstrably been false on a
-   * device without saying so.
+   * Every background/resume cycle emits exactly one paired trace: one line on
+   * the way out, one in `checkForFreeze` on the way back. Without both, "no
+   * freeze" and "never measured" are the same silence in an exported log.
+   * Not gated on build type — the pair must work in a release APK too.
    */
   /**
-   * the service lifecycle decision for one background window.
-   *
-   * Called synchronously from the AppState → background handler. Reads
-   * `transfersRef` (never `transfers`, which that effect closes over stale)
-   * and the one predicate in `transferActivity.ts`.
-   *
-   * The decision is logged WHATEVER it is. A reader of an exported log must
-   * be able to reconstruct why the service did or did not run for a given
-   * window without inferring it backwards from the service's own outcome
-   * lines — which are absent exactly when the service never started, i.e.
-   * the case most in need of explanation.
+   * The service lifecycle decision for one background window. Reads
+   * `transfersRef`, never `transfers`, which the calling effect closes over
+   * stale, and the one predicate in `transferActivity.ts`. The decision is
+   * logged either way: the service's own outcome lines are absent exactly
+   * when it never started, which is the case most in need of explanation.
    */
-  const applyServiceForBackground = useCallback(() => {
+  const applyServiceForBackground = useCallback((trigger = "appstate-background") => {
     const now = Date.now();
     const list = transfersRef.current;
     const active = isTransferActive(list, now);
+    // Printed unconditionally: `simulated=0` on a real run is as load-bearing
+    // as `simulated=1`, or a log reader cannot tell the two runs apart.
+    const simulatedCount = list.filter((t) =>
+      simulatedDriveIdsRef.current.has(t.driveId)
+    ).length;
     debugLog(
       "warn",
       "rn.fgs",
       `background decision ${describeActivity(list, now)} ` +
+        `simulated=${simulatedCount} ` +
         `service=${active ? "START" : "skip"} ` +
+        // Two triggers can reach this line, and an exported log has to say
+        // which one ran: they are different measurements of one mechanism.
+        `trigger=${trigger} ` +
         `available=${isForegroundServiceAvailable()} at=${now}`
     );
     serviceStartedForWindowRef.current = active;
-    if (active) void startForegroundService("appstate-background");
+    if (active) {
+      // A fresh window starts with no post history, so the first update is
+      // never suppressed as a duplicate of a notification already gone.
+      lastNotificationRef.current = null;
+      void startForegroundService(trigger).then(() => {
+        // Prime the content immediately, chained onto the start rather than
+        // fired beside it: `updateServiceProgress` is a no-op until the
+        // service is believed running.
+        pushNotification(transfersRef.current);
+      });
+    }
     return active;
+  }, [pushNotification]);
+
+  /**
+   * The release half, as one stable function. `useCallback(…, [])` is
+   * required: the boot effect's dep array lists it, and a changing identity
+   * there restarts the worklet, so this body reads only refs and module-level
+   * imports. It can only ever release — guarded on
+   * `serviceStartedForWindowRef`, so a caller wrong about there being a
+   * service does nothing, which is what makes it safe to call from an engine
+   * event. Returns whether it released.
+   */
+  const releaseServiceIfInactive = useCallback((trigger: string): boolean => {
+    if (!serviceStartedForWindowRef.current) return false;
+    const now = Date.now();
+    const list = transfersRef.current;
+    if (isTransferActive(list, now)) {
+      // Held, and the log says for how long and what is expected to end it: a
+      // long hold must read as either waiting out a grace window or stuck.
+      const wait = msUntilActivityCouldChange(list, now);
+      debugLog(
+        "warn",
+        "rn.fgs",
+        `service held — ${describeActivity(list, now)} trigger=${trigger} ` +
+          `graceEndsInMs=${wait ?? "n/a"} wakeRealm=worklet at=${now}`
+      );
+      return false;
+    }
+    debugLog(
+      "warn",
+      "rn.fgs",
+      `releasing service — ${describeActivity(list, now)} trigger=${trigger} at=${now}`
+    );
+    serviceStartedForWindowRef.current = false;
+    // Let the completion write land before the service goes: the predicate
+    // went false because a transfer completed, and its write is in flight.
+    void (async () => {
+      await pendingStatsWriteRef.current;
+      await stopForegroundService("predicate-false");
+      // See the twin on the appstate-active path.
+      lastNotificationRef.current = null;
+    })();
+    return true;
   }, []);
 
   const markBackgrounded = useCallback(async () => {
-    // reset the gap window alongside the tick mark, so the worst
-    // gap reported at resume describes THIS background window and not a
-    // stall from some earlier one.
+    // Reset the gap window alongside the tick mark, so the gap reported at
+    // resume describes this background window and not an earlier stall.
     heartbeatGapRef.current = { lastAt: Date.now(), maxGapMs: 0 };
     const reading = await readAliveTicks();
     freezeMarkRef.current = reading
@@ -532,14 +819,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       tickIntervalMs: reading.intervalMs,
     });
 
-    // attribute the window before ruling on it.
-    //
-    // Four states, not two. `service` says whether the mechanism was even
-    // engaged — a freeze with no service running is Android correctly
-    // freezing an idle app, not evidence that anything failed. `screen`
-    // separates a locked window from an on-screen one, which are different
-    // tests of the same mechanism; every measurement in this project's
-    // record that mattered was taken screen-locked.
+    // Attribute the window before ruling on it: a freeze with no service
+    // running is Android freezing an idle app, and a screen-locked window is
+    // a different test of the mechanism from an on-screen one.
     const serviceRunning = serviceStartedForWindowRef.current;
     serviceStartedForWindowRef.current = false;
     const screenOn = await isScreenOn();
@@ -547,26 +829,52 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       `${serviceRunning ? "service-running" : "no-service"}/` +
       `${screenOn === null ? "screen-unknown" : screenOn ? "screen-on" : "screen-locked"}`;
 
-    // The evidence behind the verdict, logged whether or not it froze. The
-    // 0.5 threshold passed a run with a 115 s gap and a completion 49 s
-    // late; a boolean alone cannot tell that apart from a clean window, so
-    // the ratio and the worst gap go on every line.
+    // The evidence behind the verdict, logged whether or not it froze: a
+    // boolean alone cannot tell a stalled window from a clean one, so the
+    // ratio and the worst gap go on every line.
     const gaps = heartbeatGapRef.current;
     const largestGapMs = Math.max(
       gaps.maxGapMs,
       gaps.lastAt > 0 ? Date.now() - gaps.lastAt : 0
     );
+    /**
+     * The same quantity, measured by the party that was actually running.
+     * `largestGapMs` above is built from tick events the worklet emits only
+     * when RN asked for a heartbeat, which it does only in a debug build, so
+     * in a release APK it is always 0. `null` means no field, which is not
+     * `0`. Logged on every freeze verdict, frozen or not.
+     */
+    const workletGapMs = largestWorkletTickGapMs(reading.tickGaps, mark.ticks);
     const ratio = tickRatio(verdict);
-    const grade = gradeWindow(verdict, largestGapMs, reading.intervalMs);
+    /**
+     * The grader is fed `workletGapMs`, not `largestGapMs`, which is always 0
+     * in a release APK and would decide the gap clause on a quantity nobody
+     * measured. The null is passed through, never coerced to 0: that would
+     * manufacture a healthy grade out of an absent measurement. `frozen` does
+     * not depend on the gap at all. The policy lives in
+     * `freezeWindowPolicy.ts` because this function is unreachable from jest.
+     */
+    const decision = decideFreezeWindow(
+      verdict,
+      workletGapMs,
+      reading.intervalMs
+    );
+    const grade = decision.grade;
     const evidence =
       `ticks ${verdict.observedTicks}/${verdict.expectedTicks} ` +
       `ratio=${ratio === null ? "n/a" : ratio.toFixed(3)} ` +
-      `largest-gap=${largestGapMs}ms`;
+      `largest-gap=${largestGapMs}ms ` +
+      `worklet-gap=${workletGapMs === null ? "n/a" : `${workletGapMs}ms`} ` +
+      `worklet-max-gap=${
+        reading.maxTickGapMs === undefined ? "n/a" : `${reading.maxTickGapMs}ms`
+      } ` +
+      // Appended, never replacing a field: the ungraded reasons mean very
+      // different things about the device.
+      `ungraded-reason=${decision.ungradedReason ?? "n/a"}`;
 
     if (!verdict.frozen) {
-      // `reason` distinguishes a genuine clean run from a window too short
-      // to judge and from an engine restart — all three were previously the
-      // same silence.
+      // `reason` distinguishes a genuine clean run from a window too short to
+      // judge and from an engine restart.
       debugLog(
         "info",
         "rn.freeze",
@@ -580,8 +888,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
           `${evidence} elapsed=${verdict.elapsedMs}ms`
       );
       // Only a graded window with the service actually running moves the
-      // streak. `too-short` and `insufficient-signal` grade to null and
-      // prove nothing either way, so they must neither add nor clear.
+      // streak; an ungraded one proves nothing, so it neither adds nor clears.
       if (serviceRunning && grade) {
         const next = await recordServiceWindow(grade);
         debugLog(
@@ -593,6 +900,32 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               (next.fallbackTriggeredAt > 0 ? " — FALLBACK TRIGGERED" : "")
         );
       }
+      return;
+    }
+    /**
+     * The grading floor governs the record, not only the grade. A window
+     * below it cannot tell a freeze from a tick landing the wrong side of the
+     * boundary, and `freezeCount` is persisted, outlives the session and
+     * survives every reset, so it must not be polluted by one.
+     */
+    if (!decision.recordFreeze) {
+      // Logged, not silent: an ungraded freeze that writes nothing is the
+      // outcome most likely to be misread as a bug later.
+      debugLog(
+        "warn",
+        "rn.freeze",
+        `frozen ${(verdict.frozenFraction * 100).toFixed(0)}% of ${verdict.elapsedMs}ms ` +
+          `backgrounded — NOT RECORDED, window ungraded ` +
+          `(${decision.ungradedReason ?? "unknown"}). OD-2: a window this short ` +
+          `cannot tell a freeze from a tick landing the wrong side of the boundary. ` +
+          `${evidence}`
+      );
+      debugLog(
+        "warn",
+        "rn.freeze.attr",
+        `${attribution} grade=ungraded reason=${verdict.reason} ` +
+          `${evidence} elapsed=${verdict.elapsedMs}ms`
+      );
       return;
     }
     await recordFreeze(verdict.elapsedMs, verdict.frozenFraction);
@@ -641,8 +974,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
           reason
         );
         // The Received list subscribes to receivedFilesStorage, so the
-        // back-fill propagates through `broadcastChange()` without any
-        // extra refresh here.
+        // back-fill propagates without an extra refresh here.
         if (recovered > 0) appendLog(`Recovered ${recovered} received file(s).`);
       } catch {
         // runReceivedReconcile already logs its own failures; a failure to
@@ -676,6 +1008,68 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  /**
+   * Start a simulated download. Does the two things a real grab does, in the
+   * same order and through the same functions: the engine writes a received
+   * manifest entry, and `upsertShare` records the share. Skip either and the
+   * simulation produces a transfer that renders on no row at all.
+   */
+  const runFakeDownloadTest = useCallback(
+    async (opts?: FakeDownloadOpts) => {
+      const res = await invoke(
+        rpcRef.current,
+        RPC_TEST_FAKE_DOWNLOAD,
+        (opts ?? {}) as FakeDownloadOpts
+      );
+      if (!res?.ok || !res.driveId || !res.shareKey) return res;
+
+      rememberDriveOrigin(receivedIdsRef.current, res.driveId);
+      // Tracked so the foreground-service decision line can say the run was
+      // synthetic: no exported log may show a real receive that was simulated.
+      simulatedDriveIdsRef.current.add(res.driveId);
+
+      const now = Date.now();
+      try {
+        await upsertShare({
+          shareKey: res.shareKey.toLowerCase(),
+          shareLink: res.shareLink ?? `peardrop://${res.shareKey}`,
+          // The simulated receive is the one path exercisable without a second
+          // phone, so it records the same facts a real one does.
+          driveId: res.driveId,
+          shareName: opts?.shareName ?? "Simulated receive",
+          firstSeenAt: now,
+          lastUpdatedAt: now,
+          files: (res.files ?? []).map((f: { name: string; size: number }) => ({
+            name: f.name,
+            path: f.name,
+            size: f.size,
+            isDownloaded: false,
+          })),
+        });
+      } catch (err: unknown) {
+        appendErrorLog("fake-download: upsertShare failed", err);
+      }
+
+      debugLog(
+        "warn",
+        "rn.simulate",
+        `fake-download started drive=${res.driveId} shareKey=${res.shareKey.slice(0, 12)}… ` +
+          `bytes=${res.totalBytes ?? "?"} holdAtPercent=${res.holdAtPercent ?? 0} ` +
+          `durationMs=${res.durationMs ?? "?"} — SIMULATED, no network, no disk`
+      );
+
+      await refreshDrives();
+      return res;
+    },
+    [appendErrorLog, refreshDrives]
+  );
+
+  /**
+   * Stop and destroy a drive. This is the delete path — `purge` defaults to
+   * true, which removes the corestore. Not the right call for a Cancel
+   * button: use `cancelInFlight`, because cancelling an upload through this
+   * function deletes the user's share. Every caller here is a real removal.
+   */
   const cancelTransfer = useCallback(
     async (driveId: string, opts?: { purge?: boolean }) => {
       const id = String(driveId || "").trim();
@@ -688,10 +1082,106 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
-  const activateDrive = useCallback(async (driveId: string) => {
+  /**
+   * Stop a transfer that is happening right now, keeping the share and any
+   * bytes already on disk. No optimistic local state is written: only the
+   * engine knows whether a cancel caught anything, so its event moves the UI.
+   * The one exception is `alreadyInactive`, where no event is coming.
+   */
+  const cancelInFlight = useCallback(
+    async (driveId: string) => {
+      const id = String(driveId || "").trim();
+      if (!id) return { ok: false, error: "driveId is required" };
+      debugLog("warn", "rn.cancel", `cancel requested drive=${id} at=${Date.now()}`);
+      const res = await invoke(rpcRef.current, RPC_HYPERDRIVE_CANCEL, { driveId: id });
+      debugLog(
+        "warn",
+        "rn.cancel",
+        `cancel reply drive=${id} ok=${res?.ok} unwinding=${!!res?.unwinding} ` +
+          `alreadyInactive=${!!res?.alreadyInactive}`
+      );
+      // No `transfer-cancelled` is coming, so settle the row here — marked
+      // the same way the event marks it, so the UI has one shape to read.
+      if (res?.ok && res.alreadyInactive) {
+        // No `filesKept`: the engine is saying nothing counted anything, and
+        // `null` makes the row read "Stopped" instead of inventing a number.
+        markCancelled(id);
+      }
+      return res;
+    },
+    [markCancelled]
+  );
+
+  /**
+   * Cancel every transfer that is currently active. A foreground service may
+   * own one notification and it carries no driveId, so its button cannot
+   * target a single transfer. The set comes from `activeTransfers`, the same
+   * predicate that held the service, so the button cancels exactly the set
+   * the notification describes. Reads `transfersRef`, not `transfers`: this
+   * runs from a native callback outside the render cycle.
+   */
+  const cancelAllActive = useCallback(
+    async (reason: string) => {
+      const now = Date.now();
+      const list = transfersRef.current;
+      const active = activeTransfers(list, now);
+      debugLog(
+        "warn",
+        "rn.cancel",
+        `cancel-all (${reason}) — ${describeActivity(list, now)} at=${now}`
+      );
+      if (active.length === 0) return;
+      await Promise.all(
+        active.map(({ index }) => {
+          const driveId = list[index]?.driveId;
+          return driveId ? cancelInFlight(driveId) : Promise.resolve(undefined);
+        })
+      );
+    },
+    [cancelInFlight]
+  );
+
+  /**
+   * `cancelAllActive` behind a ref. The AppState effect that drains a queued
+   * cancel also owns the swarm refresh interval, so listing the function in
+   * its deps would buy a swarm-refresh storm for every identity change. The
+   * ref leaves those deps alone while still calling the current function.
+   */
+  const cancelAllActiveRef = useRef(cancelAllActive);
+  cancelAllActiveRef.current = cancelAllActive;
+
+  /**
+   * The notification's Cancel action arriving from the native side — the one
+   * native-to-JS push in this app. `DeviceEventEmitter` is the matching
+   * receiver for `emitDeviceEvent`, so no native module instance is involved
+   * and nothing can be null at subscribe time. This is an event, not a
+   * timer, so it does not depend on the interval timers that die in the
+   * background.
+   */
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(EVENT_CANCEL_ALL, () => {
+      void cancelAllActive("notification-action");
+    });
+    return () => sub.remove();
+  }, [cancelAllActive]);
+
+  /**
+   * `opts.serve` is the explicit announce opt-in. Omit it and the engine
+   * applies its origin-derived default: hosted announces, received stays
+   * client-only. Read `res.mode`, never `res.ok` alone — `ok: true` only
+   * means a live session, while `mode === "server"` means it can be found.
+   */
+  const activateDrive = useCallback(async (driveId: string, opts?: { serve?: boolean }) => {
     const id = String(driveId || "").trim();
     if (!id) return { ok: false, error: "driveId is required" };
-    const res = await invoke(rpcRef.current, RPC_DRIVES_RESUME, { driveId: id });
+    // The payload widening is asserted here because the RPC payload types do
+    // not yet carry `serve`. The wire is JSON and the worklet already reads
+    // it, so this is a typing gap and not a behaviour gap.
+    const serve = opts?.serve;
+    const payload = (
+      serve === undefined ? { driveId: id } : { driveId: id, serve }
+    ) as { driveId: string };
+    const res = await invoke(rpcRef.current, RPC_DRIVES_RESUME, payload);
     if (res?.ok) {
       rememberDriveOrigin(hostedIdsRef.current, id);
       setActiveDriveIds((prev) => {
@@ -735,9 +1225,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     (driveId: string) => {
       const id = String(driveId || "").trim();
       if (!id) return;
-      // via commitTransfers, so the ref the service decision reads
-      // loses the drive at the same instant the state does. A removed
-      // transfer can be the last active one, which makes this a stop trigger.
+      // Via commitTransfers, so the ref the service decision reads loses the
+      // drive at the same instant the state does; this can be a stop trigger.
       commitTransfers((prev) => prev.filter((t) => t.driveId !== id));
       hostedIdsRef.current.delete(id);
       receivedIdsRef.current.delete(id);
@@ -755,43 +1244,29 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         worklet.start("/app.bundle", bundle, [storagePath]);
 
         const { IPC } = worklet;
-        // bare-kit's IPC is duck-compatible with what bare-rpc expects but
-        // the two packages don't share a TypeScript interface, so we cast.
+        // bare-kit's IPC is duck-compatible with what bare-rpc expects, but
+        // the two packages share no TypeScript interface, hence the cast.
         const rpc = new RPC(IPC as unknown as ConstructorParameters<typeof RPC>[0], (req) => {
           try {
             if (req.command !== RPC_EVENT) return;
             if (!req.data) return;
             const evt = JSON.parse(b4a.toString(req.data as unknown as Uint8Array)) as BackendEvent;
 
-            // log lines from the Bare worklet. Handled first —
-            // it's the highest-frequency event type once debugging is on,
-            // and it must never fall through into the UI state machine.
+            // Log lines from the Bare worklet. Handled first: the highest
+            // frequency, and they must never reach the UI state machine.
             if (evt.type === "log") {
               logFromBackend(evt);
               return;
             }
-            // worklet liveness heartbeat. Handled next to `log`
-            // for the same reason — high frequency while debugging is on,
-            // and it must never reach the UI state machine. No state is
-            // touched and no render is triggered; the log line IS the
-            // product.
-            //
-            // Two clocks on one line, deliberately. `worklet-at` is the
-            // worklet's own stamp at emit; `rn-at` is ours at receive. A
-            // gap in `worklet-at` means the engine stopped. Continuous
-            // `worklet-at` values arriving with bunched `rn-at` values
-            // means the engine kept running and the IPC queued — a
-            // different answer, and indistinguishable with one clock.
-            //
-            // Gated to debug builds. The `return` sits OUTSIDE the
-            // gate so a release build still swallows the event rather than
-            // letting it fall through the UI state machine — the engine
-            // keeps emitting ticks whenever debug logging is on, including
-            // in release (see the report's "still shipping" note).
+            // Worklet liveness heartbeat, handled next for the same reason.
+            // Two clocks on one line: a gap in the worklet's own stamp means
+            // the engine stopped, while continuous stamps arriving bunched
+            // mean the engine ran and the IPC queued. The `return` sits
+            // outside the debug gate so a release build still swallows the
+            // event instead of letting it reach the UI state machine.
             if (evt.type === "worklet-tick") {
-              // track the worst inter-tick gap. Ungated and
-              // before the debug branch — the freeze attribution needs this
-              // in every build, and it costs two number writes.
+              // Track the worst inter-tick gap. Ungated and before the debug
+              // branch: the freeze attribution needs this in every build.
               {
                 const at = Date.now();
                 const gaps = heartbeatGapRef.current;
@@ -807,38 +1282,44 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                   "rn.heartbeat",
                   `worklet n=${evt.n ?? "?"} worklet-at=${evt.at ?? "?"} rn-at=${Date.now()}`
                 );
-              // Sprint 6H, found by the 2-min device run: RN's setInterval
-              // is driven by the Choreographer, which Android halts while
-              // the app is backgrounded — debugLog's own 1 s flush timer
-              // included. Entries then sit in memory until foreground, and
-              // an OS kill during the background window destroys exactly
-              // the evidence this probe exists to collect.
-              //
-              // A timer cannot fix a frozen-timer problem. This callback is
-              // native-driven and demonstrably still runs while
-              // backgrounded, so it is the only 2 s clock available — drive
-              // the drain from it. Foreground is left alone: the existing
-              // flush timer already covers it, and flushing per tick there
-              // would be pure churn.
-                // this forced a disk write every 2 s while
-                // backgrounded. Diagnostic only — it must not reach users,
-                // so it lives inside the dev-build gate.
+              // Android halts RN's interval timers while the app is
+              // backgrounded, the log writer's own flush timer included, so
+              // entries sit in memory and an OS kill destroys the evidence
+              // this probe collects. A timer cannot fix a frozen-timer
+              // problem: this callback is native-driven and still runs, so
+              // the drain rides it. Foreground keeps its own flush timer.
+                // A forced disk write on every tick while backgrounded.
+                // Diagnostic only, so it stays inside the dev-build gate.
                 if (AppState.currentState !== "active") void flushDebugLog();
               }
               return;
             }
             if (evt.type === "listening") {
               setStatus("listening");
-              appendLog("Backend listening.");
+              appendStateLog("Backend listening.");
               return;
             }
             if (evt.type === "error") {
               setStatus("error");
-              appendLog(`Error: ${evt.message}`);
+              appendStateLog(`Error: ${evt.message}`);
               return;
             }
             if (evt.type === "upload-progress") {
-              appendLog(`Progress ${evt.percent ?? "?"}%`);
+              // Only the log line is gated, never the event: this fires up to
+              // 10 Hz on a download and an unconditional line per event
+              // destroys the retained ring. The event still sets
+              // `lastEventAt`, which feeds the stall watchdog and the ongoing
+              // notification, and suppressing it would make an attached idle
+              // peer indistinguishable from a stalled one. Gated on driveId
+              // and percent, not bytes, which change on every event.
+              logChangeGated(
+                "info",
+                "rn.progress",
+                `progress:${evt.driveId ?? "unknown"}`,
+                `${evt.percent ?? "?"}`,
+                `progress drive=${evt.driveId ?? "unknown"} percent=${evt.percent ?? "?"} ` +
+                  `bytes=${evt.bytesTransferred ?? "?"} total=${evt.totalBytes ?? "?"}`
+              );
               if (evt.driveId) {
                 upsertTransfer(evt.driveId, (prev) => ({
                   ...prev,
@@ -862,17 +1343,20 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       : typeof evt.bytesTransferred === "number"
                         ? evt.bytesTransferred
                         : prev.totalSentBytes,
-                  // Intentionally do NOT mark completed here, even at 100%.
-                  // Completion must come from an explicit upload-complete
-                  // event so the UI can safely clamp at 99 until then.
+                  // Not marked completed here, even at 100%: completion comes
+                  // from an explicit event, so the UI can clamp at 99.
                   completed: prev.completed,
-                  // flip on first progress event. The UI uses
-                  // this to distinguish "connected but no data flowing"
-                  // from "data is moving" — the engine's percent itself
-                  // is unreliable on hosted transfers because UDX sockets
-                  // don't expose `bytesWritten` like Node net.Socket, so
-                  // the tracker's bytes-counter often reads 0 forever.
+                  // Flips on first progress event, because the engine's
+                  // percent is unreliable on hosted transfers: this is what
+                  // separates "connected" from "data is moving".
                   progressEverReceived: true,
+                  // Any progress clears `stalled`. Without this the
+                  // watchdog's flag outlives every later progress event and
+                  // the row reads "Stopped — tap to retry" while bytes are
+                  // landing. The clear belongs here, the one place that
+                  // already knows bytes arrived, and it is unconditional:
+                  // the event itself is the evidence.
+                  stalled: false,
                   lastEventAt: Date.now(),
                 }));
               }
@@ -885,41 +1369,48 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                 } ms)`
               );
               if (evt.driveId) {
-                // Tally lifetime sent bytes only for drives we host. Every
-                // upload-complete represents one peer finishing its copy,
-                // so each fires once per receiver; summing totalBytes gives
-                // a coarse but accurate "data shared" counter. Received
-                // drives surface the same event, but we handle those via
-                // addReceived at download completion.
+                // Tally lifetime sent bytes only for hosted drives: each
+                // upload-complete is one peer finishing its copy, so the sum
+                // is a coarse but accurate data-shared counter. Received
+                // drives are counted at download completion instead.
                 if (hostedIdsRef.current.has(evt.driveId)) {
                   const delta =
                     typeof evt.totalBytes === "number" ? evt.totalBytes : 0;
-                  // tracked rather than fired-and-forgotten.
-                  // `upload-complete` is the event that flips the activity
-                  // predicate false and triggers the service stop, so this
-                  // write and the freeze window overlap. The stop path awaits
-                  // this chain before releasing the service.
+                  // Tracked rather than fired and forgotten: this event flips
+                  // the activity predicate false and triggers the service
+                  // stop, and that path awaits the chain before releasing.
                   if (delta > 0) {
                     pendingStatsWriteRef.current = pendingStatsWriteRef.current
                       .then(() => addSent(delta))
                       .catch(() => {});
                   }
                 }
-                // Pulse a success haptic at the moment a transfer wraps.
-                // This fires for both hosts (a peer finished pulling our
-                // drive) and receivers (we finished pulling a drive); both
-                // are legit moments for positive feedback.
-                haptics.success();
-                // When the app is backgrounded, nudge the user with a local
-                // notification. notifyTransferComplete() is a no-op when the
-                // app is in the foreground or permissions were denied.
+                // The receive path is not handled here: it emits
+                // `download-outcome`, and one terminal branch must decide a
+                // grab's success. The haptic and the notification are
+                // hosted-only. A non-hosted drive reaching this means the
+                // packed worklet is older than this JS, so it is logged
+                // loudly while the row below still settles.
                 const isHosted = hostedIdsRef.current.has(evt.driveId);
-                void notifyTransferComplete({
-                  title: isHosted ? "Share delivered" : "Download complete",
-                  body: isHosted
-                    ? "A peer finished pulling your share."
-                    : "Your files are ready in Receive.",
-                });
+                if (isHosted) {
+                  // Pulse a success haptic at the moment a hosted transfer
+                  // wraps: a peer finished pulling our drive.
+                  haptics.success();
+                  // A local nudge while backgrounded; a no-op in the
+                  // foreground or when permission was denied.
+                  void notifyTransferComplete({
+                    title: "Share delivered",
+                    body: "A peer finished pulling your share.",
+                  });
+                } else {
+                  debugLog(
+                    "warn",
+                    "rn.event",
+                    `upload-complete for a NON-HOSTED drive=${evt.driveId} — the receive path ` +
+                      `moved to download-outcome (D-07). This means the packed worklet is older ` +
+                      `than this JS; re-run npm run bundle:backend.`
+                  );
+                }
                 upsertTransfer(evt.driveId, (prev) => ({
                   ...prev,
                   percent: 100,
@@ -950,6 +1441,82 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               }
               return;
             }
+            /**
+             * The receive path's terminal event, not routed through the
+             * `upload-complete` handler: that one fires a success haptic
+             * unconditionally and this has three outcomes. `completed: true`
+             * on all three, since the transfer is over either way and every
+             * "this is over" reader keys off that field; `downloadOutcome`
+             * says how it ended. `percent` reaches 100 only on `complete`.
+             * An unrecognised outcome fails closed to `failed`.
+             */
+            if (evt.type === "download-outcome") {
+              const outcome =
+                evt.outcome === "complete" || evt.outcome === "partial"
+                  ? evt.outcome
+                  : "failed";
+              const kept =
+                typeof evt.filesKept === "number" && Number.isFinite(evt.filesKept)
+                  ? evt.filesKept
+                  : 0;
+              const failed =
+                typeof evt.filesFailed === "number" && Number.isFinite(evt.filesFailed)
+                  ? evt.filesFailed
+                  : 0;
+              appendLog(
+                `Download ${outcome} — ${kept} saved, ${failed} not saved (${
+                  evt.duration ?? "?"
+                } ms)`
+              );
+              debugLog(
+                outcome === "complete" ? "info" : "warn",
+                "rn.download",
+                `download-outcome drive=${evt.driveId ?? "?"} outcome=${outcome} ` +
+                  `kept=${kept} failed=${failed} bytes=${evt.totalBytes ?? 0} ` +
+                  `duration=${evt.duration ?? "?"}ms`
+              );
+              if (evt.driveId) {
+                // Positive feedback only where it is earned: a partial grab is
+                // a soft failure, and the haptic is the first thing noticed.
+                if (outcome === "complete") haptics.success();
+                else if (outcome === "partial") haptics.warning();
+                else haptics.error();
+                // Copy rules: no "check your network", no claim that a link
+                // expires. These say what happened and nothing about why, and
+                // they name no route — grabbed files land in the main list,
+                // and a notification must not name a destination the app
+                // cannot reach.
+                void notifyTransferComplete(
+                  outcome === "complete"
+                    ? {
+                        title: "Download complete",
+                        body: "Your files are saved — they're in your list.",
+                      }
+                    : outcome === "partial"
+                      ? {
+                          title: "Some files did not arrive",
+                          body: `${kept} of ${kept + failed} saved. Open PearDrop to see what landed.`,
+                        }
+                      : {
+                          title: "Nothing was saved",
+                          body: "The share stopped before any files arrived.",
+                        }
+                );
+                upsertTransfer(evt.driveId, (prev) => ({
+                  ...prev,
+                  percent: outcome === "complete" ? 100 : prev.percent,
+                  bytesTransferred:
+                    typeof evt.totalBytes === "number"
+                      ? evt.totalBytes
+                      : prev.bytesTransferred,
+                  completed: true,
+                  stalled: false,
+                  downloadOutcome: { outcome, kept, failed },
+                  lastEventAt: Date.now(),
+                }));
+              }
+              return;
+            }
             if (evt.type === "drive-created") {
               appendLog(`Drive created: ${evt.shareLink || evt.driveId || ""}`);
               if (evt.driveId) {
@@ -966,9 +1533,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "drive-hydrated") {
-              // hydration now spans both active and inactive
-              // drives, and either origin. The state field tells us which
-              // set the drive belongs in.
+              // Hydration spans both active and inactive drives and either
+              // origin; the state field says which set the drive belongs in.
               appendLog(`Drive hydrated: ${evt.shareLink || evt.driveId || ""}`);
               if (evt.driveId) {
                 const driveId = evt.driveId;
@@ -1071,6 +1637,33 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               }
               return;
             }
+            if (evt.type === "transfer-cancelled") {
+              // Not routed through the `upload-complete` handler above: that
+              // one fires a success haptic and posts a completion
+              // notification, which is the wrong thing to tell a user who
+              // just stopped the transfer. `keptCount` is the honest value,
+              // `null` when the engine sent no count, so the row can tell
+              // "nothing saved" apart from "not reported".
+              const keptCount =
+                typeof evt.filesKept === "number" && Number.isFinite(evt.filesKept)
+                  ? evt.filesKept
+                  : null;
+              const kept = evt.filesKept ?? 0;
+              appendLog(
+                `Transfer cancelled${evt.driveId ? `: ${evt.driveId}` : ""}` +
+                  (kept > 0 ? ` (kept ${kept})` : "")
+              );
+              debugLog(
+                "warn",
+                "rn.cancel",
+                `transfer-cancelled drive=${evt.driveId ?? "?"} ` +
+                  `direction=${evt.direction ?? "?"} filesKept=${kept} ` +
+                  `bytes=${evt.totalBytes ?? 0} at=${Date.now()}`
+              );
+              if (evt.driveId) markCancelled(evt.driveId, keptCount);
+              refreshDrives().catch(() => {});
+              return;
+            }
             if (evt.type === "drive-stopped") {
               appendLog(`Drive stopped: ${evt.driveId ?? ""}`);
               if (evt.driveId) {
@@ -1082,9 +1675,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                   peerIds: [],
                   lastEventAt: Date.now(),
                 }));
-                // The drive is gone; drop it from the origin sets so we
-                // don't misattribute any late/stray events that happen to
-                // reuse this driveId in a future session.
+                // The drive is gone; drop it from the origin sets so late or
+                // stray events on a reused driveId are not misattributed.
                 hostedIdsRef.current.delete(driveId);
                 receivedIdsRef.current.delete(driveId);
                 setActiveDriveIds((prev) => {
@@ -1105,8 +1697,6 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               return;
             }
             if (evt.type === "peer-rejected") {
-              // previously emitted by the engine and
-              // handled nowhere — a path-traversal rejection vanished.
               appendLog(
                 `Peer rejected a file (${evt.cause ?? "unknown"})${evt.driveId ? ` on ${evt.driveId}` : ""}`
               );
@@ -1128,6 +1718,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     peerId && !prev.peerIds.includes(peerId)
                       ? [...prev.peerIds, peerId]
                       : prev.peerIds;
+                  const at = Date.now();
                   return {
                     ...prev,
                     totalBytes:
@@ -1136,7 +1727,20 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                         : prev.totalBytes,
                     peerIds,
                     peersConnected: peerIds.length,
-                    lastEventAt: Date.now(),
+                    lastEventAt: at,
+                    /**
+                     * All three peer handlers share `nextLastPeerLeftAt`: one
+                     * writer for the one reader. Without a stamp here, a
+                     * departure outlives the peer re-attaching and ages
+                     * toward the idle-host grace while bytes flow.
+                     */
+                    lastPeerLeftAt: nextLastPeerLeftAt({
+                      prevPeersConnected: prev.peersConnected,
+                      prevPeerIdCount: prev.peerIds.length,
+                      nextPeersConnected: peerIds.length,
+                      prevLastPeerLeftAt: prev.lastPeerLeftAt,
+                      at,
+                    }),
                   };
                 });
               }
@@ -1157,37 +1761,57 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       );
                   const nextPeersConnected = peerIds.length;
 
-                  // Stuck-at-0% safety net: the backend's 1 Hz upload
-                  // tracker can miss transfers that finish faster than its
-                  // tick, and never emits upload-complete on real shares.
-                  // When the last peer on a hosted drive disconnects and
-                  // we had at least one peer connected, treat the transfer
-                  // as delivered so the bar doesn't sit at 0% forever.
-                  // False positives (peer dropped before any real bytes
-                  // flowed) are rare and the user can still dismiss.
+                  // Stuck-at-0% safety net: the upload tracker can miss
+                  // transfers that finish faster than its tick, so a hosted
+                  // drive losing its last peer settles rather than sitting at
+                  // 0% forever.
                   const isHosted = prev.origin === "hosted";
                   const hadPeer =
                     prev.peersConnected > 0 || prev.peerIds.length > 0;
+                  /**
+                   * "The last peer left" is not "the share was delivered":
+                   * the engine keeps a per-drive record of peers that
+                   * finished and ships it on this event. `=== true` and not
+                   * a truthiness test, because most producers omit the field
+                   * and an absent one must mean no. The `isHosted` guard must
+                   * not be relaxed — this event fires on the receive path
+                   * too, and every sender drop would finalise a download.
+                   */
                   const shouldFinalize =
                     isHosted &&
                     !prev.completed &&
                     hadPeer &&
-                    nextPeersConnected === 0;
+                    nextPeersConnected === 0 &&
+                    evt.delivered === true;
 
                   if (shouldFinalize) {
-                    // SILENT WATCHDOG #1. This jumps a
-                    // hosted transfer straight to 100% on a heuristic —
-                    // "last peer left and we'd seen at least one, so it
-                    // probably finished". When it's wrong the user reports
-                    // "it said Sent but nothing arrived", and there was
-                    // previously nothing in any log to explain it.
+                    // This jumps a hosted transfer to 100% on a heuristic, so
+                    // it is logged: when it is wrong the user reports "it
+                    // said Sent but nothing arrived" and nothing explains it.
                     debugLog(
                       "warn",
                       "rn.watchdog",
                       `peer-disconnect finalize drive=${evt.driveId ?? "?"} — forcing percent=100 ` +
-                        `(heuristic: hosted, had peers, now 0). Was percent=${prev.percent} ` +
+                        `(hosted, had peers, now 0, engine reports delivered=${evt.delivered} ` +
+                        `deliveredPeers=${evt.deliveredPeers ?? "?"}). Was percent=${prev.percent} ` +
                         `bytes=${prev.bytesTransferred}/${prev.totalBytes ?? "?"} ` +
                         `progressEverReceived=${prev.progressEverReceived}`
+                    );
+                  } else if (
+                    isHosted &&
+                    !prev.completed &&
+                    hadPeer &&
+                    nextPeersConnected === 0
+                  ) {
+                    // Logged so the non-finalising case is visible rather
+                    // than a silent absence: only "a peer finished" failed.
+                    debugLog(
+                      "warn",
+                      "rn.watchdog",
+                      `peer-disconnect NOT finalized drive=${evt.driveId ?? "?"} — last peer left ` +
+                        `but the engine reports delivered=${evt.delivered} ` +
+                        `deliveredPeers=${evt.deliveredPeers ?? "?"}. The share was not delivered ` +
+                        `(D-09). percent stays ${prev.percent}`
                     );
                   }
 
@@ -1199,17 +1823,41 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     percent: shouldFinalize ? 100 : prev.percent,
                     completed: shouldFinalize ? true : prev.completed,
                     lastEventAt: at,
-                    // stamp only on the FALLING edge to zero. Two
-                    // peers dropping to one is not the last peer leaving, and
-                    // restamping there would extend the grace window every
-                    // time a peer churns.
-                    lastPeerLeftAt:
-                      nextPeersConnected === 0 && prev.peersConnected > 0
-                        ? at
-                        : prev.lastPeerLeftAt,
+                    // Stamp only on the falling edge to zero: two peers
+                    // dropping to one is not the last peer leaving, and
+                    // restamping there extends the grace window on churn.
+                    // The rule lives in `nextLastPeerLeftAt` so all three
+                    // peer handlers share one writer and it is reachable
+                    // from jest, which this file is not.
+                    lastPeerLeftAt: nextLastPeerLeftAt({
+                      prevPeersConnected: prev.peersConnected,
+                      prevPeerIdCount: prev.peerIds.length,
+                      nextPeersConnected,
+                      prevLastPeerLeftAt: prev.lastPeerLeftAt,
+                      at,
+                    }),
                   };
                 });
               }
+              return;
+            }
+            /**
+             * The worklet's wake. Only the worklet keeps time while the app
+             * is backgrounded, so the idle-host grace is measured on its
+             * alive ticker and arrives here as an event. It is a wake, not a
+             * verdict: the decision stays with `releaseServiceIfInactive`,
+             * which does nothing when there is no service to release, and
+             * that is what makes it safe to act on.
+             */
+            if (evt.type === "host-idle-grace-elapsed") {
+              debugLog(
+                "warn",
+                "rn.fgs",
+                `worklet idle-grace wake drive=${evt.driveId ?? "?"} ` +
+                  `idleMs=${evt.idleMs ?? "?"} engineAt=${evt.at ?? "?"} ` +
+                  `at=${Date.now()}`
+              );
+              releaseServiceIfInactive("worklet-idle-grace");
               return;
             }
             if (evt.type === "download-peer-disconnected") {
@@ -1222,11 +1870,17 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     peerIds: [],
                     peersConnected: 0,
                     lastEventAt: at,
-                    // same falling-edge rule as peer-disconnected.
-                    lastPeerLeftAt:
-                      prev.peersConnected > 0 || prev.peerIds.length > 0
-                        ? at
-                        : prev.lastPeerLeftAt,
+                    // The same falling-edge rule as peer-disconnected, and
+                    // the same function. The engine emits this right after a
+                    // `peer-disconnected` for the same socket close, so the
+                    // window the first event opened must not be restarted.
+                    lastPeerLeftAt: nextLastPeerLeftAt({
+                      prevPeersConnected: prev.peersConnected,
+                      prevPeerIdCount: prev.peerIds.length,
+                      nextPeersConnected: 0,
+                      prevLastPeerLeftAt: prev.lastPeerLeftAt,
+                      at,
+                    }),
                   };
                 });
               }
@@ -1243,22 +1897,41 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         setReady(true);
         setStatus("ready");
-        appendLog("Worklet ready; starting LISTEN…");
-        // the worklet boots with debug logging off. Push the
-        // persisted flag down now, and on every later change, so backend
-        // instrumentation matches the RN side from the first event.
-        void invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
-          enabled: debugEnabledRef.current,
-          // The worklet realm has no build-type constant, so the heartbeat's dev-only
-          // gate is pushed down from here. `enabled` stays user-facing.
-          heartbeat: IS_DEBUG_BUILD,
-        }).catch(() => {});
-        sendOneWay(rpcRef.current, RPC_LISTEN);
+        appendStateLog("Worklet ready; starting LISTEN…");
+        // The worklet boots with debug logging off, and the order here is the
+        // point: resolve the persisted flag, await the worklet's reply so the
+        // flag is set in that realm, and only then send `RPC_LISTEN`. Listen
+        // is what starts the engine, and the worklet drops every line until
+        // the flag arrives, so its boot prologue would never be written. The
+        // flag read is bounded — listening must not be hostage to storage.
+        const persistedDebug = await awaitDebugLogging();
+        if (cancelled) return;
+        debugEnabledRef.current = persistedDebug;
+        try {
+          await invoke(rpcRef.current, RPC_SET_DEBUG_LOGGING, {
+            enabled: persistedDebug,
+            // The worklet realm has no build-type constant, so the heartbeat
+            // gate is pushed down: ticks need both `enabled` and `heartbeat`.
+            heartbeat: IS_DEBUG_BUILD,
+          });
+        } catch {
+          // A failed handshake must not stop the engine from listening — that
+          // would trade a missing log line for a dead app.
+        }
+        if (cancelled) return;
+        // The worklet needs the grace duration to expire the idle-host window
+        // in its own realm, and this call starts the engine, so it is the one
+        // place the number can arrive before any peer can leave. Taken from
+        // `transferActivity.ts` and never a literal here: RN is the single
+        // producer, so the engine's sweep and RN's predicate cannot disagree
+        // about when the window ends.
+        sendOneWay(rpcRef.current, RPC_LISTEN, {
+          idleHostGraceMs: IDLE_HOST_GRACE_MS + IDLE_HOST_GRACE_WAKE_PAD_MS,
+        });
         await refreshStatus();
         await refreshDrives();
-        // boot-time recovery. Runs after refreshDrives so the
-        // engine has hydrated its manifest and DRIVES_LIST reports real
-        // localFiles rather than an empty pre-hydration list.
+        // Runs after refreshDrives so the engine has hydrated its manifest
+        // and the drive list reports real local files.
         await reconcileReceived("boot");
       } catch (err: unknown) {
         setStatus("boot error");
@@ -1280,33 +1953,37 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       workletRef.current = null;
       rpcRef.current = null;
     };
-    // `reconcileReceived` is stable (its only dep, appendLog, is a
-    // `useCallback(…, [])`), so listing it cannot retrigger this effect —
-    // which matters here, because a retrigger would tear down and restart
-    // the worklet.
+    // This dep array is a tripwire: a retrigger tears down and restarts the
+    // worklet. Every entry is admissible only because its identity cannot
+    // change independently — `reconcileReceived` and `appendStateLog` are
+    // `useCallback(…, [])`, `releaseServiceIfInactive` reads only refs and
+    // module-level imports, and `markCancelled`'s only dep is
+    // `upsertTransfer`, which this array already lists. Anything added needs
+    // that argument made explicitly; "probably stable" restarts the worklet
+    // mid-transfer.
   }, [
     appendLog,
+    appendStateLog,
     appendErrorLog,
     refreshDrives,
     refreshStatus,
     upsertTransfer,
+    markCancelled,
     reconcileReceived,
+    releaseServiceIfInactive,
   ]);
 
   /**
-   * own the debug-logging lifecycle from the one provider that
-   * spans the whole app. `initDebugLog()` is idempotent and, while the
-   * flag is off, costs exactly one subscription — no timer, no buffer, no
-   * file handle. Every flag change is mirrored into the worklet so the two
-   * realms are never instrumented asymmetrically.
+   * Own the debug-logging lifecycle from the one provider that spans the
+   * whole app. `initDebugLog()` is idempotent and costs one subscription
+   * while the flag is off. Every change is mirrored into the worklet so the
+   * two realms are never instrumented asymmetrically.
    */
   useEffect(() => {
     initDebugLog();
-    // the device-identity line, on the rising edge of the same
-    // flag. Registered AFTER initDebugLog so `log()` is already live when it
-    // fires — subscribers run in registration order, and applyEnabled sets
-    // its enabled flag before its first await. Ungated, like the build line:
-    // an exported log has to say which device produced it.
+    // Registered after initDebugLog so the log writer is live when the
+    // device-identity line fires. Ungated: an exported log has to say which
+    // device produced it.
     initDeviceIdentityLog();
     return subscribeDebugLogging((enabled) => {
       debugEnabledRef.current = enabled;
@@ -1319,30 +1996,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   /**
-   * the RN-side CONTROL heartbeat. Same 2 s cadence as the
-   * worklet's, talks to nothing, and that is the whole point.
-   *
-   * Without it a worklet-tick gap is ambiguous: the worklet may have been
-   * suspended, or Android may have frozen/throttled the RN JS thread so
-   * that nothing on this side ran to receive the ticks. Those look
-   * identical from the worklet stream alone. This interval runs on the
-   * same JS thread and the same timer machinery as the receive handler, so
-   * if it gaps too, the RN side stopped and the worklet stream says
-   * nothing about the worklet.
-   *
-   * Note it also indirectly reports on the log writer: debugLog's flush
-   * timer is another setInterval on this thread, so a gap here means the
-   * flush timer gapped as well (see the Phase 4 note in the report).
-   *
-   * Gated on the same flag as Phase 1 — no timer at all while debugging
-   * is off. `subscribeDebugLogging` replays the current value on
-   * subscribe, so the initial state is handled without a separate read.
-   *
-   * Additionally gated to debug builds, and the gate sits ABOVE the
-   * `subscribeDebugLogging` call deliberately — in a release build this
-   * registers no listener at all, not merely a listener that declines to
-   * start a timer. "Off means genuinely off", as the debug-logging
-   * subsystem already requires of itself.
+   * The RN-side control heartbeat. Same cadence as the worklet's, talks to
+   * nothing, and that is the point: a worklet-tick gap alone cannot say
+   * whether the worklet stopped or the RN thread did, and this interval runs
+   * on the same thread and timer machinery as the receive handler. No timer
+   * at all while debugging is off, and the build gate sits above the
+   * subscribe call so a release build registers no listener whatsoever.
    */
   useEffect(() => {
     if (!IS_DEBUG_BUILD) return;
@@ -1373,35 +2032,13 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // / HH.3: stall detector. Hosted transfers can stay in
-  // "Sending…" forever because the receiver continues seeding the drive
-  // back into the swarm — `socket.on("close")` never fires on the
-  // sender's side, so the existing peer-disconnect safety net at line
-  // ~435-461 never triggers. Received transfers can stall mid-download
-  // if the sender drops without a clean disconnect.
-  //
-  // Once a transfer has had at least one upload-progress event AND no
-  // further events for >30 s, we treat it as done:
-  //  - hosted → mark completed=true (the sender did their part; auto-clear
-  //    via Phase R kicks in 12 s after that, leaving "Sent" briefly
-  //    visible).
-  //  - received → keep completed=false but set `stalled=true` so the UI
-  //    can surface a "couldn't finish" toast and let the user dismiss.
-  //
-  // Runs at 5 s cadence — enough granularity for the 30 s threshold
-  // without burning CPU. The interval lives independently of the worklet
-  // boot effect so it survives across re-renders.
-  // AppState-driven swarm refresh.
-  //  - On background → active: fire one immediate refresh so a returning user
-  //    sees announces propagate quickly.
-  //  - While active: a 90 s heartbeat keeps DHT presence fresh without
-  //    burning battery in the background. 90 s is a starting point — short
-  //    enough to feel responsive after Wi-Fi roams, long enough that it
-  //    won't trigger throttling on aggressive battery-saver OSes (HyperOS).
-  //    Tunable; revisit if real-world testing shows peers dropping faster.
-  //  - On active → background: clear the interval. Background tick adds
-  //    nothing because the OS may suspend us anyway, and a freshly-resumed
-  //    app will catch up on the next active transition.
+  // AppState-driven swarm refresh. On background → active, one immediate
+  // refresh so a returning user sees announces propagate. While active, a
+  // heartbeat keeps DHT presence fresh at an interval short enough to feel
+  // responsive after a Wi-Fi roam and long enough not to provoke aggressive
+  // battery-saver throttling. On active → background, clear the interval:
+  // the OS may suspend the process anyway, and a resumed app catches up on
+  // the next active transition.
   useEffect(() => {
     if (!ready) return;
     let intervalId: ReturnType<typeof setInterval> | null = null;
@@ -1425,33 +2062,37 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
 
     const onChange = (next: AppStateStatus) => {
       if (next === "active") {
-        // Restart the stall watchdog's clock. The timer that drives it was
-        // halted for the whole background window, so every in-flight
-        // transfer's `lastEventAt` is stale through no fault of its own;
-        // without this the first tick after resume rules on all of them.
+        // Restart the stall watchdog's clock: its timer was halted for the
+        // whole background window, so every `lastEventAt` is stale and the
+        // first tick after resume would otherwise rule on all of them.
         foregroundSinceRef.current = Date.now();
-        // stop trigger #1 — the app is visible again, so the
-        // service has nothing left to protect. Unconditional: cheap when it
-        // was never started, and the OS may have stopped it behind our back
-        // (onTimeout does exactly that), so "we think it isn't running" is
-        // not a reason to skip the call.
+        // A stop trigger: the app is visible again, so the service has
+        // nothing left to protect. Unconditional, because the OS may have
+        // stopped it already and a believed state is not a reason to skip.
         void stopForegroundService("appstate-active");
+        // Claim a Cancel tap that could not be delivered live, so a press the
+        // user made cannot evaporate. Ordered after the service stop: if the
+        // transfers already finished, the active set is empty and nothing is
+        // cancelled, which is the correct outcome.
+        void drainPendingCancel().then((pending) => {
+          if (pending) void cancelAllActiveRef.current("drained-on-resume");
+        });
+        // The notification goes with the service, so the post history that
+        // described it is stale from here on.
+        lastNotificationRef.current = null;
         void refreshSwarm();
-        // the foreground transition is the moment to recover
-        // anything the engine finished while we were away — including a
-        // download whose RN-side write never completed because the process
-        // was killed mid-chain.
+        // The foreground transition is the moment to recover anything the
+        // engine finished while the app was away, including a download whose
+        // RN-side write was killed mid-chain.
         void reconcileReceived("foreground");
         void checkForFreeze();
         startInterval();
       } else {
         stopInterval();
         if (next === "background") {
-          // START TRIGGER. Synchronous and first — this is the
-          // last moment the process is reliably executing, and the predicate
-          // is deliberately I/O-free so it cannot be defeated by a freeze
-          // that lands mid-decision. `markBackgrounded` below awaits an RPC
-          // and is allowed to fail; this must not.
+          // The start trigger, synchronous and first: this is the last moment
+          // the process is reliably executing, and the predicate is I/O-free
+          // so a freeze landing mid-decision cannot defeat it.
           applyServiceForBackground();
           // Snapshot on the way out. Still alive at this point, so the status
           // call succeeds; once frozen there would be nothing to ask.
@@ -1477,26 +2118,20 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     const intervalId = setInterval(() => {
       const now = Date.now();
       const foregroundSince = foregroundSinceRef.current;
-      // Cheap pre-check: while the app has not been foreground long enough,
-      // no transfer can be ruled on, so skip the state update entirely
-      // rather than mapping the list to produce no change.
+      // Cheap pre-check: nothing can be ruled on until the app has been
+      // foreground long enough, so skip the state update entirely.
       if (now - foregroundSince < DEFAULT_STALL_MS) return;
-      // via commitTransfers. This watchdog flips `completed` and
-      // `stalled`, both of which the activity predicate reads, so the ref
-      // must move with it.
+      // Via commitTransfers: this watchdog flips `completed` and `stalled`,
+      // both of which the activity predicate reads, so the ref must move too.
       commitTransfers((prev) => {
         let mutated = false;
         const next = prev.map((t) => {
-          // SILENT WATCHDOG #2. After 30 s of no events a
-          // hosted transfer silently declares itself complete and a
-          // received one silently flips to "stalled". Both were invisible;
-          // both are prime suspects in "said Sent but nothing arrived".
-          //
-          // The decision itself now lives in src/lib/transferStall.ts,
-          // which additionally refuses to rule until the app has been
-          // foregrounded for the whole threshold — a backgrounded window
-          // freezes this timer, so without that guard every resume
-          // falsified every in-flight transfer.
+          // After the threshold with no events, a hosted transfer declares
+          // itself complete and a received one flips to stalled, so both are
+          // logged. The decision lives in transferStall.ts, which refuses to
+          // rule until the app has been foregrounded for the whole
+          // threshold: this timer freezes while backgrounded, and without
+          // that guard every resume would falsify every in-flight transfer.
           const verdict = evaluateStall({
             now,
             lastEventAt: t.lastEventAt,
@@ -1535,80 +2170,50 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   }, [commitTransfers]);
 
   /**
-   * STOP TRIGGERS #2 and #3 — the predicate going false while the
-   * app is still backgrounded.
-   *
-   * #2 is the last active transfer completing. That arrives as a `transfers`
-   * change (upload-complete, the peer-disconnect finalize, the stall
-   * watchdog, or a drive being cleared), so this effect's dependency on
-   * `transfers` catches it.
-   *
-   * #3 is the idle-host grace window expiring, which is the one transition
-   * that happens on a clock rather than an event. `msUntilActivityCouldChange`
-   * says when, and the timeout below re-runs the same evaluation then.
-   *
-   * Only runs when the service was actually started for this window — an app
-   * that never started one has nothing to release, and calling stop on every
-   * transfer change in the foreground would be pure noise.
+   * The predicate going false while the app is still backgrounded, and the
+   * start trigger for a transfer that begins while already backgrounded.
+   * Both arrive as a `transfers` change, which this effect depends on, and a
+   * transfers change is an engine event — engine-driven code is alive while
+   * backgrounded, so neither half needs a timer. The decision is
+   * `decideServiceTransition` in `transferActivity.ts`, not an `if` here:
+   * start and stop are two halves of one pair, and that is the only form
+   * jest can reach.
    */
   useEffect(() => {
-    if (!serviceStartedForWindowRef.current) return;
     if (AppState.currentState === "active") return;
 
-    const evaluate = () => {
-      const now = Date.now();
-      const list = transfersRef.current;
-      if (isTransferActive(list, now)) return false;
-      debugLog(
-        "warn",
-        "rn.fgs",
-        `releasing service — ${describeActivity(list, now)} at=${now}`
-      );
-      serviceStartedForWindowRef.current = false;
-      // let the completion write land before the service goes.
-      // The predicate went false BECAUSE a transfer completed, so that
-      // event's storage write is in flight right now, and releasing the
-      // service is what lets the OS freeze us mid-write.
-      void (async () => {
-        await pendingStatsWriteRef.current;
-        await stopForegroundService("predicate-false");
-      })();
-      return true;
-    };
+    if (!serviceStartedForWindowRef.current) {
+      if (
+        decideServiceTransition({
+          appActive: false,
+          serviceStartedForWindow: false,
+          transfers: transfersRef.current,
+          now: Date.now(),
+        }) === "start"
+      ) {
+        applyServiceForBackground("transfer-started-while-backgrounded");
+      }
+      // Nothing to release and no grace window to wait out: the transfer that
+      // just started is the event, and the next one re-runs this effect.
+      return;
+    }
 
-    if (evaluate()) return;
-
-    const wait = msUntilActivityCouldChange(transfersRef.current, Date.now());
-    if (wait === null) return;
-    // +250 ms so the timer fires just past the boundary rather than on it,
-    // where `now - lastPeerLeftAt < GRACE` would still be true by a
-    // millisecond and the service would be held until the next event.
-    const timer = setTimeout(evaluate, wait + 250);
-    return () => clearTimeout(timer);
-  }, [transfers]);
+    // Nothing in RN schedules the idle-host grace window. A timer for it
+    // could only ever be armed while backgrounded, which is the one state in
+    // which RN timers do not run, so the window would end on resume rather
+    // than on time. The worklet times it on its own ticker and emits
+    // `host-idle-grace-elapsed`, which the boot effect answers by calling
+    // `releaseServiceIfInactive`. This effect keeps the event-driven half.
+    releaseServiceIfInactive("transfers-changed");
+  }, [transfers, applyServiceForBackground, releaseServiceIfInactive]);
 
   /**
-   * the suspend probe — lifecycle diagnostics only.
-   *
-   * bare-kit registers a module-scope AppState listener
-   * (node_modules/react-native-bare-kit/index.js:332) that calls `suspend()`
-   * on background. This records what actually happens: every AppState
-   * transition and every worklet suspend/resume event, with timestamps and
-   * a sequence number. React Native does not contractually define listener
-   * invocation order, so the seq numbers are how the real order is
-   * recovered rather than assumed.
-   *
-   * the counter-`resume()` this used to perform is GONE. Device
-   * runs on 2026-08-24 showed it made no difference in either direction —
-   * the worklet froze with it on and off under battery restriction, and ran
-   * clean with it on and off without. It was fighting SmartPower's process
-   * freeze, which `resume()` has no bearing on. Its Settings toggle and
-   * storage module went with it.
-   *
-   * Gated to debug builds instead of a persisted toggle. In a
-   * release build the flag is false, so the body below is
-   * unreachable and stripped — no AppState listener, no worklet event
-   * subscriptions, no storage read.
+   * The suspend probe — lifecycle diagnostics only. bare-kit registers its
+   * own AppState listener that suspends the worklet on background; this
+   * records every AppState transition and every suspend/resume with a
+   * sequence number, because React Native does not define listener
+   * invocation order. Gated to debug builds, so a release build registers no
+   * listener and no subscriptions at all.
    */
   useEffect(() => {
     if (!IS_DEBUG_BUILD) return;
@@ -1673,9 +2278,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Observe only. Sprint 6M removed the counter-`resume()` that used to
-      // fire here on `background`; the transition line below is the whole
-      // remaining payload.
+      // Observe only: the transition line below is the whole payload.
       const onChange = (next: AppStateStatus) => {
         const prev = lastState;
         lastState = next;
@@ -1701,6 +2304,14 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       status,
       logs,
       hyperdriveStatus,
+      // Flat as well as nested on `hyperdriveStatus`, so a screen disabling a
+      // button need not know the status reply's shape. Derived in exactly one
+      // place — do not re-derive it. `=== true` is deliberate: an absent
+      // value must read as "not blocked", never as a banner nobody can clear.
+      manifestUnavailable: hyperdriveStatus?.manifestUnavailable === true,
+      // A module-load constant, so it is deliberately not in this memo's dep
+      // array: it cannot change during a session.
+      workletBundleId: WORKLET_BUNDLE_ID,
       drives,
       activeDriveIds,
       inactiveDriveIds,
@@ -1710,7 +2321,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       openLink,
       startDownload,
       runFakeUploadTest,
+      runFakeDownloadTest,
       cancelTransfer,
+      cancelInFlight,
       clearTransfer,
       abortOpen,
       activateDrive,
@@ -1733,7 +2346,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       openLink,
       startDownload,
       runFakeUploadTest,
+      runFakeDownloadTest,
       cancelTransfer,
+      cancelInFlight,
       clearTransfer,
       abortOpen,
       activateDrive,

@@ -1,24 +1,9 @@
 /**
  * Validate an engine status reply before its liveness counter is trusted.
- *
- * `aliveTicks` measures one thing: "the engine's ticker is running." The
- * freeze detector was reading it as a different thing: "the OS let us run."
- * Those two agree only while the engine is alive, and diverge completely when
- * it is not — `engineStatus()` reports `aliveTicks` unconditionally, so a
- * failed `engineInit` leaves the counter pinned at 0 forever while the status
- * call keeps succeeding. Every background window over the 60 s floor then
- * evaluates as 100% frozen, and the app reports an OS freeze for what is
- * actually its own boot failure.
- *
- * `started` is the engine's own answer to "did I initialise", and it has been
- * on the wire since the counter was added — it was simply never read. Requiring
- * it makes the reading mean what the caller assumes it means.
- *
- * A null return is not a freeze verdict of any kind: both call sites in
- * BackendProvider return early on null and log "CANNOT be judged", which is
- * the honest outcome for a window the app has no evidence about.
- *
- * Pure so jest.config.js can reach it; the RPC call stays in backend.ts.
+ * `aliveTicks` means "the engine's ticker is running", not "the OS let us
+ * run": `engineStatus()` reports it unconditionally, so a failed `engineInit`
+ * pins it at 0 while status calls keep succeeding and every long window reads
+ * as fully frozen. A null return is no verdict — the window has no evidence.
  */
 
 export type AliveReading = {
@@ -42,27 +27,14 @@ export type AliveStatusLike =
   | undefined;
 
 /**
- * Extract a trustworthy liveness reading, or null.
- *
- * `Number.isFinite`, not `typeof === "number"`, and the difference matters.
- * `evaluateFreeze` guards non-finite `elapsedMs` and `tickIntervalMs`, but it
- * does NOT guard the tick counts: its only test on them is
- * `observedTicks < 0`, which catches a counter running backwards and lets NaN
- * through, because `NaN < 0` is false. A NaN counter therefore reaches
- * `frozenFraction = 1 - NaN/20 = NaN`, fails `NaN >= 0.5`, and is reported as
- * **`ran-normally`** — a clean-run verdict manufactured out of a malformed
- * reply. Rejecting it here turns that into "cannot be judged", which is what
- * it actually is.
- *
- * Fixed at the boundary rather than in `evaluateFreeze` deliberately: this is
- * where wire data stops being untrusted, and the freeze evaluator's
- * classifications are load-bearing for every historical log line.
+ * Extract a trustworthy liveness reading, or null. `Number.isFinite`, not
+ * `typeof === "number"`: `evaluateFreeze` tests only `observedTicks < 0`, so a
+ * NaN counter slips through and a malformed reply reads as a clean run.
  */
 export function parseAliveReading(status: AliveStatusLike): AliveReading | null {
   if (!status) return null;
-  // Strictly `true`. An engine that has not initialised reports `false`, and
-  // a reply missing the field entirely predates the counter — neither is
-  // evidence of anything.
+  // Strictly `true`: an engine that has not initialised reports `false`, and a
+  // missing field is no evidence either way.
   if (status.started !== true) return null;
   const ticks = status.aliveTicks;
   const intervalMs = status.aliveTickMs;

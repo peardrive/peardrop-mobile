@@ -20,11 +20,8 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      // 50% black scrim. Used to be 0.55 alongside a near-transparent
-      // theme.card sheet — the tinted card was rendering at 5–8% alpha in 8
-      // of 10 themes (only paper and cream are #ffffff opaque), letting
-      // underlying screen text bleed through the modal. Switched to a 50%
-      // scrim + opaque sheet (theme.bg) for uniform behavior across themes.
+      // A plain black scrim under an opaque sheet, so the pairing behaves
+      // the same in every theme.
       backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "flex-end",
       padding: 16,
@@ -34,11 +31,9 @@ function createStyles(theme: AppTheme) {
       borderRadius: 20,
       borderWidth: 1,
       borderColor: theme.border,
-      // theme.bg is the only AppTheme color guaranteed to be fully opaque
-      // across every theme (paper / cream / void / etc. all use solid hex).
-      // theme.card is the tint meant to overlay theme.bg, but the modal's
-      // direct child rendering layered tint over the scrim instead of bg —
-      // which destroyed opacity. Solid theme.bg is the simplest fix.
+      // theme.bg, not theme.card: bg is the only color guaranteed opaque in
+      // every theme, and card is a tint that would layer over the scrim and
+      // let the screen behind bleed through.
       backgroundColor: theme.bg,
       padding: 16,
     },
@@ -114,9 +109,8 @@ function createStyles(theme: AppTheme) {
     closeText: { color: theme.muted, fontWeight: "600", fontSize: 14 },
     disabled: { opacity: 0.55 },
     errBanner: { color: theme.danger, fontSize: 13, marginBottom: 10, lineHeight: 18 },
-    // Phase HH.2: amber-tinted advisory banner. Distinct from errBanner
-    // (red) because the share might still work; we just want to warn the
-    // user that the other side appears to be offline.
+    // Amber advisory banner, distinct from the red error one: the share may
+    // still work, so this only warns that the other side looks offline.
     offlineBanner: {
       flexDirection: "row",
       alignItems: "center",
@@ -163,13 +157,9 @@ export default function SharePreviewModal() {
   const isPartialMatch = alreadySet.size > 0;
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Phase HH.2: offline detection while the preview is open. After the
-  // resolve succeeds and the modal opens, the receiver's drive stays
-  // joined to the swarm — its peer-connected / peer-disconnected events
-  // reflect whether the sender is still reachable. If we have zero
-  // connected peers >10 s after the modal opened, surface a warning
-  // banner. We don't auto-close — the user might want to dismiss
-  // manually or wait it out — this is purely advisory.
+  // The receiver's drive stays joined while the preview is open, so its peer
+  // events say whether the sender is still reachable. The banner is advisory
+  // only: the modal never auto-closes on it.
   const modalOpenedAtRef = useRef<number | null>(null);
   const [tickNow, setTickNow] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -196,26 +186,16 @@ export default function SharePreviewModal() {
     tickNow - modalOpenedAtRef.current > 10_000 &&
     (!sessionTransfer || sessionTransfer.peersConnected === 0);
 
-  // when the modal opens, default selection state depends on
-  // whether we're in a partial-match scenario.
-  // - Partial match (some files already downloaded): pre-select only the
-  //   NEW files. Already-downloaded files are unchecked + badged + dim.
-  //   Tapping the primary action ("Grab N") then defaults to fetching
-  //   exactly the missing files.
-  // - No match: keep previous behavior — nothing selected, primary action
-  //   reads "Grab everything".
-  // Closing the modal clears selection so the next open starts fresh.
+  // On a partial match only the new files are pre-selected, so the primary
+  // action fetches exactly what is missing; with no match nothing is
+  // selected. Closing clears selection so the next open starts fresh.
   useEffect(() => {
     if (!previewVisible) {
       setSelected(new Set());
       return;
     }
-    // smart-regrab pre-selection wins. The hint comes from tapping
-    // a missing child row in an expanded bundle; it tells the modal exactly
-    // which file to pre-check. Already-downloaded files are still rendered
-    // dimmed + badged via alreadySet — preselected names that happen to
-    // already be downloaded are skipped (no reason to pre-check an existing
-    // file).
+    // An explicit pre-selection hint wins: it names the file to pre-check.
+    // Names that are already downloaded are skipped.
     if (pendingPreselection && pendingPreselection.length > 0) {
       const manifestNames = new Set(files.map((f) => f.name));
       const initial = pendingPreselection.filter(
@@ -261,9 +241,8 @@ export default function SharePreviewModal() {
     ? `Grab ${selectedKeys.length} (${formatBytes(selectedBytes)})`
     : "Grab everything";
 
-  // the in-modal Grab blink is gone — the "Got it" badge already
-  // tells the user which files are downloaded. The acknowledging blink now
-  // lives on the main list's bundle row (auto-expanded if needed).
+  // No blink in the modal: the "Got it" badge already says which files are
+  // downloaded, and the acknowledging blink lives on the main list's row.
   const onPressGrab = () => {
     if (someSelected) void downloadSelectedFromPreview(selectedKeys);
     else void downloadAllFromPreview();
@@ -294,11 +273,21 @@ export default function SharePreviewModal() {
             )}
           </View>
           {!!linkError && <Text style={styles.errBanner}>{linkError}</Text>}
+          {/*
+            There is no connectivity detection here. All the condition
+            establishes is that ten seconds passed with no peer attached,
+            which is equally the signature of discovery running normally, so
+            the copy may not claim the other side is offline or tell the user
+            to check a network setting. Links never expire either, so nothing
+            here may imply they do. The `offlineBanner*` identifiers predate
+            that rule; do not let the name talk you into restoring the claim.
+          */}
           {offlineBannerVisible && (
             <View style={styles.offlineBanner} accessibilityLiveRegion="polite">
-              <Ionicons name="cloud-offline-outline" size={16} color={theme.muted} />
+              <Ionicons name="search-outline" size={16} color={theme.muted} />
               <Text style={styles.offlineBannerText}>
-                The other side seems to be offline. The download might not work.
+                Still looking for the sender — this can take a moment. Their phone
+                needs to be awake with PearDrop open.
               </Text>
             </View>
           )}

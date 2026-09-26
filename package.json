@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "peardrop-mobile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PearDrop for Android and iOS",
   "main": "expo-router/entry",
   "scripts": {
@@ -15,6 +15,9 @@
     "ios": "expo run:ios",
     "bundle:backend": "bare-pack --preset mobile -o app/app.bundle.mjs backend/backend.mjs",
     "lint": "eslint . --ext .ts,.tsx,.js,.mjs",
+    "check:encoding": "node scripts/check-encoding.mjs",
+    "check:copy": "node scripts/check-copy.mjs",
+    "check:copy:selftest": "node scripts/check-copy.mjs --selftest",
     "test": "jest"
   },
   "dependencies": {

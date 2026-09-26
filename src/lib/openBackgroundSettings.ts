@@ -17,9 +17,9 @@ import {
  *   openAutostartSettings()   — Xiaomi's Autostart permission
  *   openBackgroundSettings()  — the battery-restriction screen
  *
- * They are separate functions on purpose. Measurements on 2026-09-06/07
- * (five runs, battery restriction ON throughout, Autostart the only variable)
- * found Autostart to be the gate: with it granted the worklet ticked every
+ * They are separate functions on purpose. Measurement (five runs, battery
+ * restriction ON throughout, Autostart the only variable) found Autostart to
+ * be the gate: with it granted the worklet ticked every
  * 2 s across a ten-minute background window; without it the process froze
  * 60-89% of the window. The battery screen is still the right destination on
  * every non-Xiaomi device and still a useful secondary on Xiaomi, so it stays
@@ -43,7 +43,18 @@ import {
  * identical whether or not the permission is held.
  */
 
-const PACKAGE = "com.peardrop.mobile";
+/**
+ * This app's `applicationId`, not its `namespace`. The two are the same
+ * string today, but only `applicationId` is what an
+ * OEM settings screen resolves a `package_name` extra against — a future
+ * divergence must follow `android/app/build.gradle`'s `applicationId` line.
+ *
+ * Get it wrong and the MIUI battery rungs below open a settings page scoped
+ * to a package that does not exist, which fails silently rather than
+ * throwing: the activity launches, so the ladder counts it a success and
+ * stops, and the user lands on a blank or wrong-app page.
+ */
+const PACKAGE = "com.anjouinc.peardrop";
 
 /**
  * One runner per label in settingsLadder.ts. The Record is exhaustive by
@@ -62,7 +73,7 @@ const RUNNERS: Record<CandidateLabel, () => Promise<unknown>> = {
    * app has no other reason to declare. The component is `exported=true`, so
    * a normal app can start it without one.
    *
-   * Verified on HyperOS V816 (Redmi 25062RN2DA, Android 15) 2026-09-02:
+   * Verified on HyperOS V816 (Redmi 25062RN2DA, Android 15):
    * `package_name` alone is enough; the screen resolves the right app.
    */
   "miui-power-detail": () =>
@@ -98,7 +109,7 @@ const RUNNERS: Record<CandidateLabel, () => Promise<unknown>> = {
    *     Action:   "miui.intent.action.OP_AUTO_START"
    *     Category: "android.intent.category.DEFAULT"
    *
-   * Verified 2026-09-07 (Redmi 25062RN2DA): resolves to
+   * Verified on Redmi 25062RN2DA: resolves to
    * com.miui.permcenter.autostart.AutoStartManagementActivity and lands on
    * the screen titled "Background autostart", with PearDrop in the list.
    *
@@ -126,7 +137,7 @@ const RUNNERS: Record<CandidateLabel, () => Promise<unknown>> = {
    * Samsung's "Unmonitored apps" list — the allowlist that exempts an app
    * from Device Care's background limits.
    *
-   * Sprint 8A, from 7D's harness. Verified present and exported via
+   * Verified present and exported via
    * `dumpsys package com.samsung.android.lool` on SM-G990E (One UI 8.0),
    * SM-S928B and SM-S721B (both One UI 8.5). First because it is the
    * per-app allowlist rather than the general battery page.
@@ -210,8 +221,7 @@ async function runLadder(kind: LadderKind, tag: string): Promise<string | null> 
  * at all, so this function's "find PearDrop's battery setting" copy would
  * lead nowhere.
  *
- * Autostart: it was rung 1 of that ladder for one sprint and was removed
- * after a device check on 2026-09-07. It resolves (`isDefault=true`) to
+ * Autostart: a device check ruled it out. It resolves (`isDefault=true`) to
  * `com.miui.permcenter.permissions.PermissionsEditorActivity` and is
  * correctly scoped to this app — the page is titled "PearDrop" — but on
  * HyperOS V816 that page contains exactly one row, "Other permissions", and
@@ -228,16 +238,16 @@ async function runLadder(kind: LadderKind, tag: string): Promise<string | null> 
  * is unreachable too — nothing resolves `ladderFor("battery", …)` in
  * production any more.
  *
- * Its last call site was the always-present "Battery settings" row, which
- * 8A replaced with the conditional fallback row. Both of the fallback's real
- * destinations are reached through `ladderFor("fallback", …)`, which does not
- * route through here.
+ * Its last call site was the always-present "Battery settings" row, now the
+ * conditional fallback row. Both of the fallback's real destinations are
+ * reached through `ladderFor("fallback", …)`, which does not route through
+ * here.
  *
  * Kept rather than deleted because the analysis in this comment block — and
  * in particular the APP_PERM_EDITOR note above, which cost two device
  * sessions to learn — is the most expensive thing in this file, and it is
  * attached to this function. `ladderFor("battery", …)` remains covered by
- * settingsLadder.test.ts. Flagged at Gate 5 rather than removed silently.
+ * settingsLadder.test.ts.
  */
 export function openBackgroundSettings(): Promise<string | null> {
   return runLadder("battery", "rn.bgsettings");

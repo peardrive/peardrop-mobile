@@ -21,9 +21,9 @@ const DOT_SIZE = 40;
 const RING_PEAK_SCALE = 3.2;
 
 /**
- * Two-beat splash: pear-pulse (borrows the ActiveIndicator motion language —
- * ring scale + opacity on the native driver), then the wordmark fades in.
- * Total ~1.8s. Reduce-motion collapses the whole thing to an instant reveal.
+ * Two-beat splash: a pear-pulse borrowing ActiveIndicator's motion language,
+ * then the wordmark fades in. Reduce-motion collapses it to an instant
+ * reveal.
  */
 export default function SplashScreen({ onFinish }: SplashScreenProps) {
   const { theme } = useAppTheme();

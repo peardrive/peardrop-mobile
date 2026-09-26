@@ -31,15 +31,12 @@ function shouldSkip(name: string): boolean {
   return false;
 }
 
-// Android SAF child URIs look like:
-//   content://...documents/document/primary%3ADocuments%2FProject%2Fnotes.md
-// `Paths.basename` only splits on URI-level `/`, so it returns the entire
-// percent-encoded document ID. Decode that, then take the last `/`-segment
-// of the storage path (after the `:` separating tree root from doc path).
-// Note: expo-file-system's Kotlin `listAsRecords` appends a trailing `/`
-// to every child URI including files; strip that first or the leaf comes
-// back empty.
-function leafName(uri: string): string {
+// `Paths.basename` splits only on URI-level `/`, so a SAF child URI yields
+// the whole percent-encoded document ID, and child URIs carry a trailing `/`.
+/** Exported so the naming step can default a folder share to the folder's own
+ *  name, which it must read before `enumerateFolder` runs: enumeration copies
+ *  every file into cache, and a cancel after that leaves the copies behind. */
+export function leafName(uri: string): string {
   const stripped = uri.replace(/\/+$/, "");
   const lastSlash = stripped.lastIndexOf("/");
   let tail = lastSlash >= 0 ? stripped.slice(lastSlash + 1) : stripped;
@@ -52,21 +49,16 @@ function leafName(uri: string): string {
   return parts[parts.length - 1] || "file";
 }
 
-// The declared `Directory.pickDirectoryAsync` return type in
-// expo-file-system's `.d.ts` and the runtime augmented `Directory` class
-// drift slightly on getter-only properties (`name`, `parentDirectory`).
-// Use the inferred return type so the type checker stays out of the way.
-type PickedDirectory = Awaited<ReturnType<typeof Directory.pickDirectoryAsync>>;
+// The declared `Directory.pickDirectoryAsync` return type and the runtime
+// augmented `Directory` class drift, so use the inferred return type.
+export type PickedDirectory = Awaited<ReturnType<typeof Directory.pickDirectoryAsync>>;
 
 export async function pickFolder(): Promise<PickedDirectory | null> {
   try {
     return await Directory.pickDirectoryAsync();
   } catch (err: unknown) {
-    // was a bare `message.includes("cancel")` probe, which misses
-    // the thrown-code form entirely. `isPickerCancellation` checks the
-    // documented error codes first and keeps the substring probe as a
-    // fallback, so a back-out returns null instead of propagating as an
-    // error the caller surfaces in red.
+    // `isPickerCancellation` checks the documented error codes, not just a
+    // message substring, so a back-out returns null rather than an error.
     if (isPickerCancellation(err)) return null;
     throw err;
   }
@@ -107,15 +99,10 @@ async function walk(
   }
 }
 
-// Engine reads via bare-fs which needs real file:// paths. SAF content://
-// URIs (Android) and iOS security-scoped file:// URIs both stream cleanly
-// via the legacy `copyAsync`, which IOUtils.copy's the input stream to the
-// destination file. The new File API's `bytes()` / `open()` paths both go
-// through `javaFile` and OOM on media-sized SAF sources.
-//
-// exported so the in-app file picker can materialize the SAF
-// rows a user checks in the Downloads section. Same constraint, same
-// copy semantics — worth sharing rather than re-deriving.
+// The engine needs real file:// paths, and SAF content:// sources stream
+// cleanly only via the legacy `copyAsync`: the new File API's `bytes()` /
+// `open()` paths go through `javaFile` and OOM on media-sized SAF sources.
+// Exported so the in-app picker materializes SAF rows under the same rule.
 export async function materializeUriToCache(
   sourceUri: string,
   leafFileName: string,
@@ -131,17 +118,10 @@ async function materializeToCache(source: File, leafFileName: string): Promise<s
   return materializeUriToCache(source.uri, leafFileName, "peardrop-folder");
 }
 
-/**
- * Open the SAF folder-grant dialog. The returned URI is persistable and
- * Android *accumulates* these rather than replacing — each call adds one
- * more readable folder to the app's persisted set, at the cost of one
- * dialog and no manifest permission.
- *
- * Seeded at Downloads only as an opening location; the user can navigate
- * anywhere from there.
- *
- * Returns null when the user backs out, matching `pickFolder`'s contract.
- */
+/** Open the SAF folder-grant dialog. The returned URI is persistable and
+ *  Android accumulates these rather than replacing, so each call adds one
+ *  more readable folder at the cost of one dialog and no manifest permission.
+ *  Returns null when the user backs out, matching `pickFolder`. */
 export async function grantFolderAccess(): Promise<PickedDirectory | null> {
   try {
     return await Directory.pickDirectoryAsync(downloadsInitialUri());
@@ -151,12 +131,9 @@ export async function grantFolderAccess(): Promise<PickedDirectory | null> {
   }
 }
 
-/**
- * Best-effort initial location for the grant dialog. `getUriForDirectoryInRoot`
- * builds the documents-provider URI for a root-level folder name; if the
- * OEM's provider doesn't recognize it the dialog just opens at its default
- * instead of failing, so this stays a hint rather than a requirement.
- */
+/** Best-effort initial location for the grant dialog. An OEM provider that
+ *  does not recognize the name opens at its own default rather than failing,
+ *  so this stays a hint rather than a requirement. */
 function downloadsInitialUri(): string | undefined {
   try {
     return LegacyFs.StorageAccessFramework.getUriForDirectoryInRoot("Download");
@@ -165,22 +142,16 @@ function downloadsInitialUri(): string | undefined {
   }
 }
 
-/**
- * Rebuild a Directory handle from a stored grant URI. The SAF permission
- * itself lives in the system's persisted-permission table, not in the
- * handle, so reconstructing it across launches is enough.
- */
+/** Rebuild a Directory handle from a stored grant URI. The SAF permission
+ *  lives in the system's persisted-permission table, not in the handle, so
+ *  reconstructing it across launches is enough. */
 export function directoryFromUri(uri: string): PickedDirectory {
   return new Directory(uri) as PickedDirectory;
 }
 
-/**
- * List one level of a previously-granted directory. Directories are
- * dropped — this picker is deliberately not a folder tree.
- *
- * Throws if the grant is no longer valid (revoked in system settings,
- * volume unmounted); callers treat that as "re-prompt".
- */
+/** List one level of a previously-granted directory. Directories are dropped:
+ *  this picker is deliberately not a folder tree. Throws if the grant is no
+ *  longer valid, which callers treat as "re-prompt". */
 export function listDirectoryOneLevel(dir: PickedDirectory): {
   uri: string;
   name: string;

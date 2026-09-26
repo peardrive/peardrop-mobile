@@ -1,6 +1,5 @@
-// One-shot generator for the bundled demo assets. Produces valid-but-tiny
-// files for every preview path (image, text, markdown, audio, video, PDF).
-// Run with: `node scripts/generate-demo-assets.mjs`. Idempotent.
+// One-shot generator for the bundled demo assets: valid-but-tiny files for
+// every preview path (image, text, markdown, audio, video, PDF). Idempotent.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -65,8 +64,7 @@ await writeFile(
 
 // ─── sunset.jpg ─────────────────────────────────────────────────────────
 // Minimal valid 1x1 JPEG encoding a single dark-orange pixel (hand-crafted
-// baseline JPEG; ~125 bytes). Produces a solid color block in-preview —
-// close enough to a "sunset" for a placeholder.
+// baseline JPEG; ~125 bytes). Produces a solid color block in-preview.
 await writeFile(
   path.join(DEMO_DIR, "sunset.jpg"),
   fromHex(
@@ -83,15 +81,14 @@ await writeFile(
 );
 
 // ─── clip.mp3 ───────────────────────────────────────────────────────────
-// 1 s of silence at 44.1 kHz stereo, encoded as a single MPEG-1 Layer III
-// frame of silence repeated 38 times (~1 s). Minimal but decodable. If the
-// in-app audio player chokes, the "Open in another app" fallback still
-// works since the file is a valid MP3 container.
+// 1 s of silence at 44.1 kHz stereo: one MPEG-1 Layer III frame of silence
+// repeated 38 times. A valid MP3 container, so the "Open in another app"
+// fallback works even if the in-app audio player chokes.
 {
   const id3 = fromHex("494433040000000000"); // ID3v2.4 tag, empty
-  id3.writeUInt32BE(0, 5); // size = 0 (syncsafe zero)
+  id3.writeUInt32BE(0, 5); // syncsafe zero
   // Minimal silent MPEG-1 Layer III frame, 32 kbps / 44.1 kHz / stereo,
-  // 104 bytes total including the 4-byte header. Just 0x00 after header.
+  // 104 bytes total including the 4-byte header.
   const frameHeader = fromHex("FFFB3064");
   const framePayload = Buffer.alloc(100, 0);
   const frame = Buffer.concat([frameHeader, framePayload]);
@@ -102,9 +99,8 @@ await writeFile(
 
 // ─── intro.mp4 ──────────────────────────────────────────────────────────
 // Hand-crafted "empty" ISO BMFF / MP4 container: ftyp box + minimal moov
-// with a zero-duration track + empty mdat. Valid enough to identify as a
-// video file but too small to show frames. In-app `<VideoView>` may render
-// black; the "Open in another app" button is the real path.
+// with a zero-duration track + empty mdat. Identifies as a video file but is
+// too small to show frames, so "Open in another app" is the real path.
 {
   const box = (type, payload) => {
     const size = 8 + payload.length;
@@ -152,9 +148,8 @@ await writeFile(
 }
 
 // ─── sample.pdf ─────────────────────────────────────────────────────────
-// Minimal valid single-page PDF, ~620 bytes. Shows "PearDrop demo" when
-// rendered. The app today has no in-app PDF viewer, so this opens via
-// the system PDF reader through "Open in another app".
+// Minimal valid single-page PDF, ~620 bytes. There is no in-app PDF viewer,
+// so this opens through the system reader via "Open in another app".
 {
   const pdfBody =
     "%PDF-1.4\n" +

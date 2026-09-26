@@ -1,26 +1,12 @@
 import { baseName } from "./files";
 
 /**
- * work out which received files the engine has on disk but the
- * RN record never learned about.
- *
- * The bug: `engineDownload` merges `downloadedFiles` into `meta.localFiles`,
- * marks the drive INACTIVE and `await saveManifest()` (hyperdrive-engine.mjs
- * ~1964-1978) *before* emitting `upload-complete` (~2009). RN writes its own
- * record later still, inside the chain awaiting `startDownload()`
- * (ShareLinkFlowContext ~605-628). Kill the app anywhere in that span — which
- * backgrounding makes ordinary — and the engine holds durable proof of files
- * that the Received list has no record of. The files are on disk and
- * invisible.
- *
- * Deliberately pure: data in, data out. No React, no React Native, no
- * storage, no filesystem. That is what makes it reachable by jest.config.js
- * (roots `src`, testEnvironment `node`) and therefore genuinely testable
- * rather than testable-in-principle.
- *
- * Idempotent by construction: every candidate is rejected if its path is
- * already recorded, so a second run over an up-to-date record returns
- * nothing.
+ * Work out which received files the engine has on disk but the RN record
+ * never learned about. `engineDownload` writes `meta.localFiles` once, after
+ * the download loop and before the completion event reaches RN, so the gap is
+ * the whole transfer: kill the app inside it and the files are on disk and
+ * invisible. Pure data in, data out — no React, no storage, no filesystem.
+ * Idempotent: a candidate whose path is already recorded is rejected.
  */
 
 /** One entry of the engine's `meta.localFiles`, as DRIVES_LIST returns it. */
@@ -69,13 +55,10 @@ export type ReconcileInput = {
   /**
    * Paths to treat as deliberately absent and never re-add.
    *
-   * An input rather than a hardcoded rule because the deletion story is
-   * subtle: `deleteDownloaded` drops the entry AND unlinks the file, and
-   * `loadDownloaded` filters every read through `RNFS.exists`, so a deleted
-   * file cannot reappear in the UI even if this module re-proposes it. The
-   * one gap is `deleteDownloaded`'s swallowed unlink failure — entry gone,
-   * file still present — which this parameter exists to close once a caller
-   * can supply it. Nothing hardcodes a policy here.
+   * An input rather than a hardcoded rule: deleting a share unlinks the files
+   * and drops the entries, and `loadDownloaded` filters every read through
+   * `RNFS.exists`, so a deleted file cannot reappear. The one gap this closes
+   * is a swallowed unlink failure — entry gone, file still present.
    */
   ignorePaths?: Iterable<string> | null;
   /** Fallback when a drive carries no usable timestamp. Injected for tests. */

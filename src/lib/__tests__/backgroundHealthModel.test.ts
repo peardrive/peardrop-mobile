@@ -1,10 +1,8 @@
-// Prompt-version migration for the background-health blob.
-//
-// The stakes: every existing tester spent their single `hasPrompted` on the
-// battery prompt, which the 2026-09-06/07 runs showed is not the setting that
-// decides the outcome. A boolean flag would lock exactly the people who hit
-// the problem out of the fix. These tests pin the migration that unlocks them
-// once — and only once.
+// Prompt-version migration for the background-health blob. Every existing
+// install spent its single `hasPrompted` on the battery prompt, which is not
+// the setting that decides the outcome. A boolean flag would lock exactly the
+// people who hit the problem out of the fix; these tests pin the migration
+// that unlocks them once, and only once.
 
 import {
   EMPTY_HEALTH,
@@ -107,9 +105,8 @@ describe("shouldPrompt — one prompt per version", () => {
   });
 
   test("a freeze alone no longer earns a prompt", () => {
-    // The 8A change: versions 1 and 2 asked on the first freeze, because
-    // nothing else was solving the problem. The foreground service now does,
-    // so a lone freeze is not grounds to send anyone into system settings.
+    // A lone freeze is not grounds to send anyone into system settings: the
+    // foreground service covers that case.
     const oneFreeze = withFreeze(coerceHealth(null), 1, 610_000, 0.97);
     expect(oneFreeze.freezeCount).toBe(1);
     expect(shouldPrompt(oneFreeze)).toBe(false);
@@ -174,20 +171,12 @@ describe("withFreeze — transfer-independent", () => {
 });
 
 
-// ---------------------------------------------------------------------
-// weighted service-attributed streak
-//
-// Two distinctions these pin.
-//
-// First, a bad window with NO service running is Android correctly freezing
-// an idle app, and must never count toward offering the user a per-OEM
-// setting to change. Only windows that survived the service reach here.
-//
-// Second, `degraded` carries half the weight of `frozen`. Under the old
-// boolean every Samsung run in the 2026-09-13 series read `ran-normally`
-// and would have cleared the streak forever on a device that plainly needed
-// the fallback.
-// ---------------------------------------------------------------------
+// Weighted service-attributed streak. A bad window with no service running is
+// Android correctly freezing an idle app, and must never count toward offering
+// the user a per-OEM setting to change; only windows that survived the service
+// reach here. `degraded` carries half the weight of `frozen`, because a
+// boolean reads a degraded window as `ran-normally` and would clear the streak
+// forever on a device that plainly needs the fallback.
 
 describe("weighted service-attributed streak", () => {
   test("three consecutive frozen windows trip the fallback", () => {
@@ -252,8 +241,8 @@ describe("weighted service-attributed streak", () => {
   });
 
   test("a degraded window does not reset the streak", () => {
-    // The regression the grading exists to prevent: under the old boolean a
-    // degraded window read `ran-normally` and would have cleared this.
+    // The regression the grading exists to prevent: a boolean reads a
+    // degraded window as `ran-normally` and would clear this.
     let h: BackgroundHealth = coerceHealth(null);
     h = withServiceWindow(h, "frozen", 1_000);
     h = withServiceWindow(h, "frozen", 2_000);
@@ -273,8 +262,8 @@ describe("weighted service-attributed streak", () => {
   test("no-service windows are ignored entirely", () => {
     // The caller never invokes withServiceWindow for a no-service window.
     // This pins the consequence: an unbroken run of them leaves the record
-    // untouched, so a user who simply backgrounds an idle app forever is
-    // never offered a fix for a problem they do not have.
+    // untouched, so a user who backgrounds an idle app forever is never
+    // offered a fix for a problem they do not have.
     const h: BackgroundHealth = coerceHealth(null);
     expect(h.serviceFreezeStreak).toBe(0);
     expect(hasFallbackTriggered(h)).toBe(false);
@@ -301,7 +290,7 @@ describe("weighted service-attributed streak", () => {
   });
 
   test("a legacy record migrates without tripping", () => {
-    // A pre-8A blob has neither field. It must arrive with a zero streak and
+    // A legacy blob has neither field. It must arrive with a zero streak and
     // an un-triggered fallback, while its freeze history carries across.
     const h = coerceHealth(legacy({ freezeCount: 9, hasPrompted: true }));
     expect(h.freezeCount).toBe(9);

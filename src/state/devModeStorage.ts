@@ -2,15 +2,9 @@ import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * Persistent dev-mode toggle. Off by default — exposes technical clutter
- * (driveIds, raw peer counts, hex labels, internal state) when on.
- *
- * Mirrors the listener pattern from `statsStorage.ts`: an in-memory cache,
- * a Set<Listener>, and a hook (`useDevMode`) that subscribes for live
- * updates so any consumer re-renders the moment the toggle flips.
- *
- * AsyncStorage instead of RNFS because it's a single boolean and survives
- * across reinstalls more reliably than a Documents/ JSON file.
+ * Persistent dev-mode toggle, off by default. While on it exposes technical
+ * detail — driveIds, raw peer counts, hex labels. An in-memory cache, a
+ * listener set and a hook, so any consumer re-renders when the toggle flips.
  */
 
 const STORAGE_KEY = "peardrop.dev-mode";
@@ -88,19 +82,10 @@ export function subscribeDevMode(listener: Listener): () => void {
 }
 
 /**
- * React hook for dev-mode state. Returns `{ enabled, toggle }`.
- *
- * hard-locked to `enabled: false` for
- * the release candidate. The Settings toggle that flipped this is gone,
- * the TestBed entry point is gone, and any user who previously had the
- * AsyncStorage flag set to "true" will now see the polished user-mode UI
- * regardless. The hook + storage helpers stay in the codebase so the
- * `devMode ? a : b` ternaries scattered through HomeScreen, TransferCard,
- * ShareLinkFlowContext, AccountScreen all keep compiling and collapse to
- * the user-mode branch at runtime.
- *
- * To re-enable for development: flip `RELEASE_LOCKED` to `false` below.
- * Don't ship a build with it false.
+ * Hard-locked to disabled for shipping builds: there is no toggle in the UI,
+ * and a stored flag set by an earlier install is ignored. The hook and the
+ * storage helpers remain so every dev-mode branch keeps compiling and
+ * collapses to the user-mode side at runtime. Do not ship it unlocked.
  */
 const RELEASE_LOCKED = true;
 

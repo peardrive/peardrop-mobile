@@ -1,38 +1,76 @@
-// backend-side (Bare worklet) logging.
+// Backend-side (Bare worklet) logging.
 //
-// The worklet does NOT write the log file. Two realms appending to one
-// path with no lock produces interleaved, torn lines. Instead every line
-// is shipped over the existing RPC event channel as
-// `{type:"log", level, tag, msg, at}`; BackendProvider on the RN side
-// hands it to the single file writer (src/lib/debugLog.ts).
+// The worklet does not write the log file: two realms appending to one path
+// with no lock produce interleaved, torn lines. Every line ships over the RPC
+// event channel and the RN side hands it to the single file writer.
 //
-// This supersedes the vestigial `{type:"debug", where, msg}` member of the
-// BackendEvent union, which was declared in src/state/types.ts but never
-// emitted and never handled.
-//
-// Gated by a flag pushed down from RN (RPC_SET_DEBUG_LOGGING). Off by
-// default and off means off: `blog` returns before it does any string
-// work, so instrumenting a hot loop costs one boolean test per call.
-//
-// Import-safety: this module imports nothing from the engine (in
-// particular not engine-errors.mjs, which imports *this*), so there is no
-// cycle.
+// Gated by a flag pushed down from RN, off by default: `blog` returns before any
+// string work. This module imports nothing from the engine, so there is no cycle.
 
 let emitLog = () => {};
 let enabled = false;
+/**
+ * Has the flag ever arrived from RN? One-way, unlike `enabled`, which goes
+ * false again when the user toggles Debugging off. It separates the two
+ * reasons a line can be missing from an export: Debugging was never turned on,
+ * or the flag had not arrived yet when the line was written.
+ */
+let everEnabled = false;
+/** Lines `blog`/`swallowed` refused because the flag had not arrived yet. */
+let droppedBeforeFlag = 0;
+
+/**
+ * Count one refused line, but only while the flag has never arrived. Shaped so
+ * `blog` still returns before it does any string work, which is the
+ * load-bearing part. Once the flag has arrived, this is a single boolean test
+ * and never touches the counter again.
+ */
+function countRefused() {
+  if (!everEnabled) droppedBeforeFlag++;
+}
 
 /** Wire the emitter. Called once from backend.mjs at RPC construction. */
 export function setLogEmit(fn) {
   emitLog = typeof fn === "function" ? fn : () => {};
 }
 
-/** Flip the flag. Pushed from RN whenever the Settings toggle changes. */
+/**
+ * Flip the flag. Pushed from RN whenever the Settings toggle changes.
+ *
+ * On the first rising edge, report how many lines were refused before the flag
+ * arrived. A non-zero count is the signature of the boot race: `RPC_LISTEN` →
+ * `engineInit` → `loadManifest` running before `RPC_SET_DEBUG_LOGGING` lands,
+ * so `manifest loaded` is never emitted and its absence says nothing about
+ * eviction. This line is how an export proves the RN-side ordering held.
+ */
 export function setLogEnabled(value) {
-  enabled = !!value;
+  const next = !!value;
+  const rising = next && !everEnabled;
+  enabled = next;
+  if (next) everEnabled = true;
+  if (rising) {
+    blog(
+      "warn",
+      "debug-log",
+      `flag arrived: pre-flag lines dropped=${droppedBeforeFlag} ` +
+        `(non-zero means the worklet logged before RN told it the flag — ` +
+        `absence of engine.boot lines is NOT eviction)`,
+    );
+  }
 }
 
 export function isLogEnabled() {
   return enabled;
+}
+
+/** How many lines were refused before the flag ever arrived. Never resets. */
+export function droppedBeforeFlagCount() {
+  return droppedBeforeFlag;
+}
+
+/** Whether the flag has ever arrived from RN. */
+export function hasLogFlagArrived() {
+  return everEnabled;
 }
 
 /** Mirror of the RN-side per-entry clamp — one payload can't flood the wire. */
@@ -44,7 +82,10 @@ function clamp(s) {
 }
 
 export function blog(level, tag, msg) {
-  if (!enabled) return;
+  if (!enabled) {
+    countRefused();
+    return;
+  }
   try {
     emitLog({
       type: "log",
@@ -65,8 +106,7 @@ export const berror = (tag, msg) => blog("error", tag, msg);
 
 /**
  * Render a structured EngineError (or any thrown value) preserving
- * category / cause / detail rather than flattening to `.message`. The
- * whole point of the Sprint 5I B4 fix.
+ * category / cause / detail rather than flattening to `.message`.
  */
 export function describeError(err) {
   if (err == null) return "";
@@ -94,13 +134,15 @@ export function describeError(err) {
 }
 
 /**
- * Log a best-effort `catch {}` that would otherwise be a blind spot.
- *
- * The engine is full of legitimate swallowed catches (cleanup steps,
- * manifest saves, socket teardown). Each is correct and each was
- * invisible. `swallowed()` keeps the behaviour and records the fact.
+ * Log a best-effort `catch {}` that would otherwise be a blind spot. The
+ * engine has many legitimate swallowed catches — cleanup steps, manifest
+ * saves, socket teardown — and each one is correct but invisible. This keeps
+ * the behaviour and records the fact.
  */
 export function swallowed(tag, what, err) {
-  if (!enabled) return;
+  if (!enabled) {
+    countRefused();
+    return;
+  }
   blog("warn", tag, `swallowed: ${what} — ${describeError(err)}`);
 }

@@ -45,8 +45,15 @@ module.exports = [
   },
   {
     // scripts/*.mjs runs in plain Node (not React Native, not Bare), so
-    // Node's built-in globals apply.
-    files: ["scripts/**/*.{js,mjs,cjs}", "backend/__poc__/**/*.{js,mjs,cjs}"],
+    // Node's built-in globals apply. The FIX-2026-09 engine harness is the
+    // same case: it drives backend/*.mjs from plain Node child processes,
+    // aliasing bare-fs/bare-path to their node: equivalents via a resolve
+    // hook. It is test tooling, not shipped code, but it is still linted.
+    files: [
+      "scripts/**/*.{js,mjs,cjs}",
+      "backend/__poc__/**/*.{js,mjs,cjs}",
+      "agent-pack/fix-2026-09/harness/**/*.{js,mjs,cjs}",
+    ],
     languageOptions: {
       globals: {
         Buffer: "readonly",

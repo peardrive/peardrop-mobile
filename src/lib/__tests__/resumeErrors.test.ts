@@ -1,20 +1,12 @@
-// JJJJJJJ tripwire for the non-destructive hydrate-failure
-// pattern. The engine keeps hydrate failures in an in-memory Map instead
-// of persisting `state: "failed"` to the manifest. This test verifies
-// the pattern's invariants at behavior level — we can't run the actual
-// engine's `engineHydrateDrives` under Jest (it needs bare-fs), but the
-// pattern itself is small enough to mirror and exercise.
-//
-// The invariants:
-//   1. A failure sets an entry in the map with { error, at } (timestamp).
-//   2. A successful hydrate for the same driveId clears the map entry.
-//   3. Multiple failures for different drives coexist independently.
-//   4. Nothing about this pattern touches persistent state.
+// Tripwire for the non-destructive hydrate-failure pattern: failures live in
+// an in-memory Map and are never persisted to the manifest as
+// `state: "failed"`. The engine path needs bare-fs and cannot run under Jest,
+// so the pattern is mirrored here.
 
 type ResumeError = { error: string; at: number };
 
-// Mirror of the engine's resumeErrors + recordHydrateFailure + success
-// clear. Emit events via a Jest mock so we can assert emission.
+// Mirror of the engine's resumeErrors, recordHydrateFailure and success
+// clear. Events go through a Jest mock so emission can be asserted.
 class HydrateFailureTracker {
   private map = new Map<string, ResumeError>();
   emit: jest.Mock;
@@ -113,12 +105,8 @@ describe("resumeErrors pattern (Sprint 3R JJJJJJJ)", () => {
   });
 
   test("scenario 6 — Sprint 3S: hydrate failures could carry a typed cause", () => {
-    // After Sprint 3S the engine's recordHydrateFailure could be extended
-    // to accept a { message, cause } payload so RN can branch on the
-    // failure type (storage-missing vs open-fail). The tracker itself
-    // doesn't enforce the shape; this test documents that the emit
-    // payload's structure is caller-controlled and the tracker stores
-    // whatever message it's given.
+    // The emit payload's shape is caller-controlled: the tracker enforces
+    // nothing and stores whatever message it is given.
     tracker.recordFailure(
       "drive_typed",
       "Storage directory missing (typed via Sprint 3S)",

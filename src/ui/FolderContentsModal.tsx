@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { type IconName } from "../lib/files";
+import { type FolderRowControl } from "../lib/folderRowControl";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
 
 export type FolderContentsTone = "warning" | "primary" | "danger" | "muted";
@@ -34,9 +35,13 @@ export type FolderContentsFile = {
   videoUri?: string | null;
   statusLabel: string;
   statusTone: FolderContentsTone;
-  /** When true, the row's right-side control renders a red circle-X
-   *  (active-share stop). When false, the open-external icon is shown. */
-  isActiveShare?: boolean;
+  /**
+   * Absent means no control is rendered at all. There is no per-file stop
+   * control, and `FolderRowControl` has no member that could express one: on
+   * a received row it would stop nothing, and on a hosted one it would stop
+   * the entire share with no confirmation.
+   */
+  rightControl?: FolderRowControl;
   /** When true, the row is dimmed (not-on-device / missing). */
   dim?: boolean;
   /** child-blink flash. */
@@ -60,7 +65,13 @@ export type FolderContentsModalProps = {
   metaLine: string;
   status?: FolderContentsStatus | null;
   files: FolderContentsFile[];
-  /** When present, enables the Copy Link CTA at the bottom. */
+  /**
+   * When present, enables the Copy Link CTA at the bottom. The caller must
+   * pass `null` when this phone is not announcing the share: an inactive
+   * folder's link no longer resolves here, and a received folder's link
+   * resolves to whoever sent it. The gate lives at the call site, where the
+   * announcing signal is; this component stays presentational.
+   */
   shareLink?: string | null;
   onCopyLink: () => void;
   /** When set, renders a primary "Start sharing" CTA at the bottom. Wired
@@ -229,12 +240,8 @@ export default function FolderContentsModal({
             />
 
             {/* onStartSharing wins over shareLink: an inactive folder can
-              *  still carry a persistent shareLink from a prior session,
-              *  but Copy Link on an inactive folder is misleading — the
-              *  drive isn't seeding, so the link won't resolve for peers.
-              *  Start sharing is the meaningful next step. Its outlined-
-              *  green treatment matches ShareQrModal's startBtn so users
-              *  see one consistent affordance across surfaces. */}
+              *  still carry a persistent shareLink, but the drive is not
+              *  seeding, so the link will not resolve for peers. */}
             {onStartSharing ? (
               <Pressable
                 style={styles.startBtn}
@@ -340,23 +347,16 @@ function FileRow({
           {file.statusLabel}
         </Text>
       </View>
-      {file.isActiveShare ? (
-        <Pressable
-          onPress={file.onRightControlPress}
-          hitSlop={8}
-          style={styles.rowStopCircle}
-          accessibilityRole="button"
-          accessibilityLabel={`Stop sharing ${file.name}`}
-        >
-          <Ionicons name="close" size={14} color={theme.onPrimary} />
-        </Pressable>
-      ) : (
+      {/* The only control a row can carry is "open", and it is absent when
+          there is nothing on disk to open: a child still downloading gets no
+          control rather than one that claims the file is missing. */}
+      {file.rightControl?.kind === "open" ? (
         <Pressable
           onPress={file.onRightControlPress}
           hitSlop={8}
           style={styles.rowKebab}
           accessibilityRole="button"
-          accessibilityLabel={`Open ${file.name} in another app`}
+          accessibilityLabel={file.rightControl.accessibilityLabel}
         >
           <Ionicons
             name="open-outline"
@@ -364,7 +364,7 @@ function FileRow({
             color={theme.muted}
           />
         </Pressable>
-      )}
+      ) : null}
     </Pressable>
   );
 }
@@ -527,14 +527,6 @@ function createStyles(theme: AppTheme, bottomClearance: number) {
       height: 32,
       alignItems: "center",
       justifyContent: "center",
-    },
-    rowStopCircle: {
-      width: 24,
-      height: 24,
-      borderRadius: 12,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: theme.danger,
     },
     emptyText: {
       color: theme.muted,

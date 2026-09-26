@@ -10,6 +10,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
+import type { RecentShareAction } from "../lib/recentShareLink";
 
 export type RecentShareItem = {
   id: string;
@@ -17,8 +18,20 @@ export type RecentShareItem = {
   meta: string;
   /** Ionicons glyph to show in the left square. */
   icon: React.ComponentProps<typeof Ionicons>["name"];
-  /** Present when the share still has a live link to copy. */
+  /**
+   * The row's link string. Present on every row this sheet is given — the
+   * parent's selector requires one — but only handed out when `action` is
+   * `"link"`.
+   */
   shareLink?: string;
+  /**
+   * `"link"` when the share is announcing right now, `"share-again"` when it
+   * is not. Not the same question as whether the row has a link string: an
+   * inactive drive is reported with its link, so keying the pill off
+   * `shareLink` alone hands out a link no peer can resolve. The decision is
+   * made in `src/lib/recentShareLink.ts`; this component only renders it.
+   */
+  action: RecentShareAction;
 };
 
 export type SendSheetProps = {
@@ -27,20 +40,28 @@ export type SendSheetProps = {
   onPickFiles: () => void;
   onPickPhotos: () => void;
   /**
-   * Folder sharing is hidden from the Send surface for now. The prop is kept
-   * optional so callers can keep wiring the handler without a rebuild churn;
-   * the entry point can be re-added here later without touching parents.
+   * Folder sharing is not offered on the Send surface. The prop stays
+   * optional so callers can keep the handler wired and the entry point can
+   * be re-added without touching parents.
    */
   onPickFolder?: () => void;
   /** Recent hosted shares, ordered most-recent first. Empty list = section hidden. */
   recentShares: RecentShareItem[];
   /** Copy the share link to clipboard (parent owns the toast). */
   onCopyRecentLink: (link: string) => void;
+  /**
+   * Re-announce a stopped hosted share, then offer its link. Receives the row
+   * id; the parent resolves it to a drive and routes it through the single
+   * hosted start-sharing path.
+   */
+  onShareAgain: (id: string) => void;
 };
 
 /**
- * v5 Send: centered modal card (matching the Receive dialog) with two large
- * Files + Photos cards, then a Recent Shares list with a "Link" copy button.
+ * Send: a centered modal card with Files and Photos cards over a recent
+ * shares list. Each recent row carries one pill, "Link" while the share is
+ * announcing and "Share again" when it is not. Rows are never hidden for
+ * being stopped.
  */
 export default function SendSheet({
   visible,
@@ -50,6 +71,7 @@ export default function SendSheet({
   onPickFolder: _onPickFolder,
   recentShares,
   onCopyRecentLink,
+  onShareAgain,
 }: SendSheetProps) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -123,7 +145,10 @@ export default function SendSheet({
                           {r.meta}
                         </Text>
                       </View>
-                      {r.shareLink ? (
+                      {/* The pill follows `action`, never `shareLink` alone:
+                          a stopped share has a link string and must not
+                          offer it. */}
+                      {r.action === "link" && r.shareLink ? (
                         <Pressable
                           style={styles.linkBtn}
                           onPress={() =>
@@ -139,7 +164,21 @@ export default function SendSheet({
                           />
                           <Text style={styles.linkBtnText}>Link</Text>
                         </Pressable>
-                      ) : null}
+                      ) : (
+                        <Pressable
+                          style={styles.linkBtn}
+                          onPress={() => onShareAgain(r.id)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Share ${r.name} again`}
+                        >
+                          <Ionicons
+                            name="refresh"
+                            size={14}
+                            color={theme.primary}
+                          />
+                          <Text style={styles.linkBtnText}>Share again</Text>
+                        </Pressable>
+                      )}
                     </View>
                   </React.Fragment>
                 ))}

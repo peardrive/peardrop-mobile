@@ -35,9 +35,8 @@ export type CandidateLabel =
   | "miui-autostart-op"
   | "miui-autostart-management"
   /**
-   * Sprint 8A, from 7D's harness on real hardware. Both of these LAUNCHED on
-   * three Samsungs (S21 FE / One UI 8.0, S24 Ultra and S24 FE / One UI 8.5),
-   * and `dumpsys` confirmed both exist and are exported on all three.
+   * Both of these launched on three Samsung handsets across One UI 8.0 and
+   * 8.5, and `dumpsys` confirmed both exist and are exported on all three.
    *
    * Deliberately NOT included: `com.samsung.android.sm.ui.battery.BatteryActivity`
    * — the candidate AutoStarter's README and every community gist list FIRST
@@ -73,13 +72,10 @@ export function isXiaomiManufacturer(
  */
 /**
  * Samsung ships the same Device Care package across One UI versions. Matched
- * on `Build.MANUFACTURER`, which reads "samsung" (lowercase) on all three
- * devices measured on 2026-09-13.
- *
- * Note the library this project sourced its candidates from dispatches on
- * `Build.BRAND` instead. On every Samsung measured both fields read
- * "samsung", so the choice is unobservable here; it is recorded in the
- * device-identity readout so a rebranded handset can settle it.
+ * on `Build.MANUFACTURER`, which reads "samsung" (lowercase) on every device
+ * measured. Other implementations dispatch on `Build.BRAND` instead; on every
+ * Samsung measured both fields agree, so a rebranded handset would be needed
+ * to settle the choice.
  */
 export function isSamsungManufacturer(
   manufacturer: string | null | undefined
@@ -92,18 +88,10 @@ export function ladderFor(
   manufacturer: string | null | undefined
 ): CandidateLabel[] {
   if (kind === "fallback") {
-    // Xiaomi goes to Autostart, NOT the battery screen.
-    //
-    // Measured 2026-09-13: with the battery restriction REMOVED and no
-    // service, the Redmi still produced ten gaps over 20 s, a 115 s stall
-    // and a completion 49 s late — against 2 s gaps and +5 ms with the
-    // service. The battery restriction was set to "restricted" throughout
-    // all five clean Autostart runs of 2026-09-06/07, so it is measurably
-    // not the blocker on that platform. Sending a Xiaomi user to the
-    // battery page would send them to the screen known not to help.
-    // Delegated, not restated. The Xiaomi fallback destination IS the
-    // autostart ladder, and writing its rungs out again here would mean a
-    // future change to one silently not reaching the other.
+    // Xiaomi goes to Autostart, not the battery screen: removing the battery
+    // restriction was measured not to help there, so the battery page is the
+    // screen known not to help. Delegated, not restated — writing the rungs
+    // out again here would let a future change reach only one of the two.
     if (isXiaomiManufacturer(manufacturer)) {
       return ladderFor("autostart", manufacturer);
     }

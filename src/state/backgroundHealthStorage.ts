@@ -3,11 +3,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
   EMPTY_HEALTH,
+  HEALTH_SCHEMA_VERSION,
   PROMPT_VERSION,
   SERVICE_FREEZE_THRESHOLD,
   coerceHealth,
   withFreeze,
   withPrompted,
+  withSchemaMigration,
   withServiceWindow,
   type BackgroundHealth,
 } from "../lib/backgroundHealthModel";
@@ -16,22 +18,25 @@ import { log as debugLog } from "../lib/debugLog";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
 
 /**
- * What we know about the OS freezing this app while it was backgrounded.
- *
- * Persisted because the evidence is worth keeping across restarts: the whole
- * point is to show a message referring to something that actually happened,
- * and a freeze often ends with the process being killed.
- *
- * Same shape as debugLogStorage.ts / simulateDelayStorage.ts on purpose:
- * in-memory cache + Set<Listener> + a hook. Parsing, migration and the
- * prompt-eligibility rule live in ../lib/backgroundHealthModel.ts so they can
- * be unit-tested without AsyncStorage; this file is persistence only.
+ * The record of the OS freezing this app while it was backgrounded.
+ * Persisted because a freeze often ends with the process being killed, and
+ * the message it drives must refer to something that really happened.
+ * Parsing, migration and the prompt rule live in the model module so they
+ * can be tested without AsyncStorage; this file is persistence only.
  */
 
 const STORAGE_KEY = "peardrop.background-health";
 
+/**
+ * A priority tag, so this line survives log rotation. Deliberately not
+ * `rn.fallback.forced`: that tag means a test instrument wrote the state,
+ * and a release-user migration is not an instrument.
+ */
+const MIGRATION_TAG = "rn.fallback";
+
 export {
   EMPTY_HEALTH,
+  HEALTH_SCHEMA_VERSION,
   PROMPT_VERSION,
   shouldPrompt,
   type BackgroundHealth,
@@ -50,25 +55,66 @@ async function readFromStorage(): Promise<BackgroundHealth> {
   }
 }
 
+/**
+ * Runs on hydration and is ungated by build type: the reset below returns
+ * early in a release build, so this is the only path that can clear a
+ * fallback stamp earned under an older calibration. The decision itself is
+ * `withSchemaMigration`, which is pure and tested; this is only the effect.
+ * It logs through the file writer, not the console, because only the file
+ * writer's output reaches an exported log.
+ */
+async function migrateOnHydrate(loaded: BackgroundHealth): Promise<BackgroundHealth> {
+  const { next, cleared } = withSchemaMigration(loaded);
+  if (next === loaded) return loaded;
+  // Persist without notifying: hydration has not returned yet and
+  // subscribers are delivered through this same promise, so a `write()`
+  // here would deliver twice.
+  await persist(next);
+  if (cleared) {
+    debugLog(
+      "warn",
+      MIGRATION_TAG,
+      `schema ${loaded.schemaVersion} -> ${HEALTH_SCHEMA_VERSION}: cleared a ` +
+        `fallback stamp written before this build. ` +
+        `was streak=${loaded.serviceFreezeStreak}/${SERVICE_FREEZE_THRESHOLD} ` +
+        `fallbackTriggeredAt=${loaded.fallbackTriggeredAt} ` +
+        `promptedVersion=${loaded.promptedVersion} -> ` +
+        `streak=${next.serviceFreezeStreak} ` +
+        `fallbackTriggeredAt=${next.fallbackTriggeredAt} ` +
+        `promptedVersion=${next.promptedVersion}. ` +
+        `freezeCount preserved at ${next.freezeCount}. ` +
+        `ONE-SHOT: the version is now persisted, so this cannot run again.`,
+    );
+  }
+  return next;
+}
+
 function ensureHydrated(): Promise<BackgroundHealth> {
   if (cache !== null) return Promise.resolve(cache);
   if (!hydrating) {
-    hydrating = readFromStorage().then((value) => {
-      cache = value;
-      hydrating = null;
-      return value;
-    });
+    hydrating = readFromStorage()
+      .then(migrateOnHydrate)
+      .then((value) => {
+        cache = value;
+        hydrating = null;
+        return value;
+      });
   }
   return hydrating;
 }
 
-async function write(next: BackgroundHealth): Promise<void> {
-  cache = next;
+/** Persist only. Split out so the migration can write during hydration. */
+async function persist(next: BackgroundHealth): Promise<void> {
   try {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
     // Non-fatal: the value still takes effect for this session.
   }
+}
+
+async function write(next: BackgroundHealth): Promise<void> {
+  cache = next;
+  await persist(next);
   for (const l of Array.from(listeners)) {
     try {
       l(next);
@@ -85,11 +131,8 @@ export function getBackgroundHealthSync(): BackgroundHealth {
 }
 
 /**
- * Record a detected freeze.
- *
- * Called from `checkForFreeze` on every foreground transition that follows a
- * measured background window, with no reference to transfer state — a freeze
- * with nothing in flight counts exactly as one that interrupted a download.
+ * Record a detected freeze. Transfer state is not consulted: a freeze with
+ * nothing in flight counts exactly as one that interrupted a download.
  */
 export async function recordFreeze(
   elapsedMs: number,
@@ -102,12 +145,10 @@ export async function recordFreeze(
 }
 
 /**
- * record how a background window ended, ATTRIBUTED to whether the
- * foreground service was running for it.
- *
- * Only these two outcomes touch the streak. A window with no service running
- * calls neither — an idle app being frozen is Android working correctly, and
- * counting it would trip the fallback on devices where nothing is wrong.
+ * Record how a background window ended, attributed to whether the foreground
+ * service was running for it. A window with no service does not call here:
+ * an idle app being frozen is Android working correctly, and counting it
+ * would trip the fallback on devices where nothing is wrong.
  */
 export async function recordServiceWindow(
   grade: FreezeGrade
@@ -122,30 +163,20 @@ export async function recordServiceWindow(
 }
 
 // ---------------------------------------------------------------------
-// test instruments.
-//
-// Both WRITE PERSISTED STATE, unlike 8B's forced-active flag, which is a
-// module-level `let` that dies with the process. That is unavoidable — the
-// fallback's whole behaviour is "sticky once earned", and a session-only
-// version could not test stickiness. The reset below is what undoes them.
-//
-// Gated on IS_DEBUG_BUILD HERE, at the writer, not only at the row. A
-// release build cannot reach the fallback through these by any path: the
-// rows do not render, and if something called these anyway they no-op.
+// Test instruments. Both write persisted state, which is unavoidable: the
+// fallback is sticky once earned, and a session-only version could not
+// exercise that. The reset below undoes them. Gated at the writer and not
+// only at the row, so a release build cannot reach the fallback by any path.
 // ---------------------------------------------------------------------
 
 /** Distinct, greppable, and it says what it is in the tag itself. */
 const FORCED_TAG = "rn.fallback.forced";
 
 /**
- * Put the record into the state three service-attributed freezes would have
- * produced, so the prompt fires and the Settings row appears.
- *
- * Built by replaying `withServiceWindow` at the threshold rather than by
- * assigning the fields directly. 8C must not touch the streak logic, and
- * this way it does not: whatever that function does with weights and the
- * sticky stamp is what the forced state gets, so the instrument cannot
- * drift from the thing it is meant to simulate.
+ * Put the record into the state a full streak of service-attributed freezes
+ * would have produced, so the prompt fires. Built by replaying
+ * `withServiceWindow` rather than assigning fields, so the instrument cannot
+ * drift from the thing it simulates.
  */
 export async function forceFallbackTriggered(): Promise<BackgroundHealth> {
   if (!IS_DEBUG_BUILD) return ensureHydrated();
@@ -169,17 +200,10 @@ export async function forceFallbackTriggered(): Promise<BackgroundHealth> {
 
 /**
  * Clear the streak, the sticky fallback stamp and the prompt version, so the
- * prompt can be seen again.
- *
- * This also closes the gap carried since 7B: prompt copy could previously be
- * seen exactly once per install, which made reviewing wording a
- * reinstall-per-look exercise.
- *
- * Freeze HISTORY is deliberately preserved. `freezeCount` and the three
- * `last*` fields are a record of things that really happened to this device,
- * often across weeks; wiping them to re-read a string would destroy real
- * measurement data. `shouldPrompt` no longer consults `freezeCount` anyway,
- * so keeping it cannot block a re-prompt.
+ * prompt can be seen again. Freeze history is deliberately preserved:
+ * `freezeCount` and the `last*` fields record things that really happened to
+ * this device, often across weeks. `shouldPrompt` does not consult them, so
+ * keeping them cannot block a re-prompt.
  */
 export async function resetBackgroundHealthForTesting(): Promise<BackgroundHealth> {
   if (!IS_DEBUG_BUILD) return ensureHydrated();
@@ -202,13 +226,12 @@ export async function resetBackgroundHealthForTesting(): Promise<BackgroundHealt
   return next;
 }
 
-/** Note that the prompt was shown. Idempotent within a prompt version. */
+/** Record that the prompt was shown. Idempotent within a prompt version. */
 export async function markPrompted(): Promise<void> {
   const current = await ensureHydrated();
-  // Already asked at this version: skip the write rather than re-persisting
-  // an identical blob and waking every subscriber for nothing. Guarded on
-  // the version alone, not on `shouldPrompt`, so this stays correct if a
-  // caller ever marks without a freeze on record.
+  // Already asked at this version: skip the write rather than waking every
+  // subscriber for an identical blob. Guarded on the version alone, so a
+  // caller that marks without a freeze on record stays correct.
   if (current.promptedVersion >= PROMPT_VERSION) return;
   await write(withPrompted(current));
 }

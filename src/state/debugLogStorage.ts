@@ -2,21 +2,11 @@ import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * persistent "debugging" toggle. Off by default.
- *
- * When ON, the app routes its diagnostic stream to a file so a tester can
- * export it and we can reconstruct a failure without the device in hand.
- * When OFF there is no file handle, no buffer and no flush timer — see
- * src/lib/debugLog.ts, which subscribes here and tears everything down on
- * the falling edge.
- *
- * Deliberately the same shape as devModeStorage.ts (in-memory cache +
- * Set<Listener> + a hook) so there's one idiom for "persistent boolean the
- * whole app watches". AsyncStorage rather than an RNFS JSON file for the
- * same reason: it's a single boolean.
- *
- * Unlike devModeStorage this is NOT release-locked — shipping it is the
- * point. A tester turns it on, reproduces, exports, turns it off.
+ * The persistent debugging toggle, off by default. While on, the diagnostic
+ * stream goes to a file that can be exported, so a failure can be
+ * reconstructed without the device in hand; while off there is no file
+ * handle, no buffer and no flush timer. Not release-locked: shipping it is
+ * the point.
  */
 
 const STORAGE_KEY = "peardrop.debug-logging";
@@ -68,6 +58,29 @@ export async function getDebugLogging(): Promise<boolean> {
  */
 export function isDebugLoggingEnabledSync(): boolean {
   return cache === true;
+}
+
+/**
+ * Resolve the persisted flag with a bounded wait, for the one caller that
+ * must not read a stale `false`: the worklet drops every log line until the
+ * flag arrives, and the synchronous read is `false` on a cold cache by
+ * design. Bounded because listening must not be hostage to storage — on
+ * timeout this resolves `false` and the subscriber corrects it later. A warm
+ * cache short-circuits before any timer is armed.
+ */
+export async function awaitDebugLogging(timeoutMs = 1500): Promise<boolean> {
+  if (cache !== null) return cache;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race<boolean>([
+      ensureHydrated(),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 export async function setDebugLogging(value: boolean): Promise<void> {

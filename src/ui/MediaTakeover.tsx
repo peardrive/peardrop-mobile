@@ -46,11 +46,9 @@ export type MediaTakeoverProps = {
 const CHROME_HIDE_MS = 3000;
 
 /**
- * Fullscreen media takeover. Renders on a pure-black backdrop with
- * translucent chrome (back arrow top-left, optional overflow top-right,
- * translucent bottom bar for video). Chrome auto-hides ~3 s during video
- * playback; other modes keep chrome pinned. Reduce-motion disables the
- * auto-hide fade so controls remain visible.
+ * Fullscreen media takeover on a pure-black backdrop with translucent
+ * chrome. Chrome auto-hides during video playback and stays pinned in other
+ * modes. Reduce-motion disables the auto-hide fade so controls stay visible.
  */
 export default function MediaTakeover({
   visible,

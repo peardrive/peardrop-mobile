@@ -28,10 +28,8 @@ export type ResolveDeps = {
    */
   timerRef?: ResolveTimerRef;
   /**
-   * optional breadcrumb sink. Injected rather than
-   * imported so this module stays RN-free and testable under
-   * `testEnvironment: "node"` — importing src/lib/debugLog here would drag
-   * in react-native-fs and break resolveGuard's existing unit tests.
+   * Optional breadcrumb sink, injected rather than imported so this module
+   * stays free of react-native and testable in a plain node environment.
    */
   onLog?: (level: "debug" | "info" | "warn", msg: string) => void;
 };
@@ -76,9 +74,9 @@ export async function runGuardedResolve(
       timeoutPromise,
     ])) as OpenLinkResult;
     if (myGen !== gen.current) {
-      // A newer resolve started while this one was in flight, so every
-      // side effect below is suppressed. From the user's seat this is the
-      // "I tapped it and nothing happened" case — previously silent.
+      // A newer resolve started while this one was in flight, so every side
+      // effect below is suppressed. Logged, because from the user's seat
+      // this is the "I tapped it and nothing happened" case.
       log(
         "warn",
         `resolve gen=${myGen} DISCARDED (superseded by gen=${gen.current}) after ${Date.now() - startedAt}ms — ` +

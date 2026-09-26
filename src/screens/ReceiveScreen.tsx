@@ -40,11 +40,19 @@ import {
 import { formatBytes, formatClock } from "../lib/format";
 import {
   baseName,
+  fileExt,
   fileIcon,
   mimeFromName,
   previewModeFor,
   type PreviewMode,
 } from "../lib/files";
+import { describeOpenFailure } from "../lib/openFileResult";
+import { logStructuredError } from "../lib/debugLog";
+import { describeSaveResult } from "../lib/saveToDownloadsResult";
+import {
+  isSaveToDownloadsAvailable,
+  saveToDownloads,
+} from "../lib/saveToDownloads";
 import { TransferCard } from "../ui/TransferCard";
 import SwipeableRow from "../ui/SwipeableRow";
 import ReceivedFileInfoModal from "../ui/ReceivedFileInfoModal";
@@ -60,6 +68,9 @@ type PreviewState = {
   item: DownloadedItem;
   mode: PreviewMode;
 };
+
+/** see the twin in MainScreen — module scope, cannot change. */
+const canSaveToDownloads = isSaveToDownloadsAvailable();
 
 function createReceiveStyles(theme: AppTheme) {
   return StyleSheet.create({
@@ -146,10 +157,8 @@ function createReceiveStyles(theme: AppTheme) {
       flexGrow: 1,
       justifyContent: "center",
     },
-    // had no empty state; on-device testing showed
-    // the page looked broken-empty. Reinstated 2026-05-14 as a minimal
-    // icon + warm message centered in the list area. No instructional
-    // prose — the link input at the bottom already says what to do.
+    // A minimal icon and message centered in the list area, so the page
+    // does not read as broken. No instructions: the link input says those.
     emptyWrap: {
       flex: 1,
       paddingHorizontal: 24,
@@ -286,9 +295,8 @@ function createReceiveStyles(theme: AppTheme) {
       borderRadius: 16,
       borderWidth: 1,
       borderColor: theme.border,
-      // theme.bg (opaque) instead of theme.card (5–8% alpha) so
-      // file content behind the modal can't bleed through. Same fix as
-      // SharePreviewModal.
+      // theme.bg is opaque where theme.card is not, so file content behind
+      // the modal cannot bleed through.
       backgroundColor: theme.bg,
       padding: 14,
       gap: 10,
@@ -332,9 +340,8 @@ function createReceiveStyles(theme: AppTheme) {
       gap: 12,
     },
     audioMeta: { color: theme.muted, fontSize: 12 },
-    // full media-control row centered horizontally. Skip
-    // buttons flank the play/pause; all three are circular tap targets
-    // sized for a typical thumb (44 px).
+    // Media-control row, centered. Skip buttons flank play/pause, and all
+    // three are circular tap targets sized for a thumb.
     audioControlsRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -360,9 +367,8 @@ function createReceiveStyles(theme: AppTheme) {
       justifyContent: "center",
       backgroundColor: theme.primary,
     },
-    // Tap-to-seek scrubber. The fill is positioned absolutely inside
-    // the track so the thumb appears as a small dot at the leading edge
-    // of the filled portion.
+    // Tap-to-seek scrubber. The fill sits absolutely inside the track, so
+    // the thumb reads as a dot at the leading edge of the filled portion.
     audioScrubber: {
       height: 28, // taller than visible track so tap target is generous
       justifyContent: "center",
@@ -393,7 +399,7 @@ export default function ReceiveScreen() {
   const insets = useSafeAreaInsets();
   const { theme } = useAppTheme();
   const styles = useMemo(() => createReceiveStyles(theme), [theme]);
-  const { transfers, cancelTransfer, clearTransfer } = useBackend();
+  const { transfers, cancelInFlight, clearTransfer } = useBackend();
   const {
     sessionDriveId,
     linkDraft,
@@ -407,8 +413,11 @@ export default function ReceiveScreen() {
     clearHighlights,
   } = useShareLinkFlow();
   const { show: showToastRaw } = useToast();
+  // `describeSaveResult` returns the shared success/error shape; narrowing
+  // the union here would make this screen disagree with MainScreen.
   const showToast = useCallback(
-    (msg: string, kind: "info" | "error" = "info") => showToastRaw(msg, { kind }),
+    (msg: string, kind: "info" | "error" | "success" = "info") =>
+      showToastRaw(msg, { kind }),
     [showToastRaw]
   );
   const [downloaded, setDownloaded] = useState<DownloadedItem[]>([]);
@@ -420,30 +429,24 @@ export default function ReceiveScreen() {
   const [peekTopmost, setPeekTopmost] = useState(false);
   const [infoFileId, setInfoFileId] = useState<string | null>(null);
   const [menuItem, setMenuItem] = useState<DownloadedItem | null>(null);
-  // IDs that just arrived from a download. Reuse the same flash
-  // animation as the Phase P dedup highlight, but driven by storage
-  // subscribe instead of paste-time classification.
+  // IDs that just arrived from a download. Same flash animation as the
+  // dedup highlight, driven by the storage subscription.
   const [newHighlightIds, setNewHighlightIds] = useState<string[]>([]);
-  // Set of all IDs we've seen in any prior subscribe emit. Initialized
-  // empty so the FIRST emit (cold start with already-present files) does
-  // NOT highlight — only emits AFTER mount count as "new arrivals".
+  // Every id seen in a prior emit. Starts empty so the first emit, a cold
+  // start with files already present, highlights nothing.
   const prevDownloadedIdsRef = useRef<Set<string>>(new Set());
   const haveSeenInitialEmitRef = useRef(false);
   const flatListRef = useRef<FlatList<DownloadedItem>>(null);
-  // 1 = full accent overlay, 0 = transparent. Drives the highlight flash
-  // for both dedup hits (Phase P) and new-arrival flashes (Phase DD). One
-  // shared animation; merging both sources into one render set means the
-  // effect doesn't double-fire when both happen in the same tick.
+  // One shared highlight animation for dedup hits and new arrivals.
+  // Merging both sources keeps the effect from double-firing in one tick.
   const highlightAnim = useRef(new Animated.Value(0)).current;
   const highlightSet = useMemo(
     () => new Set([...highlightedDownloadedIds, ...newHighlightIds]),
     [highlightedDownloadedIds, newHighlightIds],
   );
 
-  // Derive media sources from the current preview so the expo-audio /
-  // expo-video hooks can manage player lifetime for us. Hooks must run on
-  // every render, so null-source is a first-class state rather than a
-  // conditional call.
+  // Derive media sources from the current preview so the player hooks own
+  // lifetime. Hooks run every render, so a null source is a real state.
   const audioUri = useMemo(() => {
     if (!(preview?.mode === "audio" && preview.item)) return null;
     return preview.item.path.startsWith("file://")
@@ -495,9 +498,8 @@ export default function ReceiveScreen() {
     return () => clearInterval(id);
   }, [preview?.mode, audioPlayer]);
 
-  // After 5 s of resolving the user wonders if anything's happening. Surface
-  // a gentle hint above the Cancel row. Reset the instant resolving flips
-  // off so the hint never shows for a fast resolve.
+  // A hint above the Cancel row once a resolve runs long. Reset the instant
+  // resolving flips off, so a fast resolve never shows it.
   useEffect(() => {
     if (!resolving) {
       setStillTrying(false);
@@ -511,13 +513,9 @@ export default function ReceiveScreen() {
     loadDownloaded().then(setDownloaded).catch(() => {});
   }, []);
 
-  // live-subscribe to the downloads index so the file list
-  // updates as soon as appendDownloadResults / deleteDownloaded run —
-  // no tab-switch required. Demo path benefits especially (no backend
-  // events fire there). On each emit we diff IDs vs. the previous emit;
-  // any newly-added IDs flash via the shared highlight animation. The
-  // very first emit just seeds prevDownloadedIdsRef without flashing
-  // (those files were there before mount).
+  // Subscribe to the downloads index so the list updates without a tab
+  // switch. Each emit is diffed against the previous one and newly-added
+  // ids flash; the first emit only seeds the set.
   useEffect(() => {
     return subscribeDownloaded((items) => {
       setDownloaded(items);
@@ -539,9 +537,8 @@ export default function ReceiveScreen() {
     });
   }, []);
 
-  // Keep useFocusEffect as a safety net: if files were deleted via the OS
-  // file manager (or some other path that doesn't go through saveDownloaded),
-  // returning to the tab still re-filters the on-disk list.
+  // A safety net for files deleted outside the app: returning to the tab
+  // re-filters the on-disk list.
   useFocusEffect(
     useCallback(() => {
       refreshList();
@@ -553,10 +550,9 @@ export default function ReceiveScreen() {
     [downloaded]
   );
 
-  // Phase W.1: trigger the one-shot swipe-hint peek on the topmost
-  // downloaded row the first time the list has items. Marks the flag
-  // seen IMMEDIATELY (before the 500 ms delay) so a sibling list
-  // (Share bundles) doesn't also fire — the cue is shared.
+  // Fire the one-shot swipe hint on the topmost row once the list has
+  // items. The flag is marked seen immediately, before the delay, so a
+  // sibling list does not also fire: the cue is shared.
   useEffect(() => {
     if (peekTopmost) return;
     if (sortedDownloaded.length === 0) return;
@@ -586,14 +582,15 @@ export default function ReceiveScreen() {
       .sort((a, b) => b.lastEventAt - a.lastEventAt)[0];
   }, [transfers, sessionDriveId]);
 
-  // When the active download completes, celebrate briefly (haptic + toast),
-  // refresh the downloaded list so the new files show up immediately, and
-  // auto-dismiss the transfer strip after 4 s. The × dismiss button is
-  // still there as a manual override for in-flight transfers.
+  // On completion: acknowledge, refresh the list so the new files appear at
+  // once, then auto-dismiss the strip. The × stays as a manual override.
   const completedDriveIdRef = useRef<string | null>(null);
   useEffect(() => {
     const t = activeDownloadTransfer;
     if (!t || !t.completed) return;
+    // A cancelled transfer sets `completed` because it is over, but it is
+    // not a success: never celebrate a transfer the user just stopped.
+    if (t.cancelled) return;
     if (completedDriveIdRef.current === t.driveId) return;
     completedDriveIdRef.current = t.driveId;
     haptics.success();
@@ -604,18 +601,17 @@ export default function ReceiveScreen() {
     return () => clearTimeout(timer);
   }, [activeDownloadTransfer, clearTransfer, refreshList, showToast]);
 
-  // Phase HH.3: stall detector toast. When the BackendProvider's stall
-  // detector flips `stalled: true` on a received transfer (>30 s without
-  // events after data was previously flowing), surface a friendly error.
-  // The transfer card itself stays visible so the user can see what
-  // happened and dismiss via × — we deliberately do NOT clearTransfer
-  // here per the prompt's "let the user see what happened and dismiss."
-  // Tracked separately from completedDriveIdRef so a stall-then-clean-
-  // -recovery doesn't suppress the success toast on a later attempt.
+  // When the stall detector flips `stalled` on a received transfer, say so
+  // and leave the card up: the user dismisses it, so no clear happens here.
+  // Tracked separately from the completion ref, so a stall followed by a
+  // clean recovery does not suppress the later success message.
   const stalledDriveIdRef = useRef<string | null>(null);
   useEffect(() => {
     const t = activeDownloadTransfer;
     if (!t || !t.stalled) return;
+    // Never apologise for something the user asked for. A cancel and a
+    // dropped peer both stop the transfer; only one of them is an error.
+    if (t.cancelled) return;
     if (stalledDriveIdRef.current === t.driveId) return;
     stalledDriveIdRef.current = t.driveId;
     haptics.warning();
@@ -625,13 +621,10 @@ export default function ReceiveScreen() {
     );
   }, [activeDownloadTransfer, showToast]);
 
-  // Highlight pulse for both Phase P (already-added detection) and Phase
-  // DD (new-arrival flash). Bursts to 1 then fades to 0 over ~1.5 s. On
-  // completion we drop the IDs from BOTH sources (context highlights via
-  // clearHighlights, local new-arrival highlights via setNewHighlightIds)
-  // so the overlay clears cleanly. Scrolls the first match into view so
-  // the flash is visible even on a long list. Native driver is off because
-  // we're animating opacity through a context-/state-driven render gate.
+  // One highlight pulse for both already-added detection and new arrivals.
+  // Ids are dropped from both sources on completion so the overlay clears,
+  // and the first match scrolls into view so the flash is visible on a long
+  // list. The native driver is off: the gate is state-driven.
   useEffect(() => {
     const allIds = [...highlightedDownloadedIds, ...newHighlightIds];
     if (allIds.length === 0) return;
@@ -669,17 +662,53 @@ export default function ReceiveScreen() {
     clearHighlights,
   ]);
 
+  /**
+   * The twin of MainScreen's `onSaveToDownloads`. Received files live on
+   * this screen, so its per-file menu has to offer the one action that gets
+   * a file out of app-private storage.
+   */
+  const onSaveToDownloads = useCallback(
+    async (path: string, displayName?: string) => {
+      const name = displayName ?? baseName(path);
+      const result = await saveToDownloads(path, name, mimeFromName(name));
+      const message = describeSaveResult(result);
+      if (!result.ok) {
+        logStructuredError(
+          "rn.save",
+          `save to downloads failed name=${name} code=${result.code}`,
+          result.message,
+        );
+      } else {
+        haptics.actionDone();
+      }
+      showToast(message.text, message.kind);
+    },
+    [showToast],
+  );
+
   const onOpenFile = useCallback(
     async (path: string) => {
       try {
         const fileUri = path.startsWith("file://") ? path : `file://${path}`;
         if (Platform.OS === "android") {
           const contentUri = await FileSystemLegacy.getContentUriAsync(fileUri);
-          await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-            data: contentUri,
-            flags: 1,
-            type: mimeFromName(baseName(path)),
+          // The resolved result is read rather than discarded, so a refused
+          // launch is not indistinguishable from a successful one.
+          const startedAt = Date.now();
+          const result = await IntentLauncher.startActivityAsync(
+            "android.intent.action.VIEW",
+            {
+              data: contentUri,
+              flags: 1,
+              type: mimeFromName(baseName(path)),
+            }
+          );
+          const failure = describeOpenFailure({
+            resultCode: Number(result?.resultCode),
+            elapsedMs: Date.now() - startedAt,
+            ext: fileExt(baseName(path)),
           });
+          if (failure) showToast(failure, "error");
           return;
         }
         await Linking.openURL(fileUri);
@@ -691,9 +720,8 @@ export default function ReceiveScreen() {
   );
 
   const closePreview = useCallback(() => {
-    // Pause any playing media; the hooks will auto-release the players when
-    // the source becomes null on the next render. We explicitly pause here
-    // so audio doesn't continue for the ~1 frame before the source clears.
+    // The hooks release the players once the source is null next render.
+    // Pause explicitly so audio does not run on for the frame in between.
     if (audioPlayer?.playing) audioPlayer.pause();
     if (videoPlayer?.playing) videoPlayer.pause();
     setPreview(null);
@@ -708,9 +736,8 @@ export default function ReceiveScreen() {
         showToast("Can't preview this one — try Open instead.");
         return;
       }
-      // Pause anything already playing before we swap the source. The hooks
-      // replace their underlying player when `audioUri` / `videoUri` change,
-      // so we don't need to manually dispose the old one.
+      // Pause before swapping the source. The hooks replace the underlying
+      // player when the uri changes, so the old one needs no disposal.
       if (audioPlayer?.playing) audioPlayer.pause();
       if (videoPlayer?.playing) videoPlayer.pause();
       setPreview({ item, mode });
@@ -738,9 +765,8 @@ export default function ReceiveScreen() {
       if (audioPlayer.playing) {
         audioPlayer.pause();
       } else {
-        // If playback has already finished, seek back to the start so the
-        // user doesn't tap Play to silence. expo-audio exposes currentTime
-        // directly on the player instance.
+        // Seek back to the start when playback has finished, so Play does
+        // not answer with silence.
         if (audioStatus.didJustFinish || audioPlayer.currentTime >= audioPlayer.duration) {
           audioPlayer.seekTo(0);
         }
@@ -849,9 +875,8 @@ export default function ReceiveScreen() {
     [highlightSet, highlightAnim, onDeleteDownloaded, onPreviewFile, onPeekDone, peekTopmost, styles, theme.muted]
   );
 
-  // Reinstated 2026-05-14: rendering nothing read as "broken-empty" on
-  // device. Minimal warm empty state — icon + a short title + a one-line
-  // hint. The link input below remains the call-to-action.
+  // Rendering nothing reads as broken on device, so this is a minimal empty
+  // state. The link input below stays the call to action.
   const downloadedEmpty = useMemo(
     () => (
       <View style={styles.emptyWrap} accessibilityRole="summary">
@@ -870,13 +895,10 @@ export default function ReceiveScreen() {
   return (
     <View style={[styles.root, { paddingTop: insets.top + theme.pad }]}>
       {/*
-       * KeyboardAvoidingView wraps mainShell so the link input + retry
-       * button + QR button stay visible above the on-screen keyboard.
-       * iOS uses "padding" because adjustResize isn't a thing there;
-       * Android uses "height" — even though `windowSoftInputMode` defaults
-       * to adjustResize, GrapheneOS's keyboard sometimes overlays the
-       * input on certain ROMs without this. flex:1 is needed so the
-       * wrapper takes the available space inside root.
+       * Wraps the shell so the link input and its buttons stay visible above
+       * the keyboard. Android needs "height" because some ROMs overlay the
+       * input despite the window's resize mode, and `flex: 1` is needed so
+       * the wrapper claims the space inside root.
        */}
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -895,7 +917,9 @@ export default function ReceiveScreen() {
                 transfer={activeDownloadTransfer}
                 expanded={expandedTransfer}
                 onToggleExpanded={() => setExpandedTransfer((p) => !p)}
-                onCancel={() => void cancelTransfer(activeDownloadTransfer.driveId)}
+                // cancelInFlight, not cancelTransfer: purging the corestore
+                // mid-download leaves the loop running to report success.
+                onCancel={() => void cancelInFlight(activeDownloadTransfer.driveId)}
                 onClear={() => clearTransfer(activeDownloadTransfer.driveId)}
                 showDismiss
               />
@@ -1224,6 +1248,24 @@ export default function ReceiveScreen() {
               <Ionicons name="open-outline" size={22} color={theme.text} />
               <Text style={styles.menuRowText}>Open in other app</Text>
             </Pressable>
+            {canSaveToDownloads ? (
+              <>
+                <View style={styles.menuDivider} />
+                <Pressable
+                  style={styles.menuRow}
+                  onPress={() => {
+                    const item = menuItem;
+                    setMenuItem(null);
+                    if (item) void onSaveToDownloads(item.path, baseName(item.name));
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Save to Downloads"
+                >
+                  <Ionicons name="download-outline" size={22} color={theme.text} />
+                  <Text style={styles.menuRowText}>Save to Downloads</Text>
+                </Pressable>
+              </>
+            ) : null}
             <View style={styles.menuDivider} />
             <Pressable
               style={styles.menuRow}

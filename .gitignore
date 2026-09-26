@@ -53,3 +53,17 @@ ios/build/
 
 # OS / editor
 .DS_Store
+
+# Internal working files, never published
+agent-pack/
+tasks/
+.claude/
+CLAUDE.md
+HANDOFF*
+
+# Build artifacts and archives
+*.sha256
+*.zip
+
+# Signing credentials, wherever they sit
+**/keystore.properties

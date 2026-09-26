@@ -3,16 +3,11 @@ import RNFS from "react-native-fs";
 import type { DownloadResult, OpenLinkResult } from "../state/types";
 
 /**
- * Offline "demo" share that exercises every preview path without needing
- * a second phone or network. The link `peardrop://demo` bypasses the
- * backend entirely: `ShareLinkFlowContext` intercepts it, returns a fake
- * `OpenLinkResult` here, and on "Grab everything" calls
- * `materializeDemoFiles()` to copy the bundled assets into Documents and
- * append them to the downloaded-files index.
- *
- * The demo driveId is a fixed string so the Receive tab's transfer card
- * can identify it (and for mild Easter-egg value). All sizes match the
- * bundled asset bytes exactly so progress percentages feel real.
+ * Offline "demo" share that exercises every preview path without a second
+ * phone or a network. The link `peardrop://demo` bypasses the backend
+ * entirely. The demo driveId is a fixed string so the Receive tab's transfer
+ * card can identify it, and every size matches the bundled asset bytes
+ * exactly so progress percentages behave like a real transfer.
  */
 
 export const DEMO_LINK = "peardrop://demo";
@@ -24,17 +19,14 @@ type DemoFile = {
   /** Nicer display name for the preview modal. */
   displayName: string;
   size: number;
-  /**
-   * `require()` of the bundled asset. Using `require` (not `import`) lets
-   * Metro pull each file into the APK as a bundled asset; the runtime
-   * `Asset` helper then resolves a readable path on device.
-   */
+  /** `require()` of the bundled asset: `require` rather than `import` is what
+   *  lets Metro pull the file into the APK, and the runtime `Asset` helper
+   *  then resolves a readable path on device. */
   module: number;
 };
 
-// Sizes in bytes — hard-coded so `OpenLinkResult.totalBytes` is correct
-// before we've actually copied anything. Must match the real bytes at
-// `assets/demo/*`. If you regenerate the assets, update these too.
+// Sizes in bytes, hard-coded so `OpenLinkResult.totalBytes` is correct before
+// anything is copied. They must match the real bytes at `assets/demo/*`.
 const DEMO_FILES: DemoFile[] = [
   {
     name: "/sunset.jpg",
@@ -97,15 +89,10 @@ export function getDemoOpenResult(): OpenLinkResult {
   };
 }
 
-/**
- * Copies the bundled demo assets into the Documents directory and returns
- * a `DownloadResult` shaped exactly like what the real `startDownload`
- * would produce. Caller is responsible for threading this through
- * `appendDownloadResults` + stats accounting so the demo behaves end-to-end.
- *
- * If `fileNames` is provided, only those entries are materialized. The
- * names must match `OpenLinkResult.files[].name` (leading slash).
- */
+/** Copies the bundled demo assets into the Documents directory and returns a
+ *  `DownloadResult` shaped exactly like the real `startDownload` would
+ *  produce, so the caller can thread it through the same accounting. With
+ *  `fileNames`, only those entries are materialized. */
 export async function materializeDemoFiles(
   fileNames?: string[]
 ): Promise<DownloadResult> {
@@ -127,9 +114,8 @@ export async function materializeDemoFiles(
 
   for (const f of selected) {
     try {
-      // Resolve the bundled asset to a readable URI, then copy bytes into
-      // Documents so the file survives past the expo-asset cache lifetime
-      // and shows up in the received-files list like a real download.
+      // Copy into Documents so the file outlives the expo-asset cache and
+      // appears in the received-files list like a real download.
       const asset = Asset.fromModule(f.module);
       await asset.downloadAsync();
       const src = asset.localUri ?? asset.uri;
@@ -163,13 +149,9 @@ export async function materializeDemoFiles(
   };
 }
 
-/**
- * Wipe the received-files index + the demo-generated files on disk. Used
- * by the Settings → Demo & testing → "Clear everything I've grabbed"
- * affordance. This is intentionally aggressive — it clears all downloads,
- * not just the demo ones, because the RN side can't easily tell which
- * files came from the demo vs a real share.
- */
+/** Wipe the received-files index and the demo-generated files on disk.
+ *  Intentionally aggressive: it clears all downloads, not only the demo
+ *  ones, because the RN side cannot tell which came from the demo. */
 export async function clearAllDownloads(): Promise<void> {
   const indexPath = `${RNFS.DocumentDirectoryPath}/peardrop-received-files.json`;
   try {

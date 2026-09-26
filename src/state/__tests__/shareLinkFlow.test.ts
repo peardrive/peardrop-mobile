@@ -59,14 +59,14 @@ describe("runGuardedResolve generation guard", () => {
     expect(gen.current).toBe(2);
 
     // Resolve the older call first. Its callbacks must NOT fire — it lost.
-    first.resolve({ ok: true, driveId: "drive_a", files: [] });
+    first.resolve({ ok: true, driveId: "drive_a", files: [], hasManifest: true });
     await run1;
     expect(cbs1.onSuccess).not.toHaveBeenCalled();
     expect(cbs1.onFailure).not.toHaveBeenCalled();
     expect(cbs1.onFinally).not.toHaveBeenCalled();
 
     // Resolve the newer call. Its callbacks DO fire.
-    second.resolve({ ok: true, driveId: "drive_b", files: [] });
+    second.resolve({ ok: true, driveId: "drive_b", files: [], hasManifest: true });
     await run2;
     expect(cbs2.onSuccess).toHaveBeenCalledTimes(1);
     expect(cbs2.onSuccess.mock.calls[0]?.[0]?.driveId).toBe("drive_b");
@@ -77,7 +77,7 @@ describe("runGuardedResolve generation guard", () => {
     const gen: ResolveGenRef = { current: 0 };
     const cbs = makeCallbacks();
     await runGuardedResolve("peardrop://ok", gen, {
-      openLink: async () => ({ ok: true, driveId: "d1", files: [] }),
+      openLink: async () => ({ ok: true, driveId: "d1", files: [], hasManifest: true }),
       abortOpen: async () => {},
       ...cbs,
     });
@@ -91,7 +91,7 @@ describe("runGuardedResolve generation guard", () => {
     const gen: ResolveGenRef = { current: 0 };
     const cbs = makeCallbacks();
     await runGuardedResolve("peardrop://bad", gen, {
-      openLink: async () => ({ ok: false, error: "no peers" }),
+      openLink: async () => ({ ok: false, error: "no peers", hasManifest: false }),
       abortOpen: async () => {},
       ...cbs,
     });
@@ -140,7 +140,7 @@ describe("runGuardedResolve generation guard", () => {
       onFinally: jest.fn(() => calls.push("finally")),
     };
     await runGuardedResolve("peardrop://x", gen, {
-      openLink: async () => ({ ok: true, driveId: "d", files: [] }),
+      openLink: async () => ({ ok: true, driveId: "d", files: [], hasManifest: true }),
       abortOpen,
       ...cbs,
     });

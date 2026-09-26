@@ -14,7 +14,13 @@ import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { useMainDockBottomInset } from "../navigation/dockLayout";
 
-export type ToastKind = "info" | "success" | "error" | "warning";
+// The type and the copy table live in `src/lib/` so the strings stay
+// testable; they are re-exported here so import sites can stay unchanged.
+import type { ToastKind } from "../lib/toastKind";
+
+export type { ToastKind } from "../lib/toastKind";
+export type { ToastVariantId, ToastVariant } from "../lib/toastCopy";
+export { TOAST_VARIANTS } from "../lib/toastCopy";
 
 type ToastOptions = {
   kind?: ToastKind;
@@ -33,12 +39,9 @@ const ToastContext = createContext<ToastApi | null>(null);
 const DEFAULT_DURATION = 2600;
 
 /**
- * Single-toast provider. Only one live toast at a time — consecutive calls
- * replace rather than stack. v5 restyle: optional bold `title` above the
- * message, and a left-side accent stripe whose color is severity-driven
- * (theme.danger for error, theme.primary for success, theme.secondary for
- * warning, theme.muted for info). Kind + copy come from callers; this
- * component owns styling only.
+ * Single-toast provider: one live toast at a time, so consecutive calls
+ * replace rather than stack. The left accent stripe is severity-driven.
+ * Kind and copy come from callers; this component owns styling only.
  */
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const { theme } = useAppTheme();
@@ -165,45 +168,10 @@ export function useToast(): ToastApi {
   return ctx;
 }
 
-/**
- * Preset copy for the standard v5 error/status variants. Toast callers can
- * spread the result into `show(msg, opts)` — never a hardcoded color.
- * Anything not in this list falls back to the raw engine error message.
+/*
+ * Toast copy never falls back to raw engine text: `userFacingError` in
+ * `src/lib/errorMessage.ts` returns the caller's own fallback instead.
  */
-export type ToastVariantId =
-  | "no-connection"
-  | "peer-not-found"
-  | "file-unavailable"
-  | "something-wrong";
-
-export type ToastVariant = {
-  title: string;
-  body: string;
-  kind: ToastKind;
-};
-
-export const TOAST_VARIANTS: Record<ToastVariantId, ToastVariant> = {
-  "no-connection": {
-    title: "No connection",
-    body: "Check your internet and try again.",
-    kind: "error",
-  },
-  "peer-not-found": {
-    title: "Peer not found",
-    body: "The other pear may be offline or the link may have expired.",
-    kind: "warning",
-  },
-  "file-unavailable": {
-    title: "File unavailable",
-    body: "The file couldn't be reached right now.",
-    kind: "warning",
-  },
-  "something-wrong": {
-    title: "Something went wrong",
-    body: "We hit an unexpected snag. Try again in a moment.",
-    kind: "error",
-  },
-};
 
 function createStyles(theme: AppTheme) {
   return StyleSheet.create({

@@ -1,11 +1,7 @@
-// The fallback row is ONE row everywhere; only its subtitle varies.
-//
-// Before this, the label changed per manufacturer — "Let PearDrop start on
-// its own" on Xiaomi, "Stop your phone pausing PearDrop" elsewhere. The row
-// names the same user-facing capability wherever it points, so it should
-// read the same. These tests pin that, and pin the reason the label cannot
-// drift back: it must name no brand-specific mechanism, because any mechanism
-// it named would be wrong on the other two destinations.
+// The fallback row is one row everywhere; only its subtitle varies. It names
+// the same user-facing capability wherever it points, so it reads the same.
+// The label must name no brand-specific mechanism, because any mechanism it
+// named would be wrong on the other two destinations.
 
 import {
   FALLBACK_CANCEL_LABEL,

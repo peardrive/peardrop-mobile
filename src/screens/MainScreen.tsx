@@ -32,7 +32,9 @@ import { log as debugLog, logStructuredError } from "../lib/debugLog";
 import { ensurePermission as ensureNotificationPermission } from "../lib/notifications";
 
 import {
+  leafName,
   pickFolder,
+  type PickedDirectory,
   enumerateFolder,
   materializeUriToCache,
   FolderTooLargeError,
@@ -50,9 +52,26 @@ import {
   mimeFromName,
   previewModeFor,
   truncateMiddle,
+  fileExt,
   type IconName,
   type PreviewMode,
 } from "../lib/files";
+import { describeOpenFailure } from "../lib/openFileResult";
+import {
+  canConfirmShareName,
+  checkShareName,
+  defaultBundleName,
+  prefillForSingleFile,
+  splitExtension,
+} from "../lib/shareName";
+// Read-only use of the predicate. Importing it is how the menu and the
+// foreground service stay on one definition of "in flight".
+import { classifyTransfer } from "../lib/transferActivity";
+import { describeSaveResult } from "../lib/saveToDownloadsResult";
+import {
+  isSaveToDownloadsAvailable,
+  saveToDownloads,
+} from "../lib/saveToDownloads";
 import {
   loadSharedFilePaths,
   removeSharedFilePaths,
@@ -64,6 +83,7 @@ import {
 import {
   deleteShare,
   loadShares,
+  markFileMissing,
   setShareFavorite,
   setSharePinned,
   subscribeShares,
@@ -72,13 +92,30 @@ import {
 import {
   clearHostedShareFlags,
   loadHostedFlags,
-  setHostedShareCustomName,
   setHostedShareFavorite,
   setHostedSharePinned,
   subscribeHostedFlags,
   type HostedShareFlags,
 } from "../state/hostedShareFlagsStorage";
 import { formatBytes, formatClock, formatRelativeOrDate } from "../lib/format";
+import {
+  describeHoldings,
+  holdingsBytesLabel,
+  holdingsCountLabel,
+} from "../lib/receivedHoldings";
+// Every outcome of a row tap is named and tested in this module. A new one
+// belongs there, not as another ad-hoc branch in `onTapRow`.
+import { rowTapRoute } from "../lib/receivedRowRoute";
+// The re-share decision and its vocabulary. `active` is not `announcing`,
+// and the decision lives where the suite can assert it.
+import {
+  receivedShareIsAnnouncing,
+  reshareControl,
+  reshareStartOutcome,
+  reshareStopOutcome,
+  type ReshareMode,
+  type ReshareSignals,
+} from "../lib/reshareControl";
 import {
   classifyPickerResult,
   isPickerCancellation,
@@ -95,7 +132,33 @@ import {
   toPickedFiles,
   type BrowseEntry,
 } from "../lib/fileBrowse";
-import { errorMessage } from "../lib/errorMessage";
+// `userFacingError`, not `errorMessage`.
+import { userFacingError } from "../lib/errorMessage";
+import { shareListEmptyState } from "../lib/shareListEmptyState";
+import { extractKey } from "../lib/links";
+// the confirm wording lives in a pure module
+// so the suite can assert it; this file is unreachable from jest.
+import { describeDeleteConfirm } from "../lib/deleteReceivedPlan";
+// the row control decision, kept pure so
+// the "no control may stop a share" guarantee is assertable.
+import { folderRowControl } from "../lib/folderRowControl";
+import {
+  buildShareKeyDriveIndex,
+  grabCompletionMessage,
+  receiveRowStatus,
+  resolveReceivedTransfer,
+} from "../lib/receiveProgress";
+import { hostedRowStatus } from "../lib/hostedRowStatus";
+import {
+  canOfferStartSharing,
+  isSyntheticShareRowId,
+  SYNTHETIC_SHARE_ROW_PREFIX,
+} from "../lib/shareActions";
+import {
+  selectRecentShareRows,
+  recentShareAction,
+  RECENT_SHARES_LIMIT,
+} from "../lib/recentShareLink";
 import { haptics } from "../lib/haptics";
 import { useToast } from "../ui/Toast";
 import ShareQrModal from "../ui/ShareQrModal";
@@ -116,9 +179,8 @@ import FolderContentsModal, {
 import NameShareModal from "../ui/NameShareModal";
 import FilePickerSheet from "../ui/FilePickerSheet";
 
-// enable LayoutAnimation on Android. Standard one-shot init; the
-// flag is no-op on iOS where LayoutAnimation works out of the box. Must
-// run after the import block so `import/first` doesn't flag it.
+// One-shot init to enable LayoutAnimation on Android. Runs after the import
+// block so `import/first` does not flag it.
 if (
   Platform.OS === "android" &&
   UIManager.setLayoutAnimationEnabledExperimental
@@ -126,25 +188,31 @@ if (
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
+/**
+ * Whether to offer "Save to Downloads" at all. Module scope rather than a
+ * hook, since the answer cannot change during a session. False when the
+ * native module is missing, so the menu item is absent rather than broken.
+ */
+const canSaveToDownloads = isSaveToDownloadsAvailable();
+
 type DriveRow = DriveRecord & {
   /** Computed: the file used when tapping a single-file row opens a preview.
    *  Undefined for multi-file bundles (which expand instead). */
   primaryFile?: DriveLocalFile;
   /** True when files.length > 1. Bundles expand on tap; single files preview. */
   isBundle?: boolean;
-  /** present for synthesized received-share rows. When set, the
-   *  list-flattening logic reads child file states from here (with isDownloaded
-   *  flags) instead of from the engine's `files` + `localFiles` join. */
+  /** Present for synthesized received-share rows. When set, child file
+   *  states are read from here rather than from the engine's join. */
   share?: ReceivedShare;
-  /** organizational flags. Sourced from the share's own record
-   *  (received) or from hostedShareFlagsStorage (hosted). */
+  /** Organizational flags, sourced from the share's own record when
+   *  received and from the hosted-flags store when hosted. */
   isPinned?: boolean;
   isFavorite?: boolean;
 };
 
-/** Flattened list item — drives the FlatList. v5: bundles no longer expand
- *  inline; folder contents open in FolderContentsModal instead. Kept the
- *  ListItem discriminated shape so the renderer signature stays stable. */
+/** Flattened list item driving the FlatList. Bundles do not expand inline;
+ *  folder contents open in a modal. The discriminated shape is kept so the
+ *  renderer signature stays stable. */
 type ListItem = { kind: "drive"; drive: DriveRow };
 /** File descriptor used to build the folder-contents modal's row list. */
 type FolderModalChild = {
@@ -161,8 +229,8 @@ type FolderModalChild = {
 type PreviewState = {
   file: DriveLocalFile;
   mode: PreviewMode;
-  /** parent drive id (or share synth id) so the preview's
-   *  three-dots menu can route "Show QR" back to the right drive record. */
+  /** Parent drive id, so the preview's menu can route back to the right
+   *  drive record. */
   parentDriveId?: string;
 };
 
@@ -189,10 +257,9 @@ function rowPrimaryFile(d: DriveRecord): DriveLocalFile | undefined {
   return undefined;
 }
 
-// Folder-share materialization uses the user's original filename (potentially
-// with spaces or unicode) inside the cache filename. The URI returned by
-// expo-file-system is URL-encoded — RNFS / bare-fs need the decoded form.
-// Picker URIs don't trip this because their cache names are auto-generated.
+// Folder-share cache names keep the user's original filename, and the URI
+// comes back URL-encoded where the filesystem layer needs the decoded form.
+// Picker URIs avoid this because their cache names are generated.
 function normalizeLocalPath(uri: string): string {
   let p = String(uri || "");
   if (p.startsWith("file://")) {
@@ -206,8 +273,8 @@ function normalizeLocalPath(uri: string): string {
   }
 }
 
-// Match "uuid.ext" or "uuid" — v5 fix so received shares whose filenames are
-// synthesized as UUIDs by the peer don't display the raw hex to the user.
+// Match "uuid.ext" or "uuid", so a received share whose filenames the peer
+// synthesized as UUIDs does not show raw hex to the user.
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.[^.]+)?$/i;
 
@@ -231,8 +298,8 @@ function rowDisplayName(d: DriveRecord): string {
     if (raw && !isUuidLikeName(baseName(raw))) {
       return truncateMiddle(baseName(raw), 32);
     }
-    // Falls through when the only filename is UUID-shaped — use the drive's
-    // own name if we have one, else a friendly type label.
+    // Falls through when the only filename is UUID-shaped: prefer the
+    // drive's own name, else a friendly type label.
     if (d.name && d.name.trim().length > 0 && !isUuidLikeName(d.name.trim())) {
       return truncateMiddle(d.name, 32);
     }
@@ -262,7 +329,7 @@ function driveIconName(d: DriveRecord): IconName {
 function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     root: { flex: 1, backgroundColor: theme.bg },
-    // v5 multi-select header: replaces TopTabs + ListToolbar while active.
+    // Multi-select header, replacing the tabs and toolbar while active.
     selectionHeader: {
       flexDirection: "row",
       alignItems: "center",
@@ -320,8 +387,8 @@ function createStyles(theme: AppTheme) {
       borderColor: theme.bg,
     },
     rowMain: { flex: 1, minWidth: 0 },
-    // name + optional pin marker side-by-side. Text shrinks
-    // (numberOfLines={1}) and the pin icon stays anchored at the end.
+    // Name and optional pin marker side by side: the text shrinks and the
+    // pin icon stays anchored at the end.
     rowNameLine: { flexDirection: "row", alignItems: "center", minWidth: 0 },
     rowName: { color: theme.text, fontSize: 14, fontWeight: "500", flexShrink: 1 },
     rowPinMark: { marginLeft: 6 },
@@ -462,8 +529,8 @@ function createStyles(theme: AppTheme) {
     audioScrubberFill: { height: "100%", backgroundColor: theme.primary },
     audioTimeRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
     audioTimeText: { color: theme.muted, fontSize: 11, fontVariant: ["tabular-nums"] },
-    // ZZZZZZ: fullscreen takeover styles. Pure black background,
-    // chrome floats over the media via absolute positioning.
+    // Fullscreen takeover: black background, with chrome floating over the
+    // media by absolute positioning.
     fsRoot: { flex: 1, backgroundColor: "#000" },
     fsMediaWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
     fsVideo: { width: "100%", height: "100%" },
@@ -476,9 +543,8 @@ function createStyles(theme: AppTheme) {
       top: 0,
       left: 0,
       right: 0,
-      // extra horizontal padding so the back arrow sits inboard,
-      // not flush with the screen edge. Top inset added at render-time
-      // via useSafeAreaInsets so the icon clears the status bar.
+      // Horizontal padding keeps the back arrow off the screen edge; the
+      // top inset is applied at render time so it clears the status bar.
       paddingHorizontal: 12,
       paddingBottom: 16,
       flexDirection: "row",
@@ -490,8 +556,8 @@ function createStyles(theme: AppTheme) {
       zIndex: 10,
     },
     fsTopBtn: {
-      // bigger touch target — was 44; bumped to 48 with extra
-      // visual padding so the icon doesn't sit hard against the edge.
+      // A generous touch target, with padding so the icon does not sit hard
+      // against the edge.
       width: 48,
       height: 48,
       alignItems: "center",
@@ -503,9 +569,8 @@ function createStyles(theme: AppTheme) {
       marginTop: 12,
     },
     fsShareBtn: {
-      // fix: fixed width so "Share it" and "Stop sharing" don't
-      // visually shift in size when toggled. Width chosen to comfortably
-      // fit the longer label ("Stop sharing") with breathing room.
+      // A fixed width, so the button does not resize when its label
+      // toggles. Sized for the longer of the two labels.
       width: 200,
       flexDirection: "row",
       alignItems: "center",
@@ -646,9 +711,13 @@ export default function MainScreen() {
     failedHydrationIds,
     sharePaths,
     cancelTransfer,
+    cancelInFlight,
     activateDrive,
     deactivateDrive,
     refreshDrives,
+    // The flat field is where RN reads this. Never re-derive it from
+    // `hyperdriveStatus`.
+    manifestUnavailable,
   } = useBackend();
 
   const {
@@ -658,11 +727,19 @@ export default function MainScreen() {
     linkError,
     retryResolve,
     setPendingPreselection,
+    // The offline re-grab picker, reached from `onTapRow`.
+    openStoredSharePicker,
     abortResolving,
     lastCompletedDownload,
     consumeCompletedDownload,
     manualEntryTick,
     resolveFromScan,
+    // The live resolve session is the only source that knows which engine
+    // driveId a share key maps to while the grab is still running: the
+    // receive path emits no drive event, so `drives` learns of it only
+    // once the download has finished.
+    sessionDriveId,
+    lastResolvedLink,
   } = useShareLinkFlow();
 
   const { show: showToastRaw } = useToast();
@@ -674,13 +751,10 @@ export default function MainScreen() {
 
   const [pickerSheet, setPickerSheet] = useState<PickerSheet>(null);
 
-  // (Sprint 2C), restored in Sprint 5D: first time the user opens a
-  // picker and backs out without selecting anything, show a one-time
-  // educational toast. Some Android pickers (Google Drive especially) don't
-  // expose an obvious back button — users got stuck repeatedly. We can't add
-  // UI to the OS picker itself, but we can teach the gesture once on return.
-  // Flag persisted in AsyncStorage so it never fires again after the first
-  // appearance; Settings → "Show picker hint again" resets it.
+  // A one-time hint the first time a picker is dismissed empty. Some
+  // Android pickers expose no obvious back button, and the app cannot add UI
+  // to the OS picker, so the gesture is taught once on return. The flag is
+  // persisted, so it never fires again.
   const maybeShowPickerBackHint = useCallback(() => {
     void getPickerBackHintSeen().then((seen) => {
       if (seen) return;
@@ -689,16 +763,14 @@ export default function MainScreen() {
     });
   }, [showToast]);
 
-  // the single exit path for every non-selected picker outcome.
-  // Restores the Send sheet the picker was launched from so a cancel lands
-  // the user exactly where they were, emits at most one plain toast, and
-  // never falls through into share creation. Decision logic lives in
-  // `lib/pickerResult` so it's testable without the native picker.
+  // The single exit path for every non-selected picker outcome: restores
+  // the sheet the picker was launched from, emits at most one toast, and
+  // never falls through into share creation. The decision lives in
+  // `lib/pickerResult` so it is testable without the native picker.
   const handlePickerExit = useCallback(
     (outcome: PickerOutcome, labels: { empty: string }) => {
-      // every non-selected pick outcome funnels through
-      // here, so one line covers cancel/empty across all four picker
-      // entry points (files, folder, photos, in-app).
+      // Every non-selected pick outcome funnels through here, so one line
+      // covers cancel and empty across all four picker entry points.
       debugLog("info", "rn.pick", `picker exit: ${outcome.kind}`);
       const plan = pickerExitPlan(outcome, labels);
       if (plan.reopenSendSheet) setPickerSheet("share-files");
@@ -708,38 +780,39 @@ export default function MainScreen() {
     [showToast, maybeShowPickerBackHint],
   );
 
-  // PearDrop's own file-selection screen. Primary path for
-  // "Files"; the OS document picker is now the escape hatch behind it.
+  // PearDrop's own file-selection screen is the primary path for Files; the
+  // OS document picker is the escape hatch behind it.
   const [inAppPickerOpen, setInAppPickerOpen] = useState(false);
   const [inAppPickerBusy, setInAppPickerBusy] = useState(false);
 
   const [kebabSheet, setKebabSheet] = useState<KebabSheet>(null);
-  // Multi-file share: after the OS picker returns >1 asset, we park the
-  // selection here and open NameShareModal. The user's confirmed name is
-  // written into hostedShareFlagsStorage the moment we get a driveId back
-  // from sharePaths, so the list card + File info modal read it back as
-  // the drive title.
+  /**
+   * The parked selection awaiting a name, for every share path. `ext` is the
+   * fixed suffix shown beside the field for a single file: the user edits
+   * the base, never the extension, and it is empty for bundles and folders.
+   * `folder` carries the picked directory, because that path prompts before
+   * enumerating.
+   */
   type PendingNameShare = {
-    kind: "files" | "photos";
+    kind: "files" | "photos" | "folder";
     defaultName: string;
+    ext: string;
     files: { uri: string; name: string; size?: number }[];
+    folder?: PickedDirectory;
+    fileCount: number;
   };
   const [pendingNameShare, setPendingNameShare] =
     useState<PendingNameShare | null>(null);
-  // v5: shareBusy state removed with the top action row; the pickers can't
-  // be double-fired because they're modals. If a future spinner needs it
-  // back, reintroduce here and thread through BottomToolbar's Send button.
   const setShareBusy = (_v: boolean) => {};
   const [qrDriveId, setQrDriveId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewText, setPreviewText] = useState("");
-  // Themed delete confirmation. Holds the drive pending deletion or null.
-  // Replaces the native Alert.alert so the dialog matches the app theme.
+  // Themed delete confirmation, holding the drive pending deletion or null,
+  // so the dialog matches the app rather than the OS alert.
   const [pendingDelete, setPendingDelete] = useState<DriveRow | null>(null);
   const [audioPosition, setAudioPosition] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [scrubWidth, setScrubWidth] = useState(0);
-  // ZZZZZZ: fullscreen takeover preview state.
   const [videoIsPlaying, setVideoIsPlaying] = useState(false);
   const [videoPosition, setVideoPosition] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -747,36 +820,42 @@ export default function MainScreen() {
   const [chromeVisible, setChromeVisible] = useState(true);
   const chromeOpacity = useRef(new Animated.Value(1)).current;
   const chromeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Drive IDs hidden from the UI because the user just confirmed delete —
-  // engine purge is in-flight. Removed from the set once the engine's
-  // drives list no longer contains the ID (refreshDrives caught up).
+  // Drive ids hidden while an engine purge is in flight, removed from the
+  // set once the engine's drives list no longer contains them.
   const [optimisticallyDeleted, setOptimisticallyDeleted] = useState<Set<string>>(
     () => new Set(),
   );
-  // Bumps every time a swipe-then-confirm flow opens — triggers SwipeableRow
-  // to snap closed whether the user confirms or cancels.
+  // Bumps whenever a swipe-then-confirm flow opens, so the row snaps closed
+  // whether the user confirms or cancels.
   const [swipeCloseTick, setSwipeCloseTick] = useState(0);
-  // v5 folder modal: tapping a bundle (or its chevron) opens a modal
-  // showing the folder's contents. Replaced the earlier inline dropdown
-  // expansion — the driveId here is whichever folder is currently open,
-  // or null when the modal is dismissed.
+  // Tapping a bundle opens a modal showing the folder's contents. The
+  // driveId here is whichever folder is open, or null when dismissed.
   const [folderModalId, setFolderModalId] = useState<string | null>(null);
+  /**
+   * The live swarm mode of a received share, keyed by lower-cased share key.
+   * Written only from an `activate` reply's `mode`, the one field that states
+   * what the engine set up: `activeDriveIds` says nothing about announcing,
+   * and `engineListDrives` reports persisted intent. Session-scoped, so an
+   * empty map after a restart honestly means this session has not asked.
+   */
+  const [observedReshareModes, setObservedReshareModes] = useState<
+    Record<string, ReshareMode>
+  >({});
   const [sharedPaths, setSharedPaths] = useState<SharedFilePathsEntry[]>([]);
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   const [hostedFlags, setHostedFlags] = useState<HostedShareFlags[]>([]);
-  // view-mode toggle. Always resets to "all" on mount — intentional;
-  // no persistence to AsyncStorage. Favorites is a filterable subset.
+  // The view-mode toggle resets to "all" on mount on purpose, with no
+  // persistence. Favorites is a filterable subset.
   const [viewMode, setViewMode] = useState<"all" | "favorites">("all");
-  // v5 shell state: search + filter + sort applied on top of viewMode.
+  // Shell state: search, filter and sort applied on top of the view mode.
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterId>("all");
   const [sort, setSort] = useState<SortId>("recent");
   const [receiveSheetVisible, setReceiveSheetVisible] = useState(false);
-  // v5 polish: bumped when Receive should open with the paste input focused.
+  // Bumped when Receive should open with the paste input focused.
   const [receiveFocusPaste, setReceiveFocusPaste] = useState(false);
-  // v5 multi-select mode: swaps kebab for checkboxes; header shows count +
-  // Cancel/Delete. Entered via kebab → "Select multiple". Exited via Cancel
-  // header button or after a batch action completes.
+  // Multi-select mode swaps the kebab for checkboxes and gives the header a
+  // count. Exited by the Cancel button or when a batch action completes.
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
@@ -792,41 +871,37 @@ export default function MainScreen() {
     setSelectionMode(false);
     setSelectedIds(new Set());
   }, []);
-  // Watch the QR scanner's "Enter link manually" signal — open Receive
-  // with the paste input focused. `manualEntryTick > 0` guard skips the
-  // initial mount.
+  // Watch the scanner's manual-entry signal and open Receive with the paste
+  // input focused. The `manualEntryTick > 0` guard skips the initial mount.
   useEffect(() => {
     if (manualEntryTick <= 0) return;
     setReceiveFocusPaste(true);
     setReceiveSheetVisible(true);
   }, [manualEntryTick]);
-  // Sprint 3L/3M: target set for the post-grab child-row blink. Populated
-  // by an effect that watches `lastCompletedDownload`. If the folder
-  // modal isn't already open for the completed share, the effect opens
-  // it first, then sets the blink target so the user sees the rows
-  // arrive AND blink in sequence inside the modal.
+  // Target set for the post-grab child-row blink, populated by an effect
+  // watching `lastCompletedDownload`. The effect opens the folder modal
+  // first when needed, so the rows arrive and then blink in sequence.
   const [childBlinkTarget, setChildBlinkTarget] = useState<{
     shareKey: string;
     names: Set<string>;
   } | null>(null);
 
-  // Subscribe to the RN-side cache-path side-store. Hosted drives don't
-  // carry localFiles in the engine manifest (engine doesn't know about the
-  // user's cache copies); this storage fills that gap.
+  // Subscribe to the RN-side cache-path store. Hosted drives carry no
+  // localFiles in the engine manifest, and this fills that gap.
   useEffect(() => {
     void loadSharedFilePaths().then(setSharedPaths);
     return subscribeSharedFilePaths(setSharedPaths);
   }, []);
 
-  // subscribe to the per-share storage so received bundles re-
-  // render in place when downloads complete and flip files' isDownloaded.
+  // Subscribe to the per-share storage, so received bundles re-render in
+  // place when a download completes and flips a file's downloaded flag.
   useEffect(() => {
     void loadShares().then(setReceivedShares);
     return subscribeShares(setReceivedShares);
   }, []);
 
-  // subscribe to hosted-share organizational flags so toggling
-  // pin/favorite re-renders the list (and re-sorts) immediately.
+  // Subscribe to hosted-share flags, so toggling pin or favorite re-renders
+  // and re-sorts the list at once.
   useEffect(() => {
     void loadHostedFlags().then(setHostedFlags);
     return subscribeHostedFlags(setHostedFlags);
@@ -838,11 +913,10 @@ export default function MainScreen() {
     return m;
   }, [hostedFlags]);
 
-  // when a grab completes (newly-fetched or all already-on-disk),
-  // open the folder-contents modal if it isn't already showing that folder,
-  // then blink the completed rows inside it. Timer refs persist across the
-  // re-renders that `consumeCompletedDownload` and `setFolderModalId`
-  // trigger — refs let us cancel only on explicit re-trigger + unmount.
+  // When a grab completes, open the folder-contents modal if it is not
+  // already showing that folder, then blink the completed rows. The timers
+  // are refs so they survive the re-renders in between and are cancelled
+  // only on an explicit re-trigger or unmount.
   const blinkStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blinkClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -859,6 +933,18 @@ export default function MainScreen() {
     const alreadyOpen = folderModalId === synthId;
     if (blinkStartTimerRef.current) clearTimeout(blinkStartTimerRef.current);
     if (blinkClearTimerRef.current) clearTimeout(blinkClearTimerRef.current);
+    // Say that the grab finished, and how much of it finished. A
+    // notification cannot cover this: `notifyTransferComplete` returns early
+    // while the app is foregrounded, so without this a truncated grab and a
+    // whole one would look the same.
+    const completion = grabCompletionMessage({
+      saved: lastCompletedDownload.saved,
+      failed: lastCompletedDownload.failed,
+      // A cancelled grab gets stopped-and-saved wording, not the partial
+      // wording, which would read as a transfer that broke.
+      cancelled: lastCompletedDownload.cancelled,
+    });
+    showToast(completion.text, completion.kind);
     consumeCompletedDownload();
     if (!alreadyOpen) setFolderModalId(synthId);
     // Small delay so the modal has mounted before the blink fires.
@@ -870,7 +956,7 @@ export default function MainScreen() {
       () => setChildBlinkTarget(null),
       blinkDelay + 900,
     );
-  }, [lastCompletedDownload, folderModalId, consumeCompletedDownload]);
+  }, [lastCompletedDownload, folderModalId, consumeCompletedDownload, showToast]);
 
   const sharedPathsByDriveId = useMemo(() => {
     const m = new Map<string, SharedFilePath[]>();
@@ -878,18 +964,11 @@ export default function MainScreen() {
     return m;
   }, [sharedPaths]);
 
-  // Sort: most recent activity first. Active state does not affect ordering
-  // — items don't jump as they transition.
-  //
-  // two sources merged into one list.
-  //   - Hosted drives: engine manifest (origin === "hosted"). `localFiles`
-  //     synthesized from sharedFilePathsStorage so previewing hosted files
-  //     works the same way as received.
-  //   - Received shares: receivedSharesStorage entries — one row per share
-  //     key regardless of how many engine drives that share has produced.
-  //
-  // The engine's received-side drives are intentionally hidden here —
-  // they're a per-paste session detail, not a logical row in the list.
+  // Most recent activity first; active state does not affect ordering, so
+  // items never jump as they transition. Two sources merge into one list:
+  // hosted drives from the engine manifest, and one row per received share
+  // key however many engine drives that key has produced. The engine's
+  // received-side drives stay hidden, being a per-paste session detail.
   const sortedDrives: DriveRow[] = useMemo(() => {
     const list: DriveRow[] = [];
 
@@ -908,9 +987,11 @@ export default function MainScreen() {
       const flags = hostedFlagsByDriveId.get(d.id);
       const enriched: DriveRow = {
         ...d,
-        // User-supplied name (captured via NameShareModal) wins over the
-        // engine-generated one. rowDisplayName reads `name` and already
-        // handles truncation for the list card.
+        // A new share's name comes from the engine, since the naming step
+        // passes it at creation and the receiver sees it. `customName` is a
+        // later local rename and wins here: renaming a share you already
+        // have is a local act, and should not be overridden by the name it
+        // shipped with. `rowDisplayName` reads `name` and truncates.
         name: flags?.customName ?? d.name,
         localFiles: local,
         isBundle: (d.files?.length ?? 0) > 1,
@@ -958,8 +1039,8 @@ export default function MainScreen() {
       list.push(row);
     }
 
-    // two-level sort — pinned shares first, then recency within
-    // each group. Applies in both the All and Favorites views.
+    // Two-level sort: pinned shares first, then recency within each group.
+    // Applies in both the All and Favorites views.
     list.sort((a, b) => {
       const pa = a.isPinned ? 1 : 0;
       const pb = b.isPinned ? 1 : 0;
@@ -975,13 +1056,70 @@ export default function MainScreen() {
     return m;
   }, [transfers]);
 
-  // v5 Send sheet: recent hosted shares that still have a live link, most
-  // recent first, capped at 5. Only hosted drives — received shares aren't
-  // "yours to re-share" from this surface.
+  /**
+   * Maps a share key to a driveId, so a received row can find its own
+   * transfer. Received rows are synthesized one per share key with an id
+   * that is not a driveId, so the lookup hosted rows use could never hit
+   * for them and download progress would render nowhere.
+   */
+  const shareKeyDriveIndex = useMemo(
+    () =>
+      buildShareKeyDriveIndex(drives, {
+        shareKey: lastResolvedLink ? extractKey(lastResolvedLink) : null,
+        driveId: sessionDriveId,
+      }),
+    [drives, lastResolvedLink, sessionDriveId],
+  );
+
+  /**
+   * The transfer for a row, whichever origin it has. Hosted rows key off
+   * the engine driveId directly; received rows go through the share-key
+   * index above.
+   */
+  const transferForRow = useCallback(
+    (row: DriveRow) =>
+      row.origin === "received"
+        ? resolveReceivedTransfer(row.key, shareKeyDriveIndex, transferByDriveId)
+        : transferByDriveId.get(row.id),
+    [shareKeyDriveIndex, transferByDriveId],
+  );
+
+  /**
+   * Every input the re-share decision reads, gathered once per row. Built
+   * here rather than at each of the three surfaces that need it, so the
+   * condition cannot drift between them; the decision itself lives in
+   * `reshareControl`. `driveId` prefers the value persisted on the record
+   * and falls back to the derived index, the only source that knows the
+   * mapping for a grab that finished this session.
+   */
+  const reshareSignalsFor = useCallback(
+    (row: DriveRow): ReshareSignals => {
+      const shareKey = (row.share?.shareKey ?? "").toLowerCase();
+      const holdings = row.share ? describeHoldings(row.share.files) : null;
+      const engine = shareKey
+        ? (drives ?? []).find(
+            (d) =>
+              d.origin === "received" &&
+              String(d.key ?? "").toLowerCase() === shareKey,
+          )
+        : undefined;
+      return {
+        origin: row.origin,
+        complete: !!holdings?.allHeld,
+        driveId:
+          row.share?.driveId ?? shareKeyDriveIndex.get(shareKey) ?? null,
+        reshared: engine?.reshared === true,
+        sessionUp: !!engine && !failedHydrationIds.has(engine.id),
+        observedMode: observedReshareModes[shareKey] ?? null,
+      };
+    },
+    [drives, failedHydrationIds, observedReshareModes, shareKeyDriveIndex],
+  );
+
+  // Recent hosted shares for the Send sheet; `shareLink` alone does not say whether
+  // a share announces, so both drive sets feed `recentShareAction` and the deps below.
   const recentShares = useMemo<RecentShareItem[]>(() => {
-    return sortedDrives
-      .filter((d) => d.origin !== "received" && !!d.shareLink)
-      .slice(0, 5)
+    return selectRecentShareRows(sortedDrives, RECENT_SHARES_LIMIT)
       .map((d) => ({
         id: d.id,
         name: rowDisplayName(d),
@@ -990,13 +1128,13 @@ export default function MainScreen() {
         }`,
         icon: driveIconName(d),
         shareLink: d.shareLink,
+        action: recentShareAction(d, activeDriveIds, failedHydrationIds),
       }));
-  }, [sortedDrives]);
+  }, [sortedDrives, activeDriveIds, failedHydrationIds]);
 
-  // / v5: viewMode filter applied AFTER the primary "recent" sort.
-  // v5 also layers on search (name substring), filter (type/status), and a
-  // user-selected sort (recent/name/size). Pinned always float to the top
-  // within the active view.
+  // The view-mode filter applies after the primary recency sort, then
+  // search, filter and the user-selected sort layer on top. Pinned rows
+  // always float to the top within the active view.
   const visibleDrives = useMemo<DriveRow[]>(() => {
     let list = viewMode === "favorites"
       ? sortedDrives.filter((d) => d.isFavorite)
@@ -1046,9 +1184,8 @@ export default function MainScreen() {
     return list;
   }, [sortedDrives, viewMode, search, filter, sort, activeDriveIds, transferByDriveId]);
 
-  // Reconcile the optimistic-delete set: drop any ID the engine has already
-  // pruned from its drives list (purge round-trip complete). Without this
-  // the set would grow forever in long sessions.
+  // Reconcile the optimistic-delete set, dropping any id the engine has
+  // already pruned. Without this the set grows forever in a long session.
   useEffect(() => {
     if (optimisticallyDeleted.size === 0) return;
     const live = new Set((drives ?? []).map((d) => d.id));
@@ -1064,18 +1201,16 @@ export default function MainScreen() {
     if (changed) setOptimisticallyDeleted(next);
   }, [drives, optimisticallyDeleted]);
 
-  // v5: the list emits only drive rows now — bundle contents live in the
-  // folder-contents modal. Kept as a useMemo so downstream identity is
-  // stable across re-renders that don't change the visible slice.
+  // The list emits only drive rows; bundle contents live in the folder
+  // modal. Memoized so downstream identity is stable across re-renders that
+  // do not change the visible slice.
   const flattenedList = useMemo<ListItem[]>(
     () => visibleDrives.map((d) => ({ kind: "drive", drive: d })),
     [visibleDrives],
   );
 
-  // Build the file list for a given bundle drive (used by the folder-
-  // contents modal). Same join semantics as the prior inline expansion:
-  //  - Received bundles read directly from `share.files[]`.
-  //  - Hosted bundles join `files[]` to `localFiles[]` by index / name.
+  // Build the file list for a bundle drive. A received bundle reads its
+  // files directly; a hosted one joins the manifest to the local files.
   const buildFolderChildren = useCallback(
     (d: DriveRow): FolderModalChild[] => {
       const out: FolderModalChild[] = [];
@@ -1129,11 +1264,9 @@ export default function MainScreen() {
   );
 
   // Preview player wiring.
-  // resolve the preview's parent drive so the bottom share/
-  // stop-sharing button knows the active state + identity to toggle.
-  // Returns null if the parent was a received-share synth row — those
-  // don't expose a clean activate path in this sprint, so we omit the
-  // button for them.
+  // Resolve the preview's parent drive, so the bottom share button knows
+  // what to toggle. Null for a synthesized received row, which exposes no
+  // activate path, so the button is omitted there.
   const previewParentDrive = useMemo(() => {
     if (!preview?.parentDriveId) return null;
     const found = sortedDrives.find((d) => d.id === preview.parentDriveId);
@@ -1157,9 +1290,9 @@ export default function MainScreen() {
     p.loop = false;
   });
 
-  // Poll audio currentTime / duration at 4 Hz while audio preview is open.
-  // expo-audio exposes `playing` reactively but not currentTime; we read it
-  // directly from the player at a steady cadence to drive the scrubber.
+  // Poll the audio position while the preview is open: the player exposes
+  // `playing` reactively but not the current time, so the scrubber needs a
+  // steady read.
   useEffect(() => {
     if (preview?.mode !== "audio" || !audioPlayer) {
       setAudioPosition(0);
@@ -1213,9 +1346,8 @@ export default function MainScreen() {
     [audioPlayer, audioDuration],
   );
 
-  // poll video currentTime / duration / playing at 4 Hz while
-  // the takeover is open, mirroring the audio pattern. expo-video doesn't
-  // expose a reactive playing flag we can subscribe to without useEvent.
+  // Poll the video position while the takeover is open, mirroring the audio
+  // pattern, since there is no reactive playing flag to subscribe to.
   useEffect(() => {
     if (preview?.mode !== "video" || !videoPlayer) {
       setVideoIsPlaying(false);
@@ -1239,11 +1371,10 @@ export default function MainScreen() {
     return () => clearInterval(id);
   }, [preview?.mode, videoPlayer]);
 
-  // chrome auto-hide for the video takeover. Chrome stays
-  // visible while paused (the user is engaging); when playing, fades out
-  // after 3 s of no taps. Any tap on the video tap-surface fades it back
-  // in and resets the timer. Other media types (audio/image/text) keep
-  // chrome visible always — `scheduleChromeHide` is a no-op outside video.
+  // Chrome auto-hide for the video takeover: visible while paused, fading
+  // out after a pause in taps while playing, and any tap brings it back and
+  // resets the timer. `scheduleChromeHide` is a no-op outside video, so
+  // every other media type keeps its chrome.
   const scheduleChromeHide = useCallback(() => {
     if (chromeHideTimerRef.current) {
       clearTimeout(chromeHideTimerRef.current);
@@ -1299,10 +1430,9 @@ export default function MainScreen() {
     }
   }, [audioPlayer, videoPlayer]);
 
-  // Tap surface on the video toggles playback AND keeps chrome visible.
-  // OS-player-style: tapping the video is the primary pause/play gesture
-  // once a video is going. The center play button still works for the
-  // "I just opened this and it's paused" case.
+  // Tapping the video toggles playback and keeps the chrome visible: it is
+  // the primary pause gesture once a video is running. The center button
+  // still covers the just-opened-and-paused case.
   const onVideoTap = useCallback(() => {
     showChrome();
     if (!videoPlayer) return;
@@ -1337,23 +1467,68 @@ export default function MainScreen() {
         const fileUri = path.startsWith("file://") ? path : `file://${path}`;
         if (Platform.OS === "android") {
           const contentUri = await FileSystemLegacy.getContentUriAsync(fileUri);
-          await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-            data: contentUri,
-            flags: 1,
-            type: mimeFromName(baseName(path)),
+          // The resolved result is read, not discarded: a launch whose
+          // activity refuses and finishes at once still resolves
+          // successfully, and that silent path looks like nothing happened.
+          const startedAt = Date.now();
+          const result = await IntentLauncher.startActivityAsync(
+            "android.intent.action.VIEW",
+            {
+              data: contentUri,
+              flags: 1,
+              type: mimeFromName(baseName(path)),
+            },
+          );
+          const failure = describeOpenFailure({
+            resultCode: Number(result?.resultCode),
+            elapsedMs: Date.now() - startedAt,
+            ext: fileExt(baseName(path)),
           });
+          if (failure) showToast(failure, "error");
           return;
         }
         await Linking.openURL(fileUri);
       } catch (e: unknown) {
-        showToast(`Can't open that one — ${String((e as Error)?.message || e)}`, "error");
+        // The raw native message goes to the log, where a diagnosis belongs;
+        // the user gets a line that is true.
+        logStructuredError("rn.open", "openURL failed", e);
+        showToast("Can't open that one. Try another app?", "error");
       }
     },
     [showToast],
   );
 
-  // v5: bundle tap opens the folder-contents modal. Prior inline dropdown
-  // (with a LayoutAnimation) was removed in favor of a modal per design.
+  /**
+   * The export route for a received file. Received files land in app-private
+   * storage that no other app can reach, so this is the only way out, and it
+   * is a native module: the JS path materialises the whole file as a base64
+   * string and runs out of memory. The wording lives in
+   * `describeSaveResult`, which is pure and tested. Opening in another app
+   * is a different feature and stays: it hands a file to a viewer rather
+   * than putting a copy anywhere.
+   */
+  const onSaveToDownloads = useCallback(
+    async (path: string, displayName?: string) => {
+      const name = displayName ?? baseName(path);
+      const result = await saveToDownloads(path, name, mimeFromName(name));
+      const message = describeSaveResult(result);
+      if (!result.ok) {
+        // The toast says one honest line; the code and message go to the log
+        // so a field report can be diagnosed without another device session.
+        logStructuredError(
+          "rn.save",
+          `save to downloads failed name=${name} code=${result.code}`,
+          result.message,
+        );
+      } else {
+        haptics.actionDone();
+      }
+      showToast(message.text, message.kind);
+    },
+    [showToast],
+  );
+
+  // A bundle tap opens the folder-contents modal rather than expanding.
   const openFolderModal = useCallback((driveId: string) => {
     setFolderModalId(driveId);
   }, []);
@@ -1369,6 +1544,18 @@ export default function MainScreen() {
         exists = false;
       }
       if (!exists) {
+        // Write the finding down rather than discarding it: the check has
+        // proved the file is gone, and leaving the record claiming otherwise
+        // makes the next render withhold the re-grab affordance, which is
+        // gated on `isMissing`. Only a received row has a share record to
+        // repair, and the prefix is taken from where it is minted so the two
+        // cannot drift.
+        if (parentDriveId && isSyntheticShareRowId(parentDriveId)) {
+          void markFileMissing(
+            parentDriveId.slice(SYNTHETIC_SHARE_ROW_PREFIX.length),
+            file.path,
+          );
+        }
         showToast("This file is no longer available locally.", "error");
         return;
       }
@@ -1385,34 +1572,54 @@ export default function MainScreen() {
           const txt = await RNFS.readFile(file.path, "utf8");
           setPreviewText(txt.slice(0, 4000));
         } catch (e: unknown) {
-          setPreviewText(`Can't preview this one — ${String((e as Error)?.message || e)}`);
+          // The same rule as the toast sites, rendered into the preview pane.
+          logStructuredError("rn.preview", "text preview read failed", e);
+          setPreviewText("Can't preview this one.");
         }
       }
     },
     [audioPlayer, videoPlayer, onOpenFile, showToast],
   );
 
+  /**
+   * Where a tap on a row goes. The decision is not made here: a decision
+   * made inline is one no test can observe, so every outcome is ordered and
+   * tested in `src/lib/receivedRowRoute.ts` and this only dispatches.
+   * `describeHoldings` is passed in rather than recomputed, so the routing
+   * and the row's own labels cannot disagree.
+   */
   const onTapRow = useCallback(
     async (drive: DriveRow) => {
-      // Bundles open the folder-contents modal — there's no single content
-      // to preview. The kebab continues to surface More info / Share it /
-      // Delete for the whole folder.
-      if (drive.isBundle) {
+      const share = drive.share;
+      const route = rowTapRoute({
+        origin: drive.origin,
+        isBundle: drive.isBundle,
+        hasPrimaryFile: !!drive.primaryFile,
+        hasStoredShare: !!share,
+        holdings: share ? describeHoldings(share.files) : null,
+      });
+      if (route === "regrab-picker" && share) {
+        // Opens from disk; the resolve the grab needs runs in parallel.
+        openStoredSharePicker(share);
+        return;
+      }
+      if (route === "folder-modal") {
+        // Bundles open the folder-contents modal: there is no single content
+        // to preview. The kebab still covers the whole folder.
         openFolderModal(drive.id);
         return;
       }
-      const primary = drive.primaryFile;
-      if (!primary) {
-        // Single-file drive with no resolvable local copy (e.g. an inactive
-        // received drive that lost its file, or an active hosted drive
-        // whose cache eviction beat the user to the tap). Open the info
-        // modal so the user can still see status / activate / delete.
-        setQrDriveId(drive.id);
+      if (route === "file-preview" && drive.primaryFile) {
+        await previewFile(drive.primaryFile, drive.id);
         return;
       }
-      await previewFile(primary, drive.id);
+      // Nothing to preview and nothing to re-grab, so open the info panel.
+      // A received row opens in the received presentation, which drops Start
+      // sharing and the seeding fields: its id is one the engine cannot
+      // resolve, so offering to start sharing would be a lie.
+      setQrDriveId(drive.id);
     },
-    [previewFile, openFolderModal],
+    [previewFile, openFolderModal, openStoredSharePicker],
   );
 
   // Shared share-then-persist path used by the file-picker, photo-picker,
@@ -1423,7 +1630,13 @@ export default function MainScreen() {
     files: { uri: string; name: string; size?: number }[],
     opts: {
       relPaths?: string[];
-      customName?: string | null;
+      /**
+       * The name the user chose, passed to the engine at creation so it
+       * reaches the wire and the receiver. The engine is the one source of
+       * truth for a new share's name; `customName` is a separate feature, a
+       * later local rename that never leaves this device.
+       */
+      shareName?: string | null;
       errorLabel: string;
     },
   ) {
@@ -1432,32 +1645,34 @@ export default function MainScreen() {
       showToast("Nothing picked.");
       return;
     }
-    // the single funnel for share creation from the UI —
-    // every picker path lands here.
+    // The single funnel for share creation: every picker path lands here.
     debugLog(
       "info",
       "rn.share",
       `share create: files=${files.length} folderShare=${!!opts.relPaths} ` +
-        `customName=${opts.customName ? JSON.stringify(opts.customName) : "-"} ` +
+        `shareName=${opts.shareName ? JSON.stringify(opts.shareName) : "-"} ` +
         `bytes=${files.reduce((a, f) => a + (f.size ?? 0), 0)}`,
     );
     const out = await sharePaths(
       files.map((f) => f.uri),
       opts.relPaths,
+      opts.shareName ?? undefined,
     );
     if (!out.ok || !out.shareLink) {
       logStructuredError("rn.share", "share create failed", out.error);
-      showToast(opts.errorLabel, "error");
+      // Discarding `out.error` would make a manifest-unavailable rejection
+      // invite a retry the engine is guaranteed to refuse. `userFacingError`
+      // keeps the caller's fallback for every other cause and substitutes
+      // only where there is something true to say.
+      showToast(userFacingError(out.error, opts.errorLabel), "error");
       return;
     }
     debugLog("info", "rn.share", `share created drive=${out.driveId ?? "?"}`);
-    // Ask for notification permission here, at the first moment the user
-    // has something worth being notified about. The lazy request inside
-    // notifyTransferComplete stays as a backstop, but on its own it fires
-    // at a backgrounded completion — prompting while the user is in
-    // another app, which is the worst moment to ask and a likely denial.
-    // Fire-and-forget: the share flow, haptics and QR modal below must not
-    // wait on an OS dialog, and a denial stays silent by design.
+    // Ask for notification permission at the first moment there is
+    // something worth being notified about. The lazy request inside
+    // `notifyTransferComplete` stays as a backstop, but alone it would
+    // prompt at a backgrounded completion, the likeliest denial. Fire and
+    // forget: nothing below waits on an OS dialog, and a denial is silent.
     void ensureNotificationPermission();
     if (out.driveId) {
       void saveSharedFilePathsEntry({
@@ -1469,10 +1684,6 @@ export default function MainScreen() {
         })),
         savedAt: Date.now(),
       });
-      const name = opts.customName?.trim();
-      if (name) {
-        void setHostedShareCustomName(out.driveId, name);
-      }
     }
     haptics.success();
     void refreshDrives();
@@ -1487,6 +1698,44 @@ export default function MainScreen() {
       return fileCount === 1 ? "Photo" : "Photos";
     }
     return fileCount === 1 ? "File" : "Files";
+  }
+
+  /**
+   * Build the naming-step state for a picked selection, in one place because all
+   * three picker paths reach it. A single file prefills from its base name, or from
+   * the human type label when the name is UUID-shaped, keeping the real extension;
+   * a bundle prefills a common base, else "Photos"/"Files".
+   */
+  function pendingShareFor(
+    kind: "files" | "photos",
+    files: { uri: string; name: string; size?: number }[],
+  ): PendingNameShare {
+    if (files.length === 1) {
+      const only = files[0]!;
+      // The BASE comes from the picker's reported name, which is the
+      // human-facing one (and the one that may be UUID-shaped).
+      const { base } = prefillForSingleFile(
+        only.name,
+        typeLabelForFile(only.name).replace(/^Shared /, "") || defaultShareName(kind, 1),
+        isUuidLikeName,
+      );
+      // The extension comes from the URI, not from `name`: the picker's
+      // reported extension can differ from the cache file's, and the engine
+      // derives its own from the cache path. Reading the suffix from the
+      // same place the engine will read it keeps them from doubling up.
+      const { ext } = splitExtension(baseName(normalizeLocalPath(only.uri)));
+      return { kind, defaultName: base, ext, files, fileCount: 1 };
+    }
+    return {
+      kind,
+      defaultName: defaultBundleName(
+        files.map((f) => f.name),
+        defaultShareName(kind, files.length),
+      ),
+      ext: "",
+      files,
+      fileCount: files.length,
+    };
   }
 
   /**
@@ -1513,19 +1762,13 @@ export default function MainScreen() {
         return;
       }
       setInAppPickerOpen(false);
-      if (files.length > 1) {
-        setPendingNameShare({
-          kind: "files",
-          defaultName: defaultShareName("files", files.length),
-          files,
-        });
-        return;
-      }
-      await shareFilesAndTrack(files, {
-        errorLabel: "Couldn't create that share — give it another go?",
-      });
+      // Every share is named, a single file included: a filename does not
+      // always read as a name, least of all a UUID-shaped cache name.
+      setPendingNameShare(pendingShareFor("files", files));
+      return;
     } catch (e: unknown) {
-      showToast(`Couldn't share — ${String((e as Error)?.message || e)}`, "error");
+      logStructuredError("rn.share", "in-app picker share failed", e);
+      showToast("Couldn't share those — give it another go?", "error");
     } finally {
       setInAppPickerBusy(false);
     }
@@ -1556,8 +1799,8 @@ export default function MainScreen() {
 
   async function onPickAndShare() {
     setPickerSheet(null);
-    // these double as the in-app picker's escape hatches, so
-    // dismiss it before launching the OS picker behind it.
+    // These double as the in-app picker's escape hatches, so dismiss it
+    // before launching the OS picker behind it.
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
@@ -1566,33 +1809,23 @@ export default function MainScreen() {
         copyToCacheDirectory: true,
         multiple: true,
       });
-      // cancel and empty both exit through `handlePickerExit` —
-      // clean return to the Send sheet, no half-started share, no fallthrough.
+      // Cancel and empty both exit through `handlePickerExit`: a clean
+      // return to the Send sheet, with no half-started share.
       const outcome = classifyPickerResult(res.canceled, selectFiles(res));
       if (outcome.kind !== "selected") {
         handlePickerExit(outcome, { empty: "Nothing picked." });
         return;
       }
       const files = outcome.files;
-      // >1 file → prompt for a share name. Single files skip the modal
-      // and share immediately (their filename already reads as the name).
-      if (files.length > 1) {
-        setPendingNameShare({
-          kind: "files",
-          defaultName: defaultShareName("files", files.length),
-          files,
-        });
-        return;
-      }
-      await shareFilesAndTrack(files, {
-        errorLabel: "Couldn't create that share — give it another go?",
-      });
+      setPendingNameShare(pendingShareFor("files", files));
+      return;
     } catch (e: unknown) {
       if (isPickerCancellation(e)) {
         handlePickerExit({ kind: "cancelled" }, { empty: "Nothing picked." });
         return;
       }
-      showToast(`Couldn't share — ${String((e as Error)?.message || e)}`, "error");
+      logStructuredError("rn.share", "file share failed", e);
+      showToast("Couldn't share those — give it another go?", "error");
     } finally {
       setShareBusy(false);
     }
@@ -1600,14 +1833,14 @@ export default function MainScreen() {
 
   async function onPickFolderAndShare() {
     setPickerSheet(null);
-    // these double as the in-app picker's escape hatches, so
-    // dismiss it before launching the OS picker behind it.
+    // These double as the in-app picker's escape hatches, so dismiss it
+    // before launching the OS picker behind it.
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
       const dir = await pickFolder();
-      // `pickFolder` returns null on a back-out. Route it through
-      // the shared exit so the folder picker behaves like the other two.
+      // `pickFolder` returns null on a back-out. Route it through the shared
+      // exit so the folder picker behaves like the other two.
       if (!dir) {
         handlePickerExit(
           { kind: "cancelled" },
@@ -1615,6 +1848,41 @@ export default function MainScreen() {
         );
         return;
       }
+      // prompt for the name HERE, before `enumerateFolder`.
+      //
+      // Enumeration copies every file in the folder into the app cache
+      // (`materializeToCache`), so a naming step placed after it would leave
+      // N cache copies behind on cancel. Prompting first makes the guarantee
+      // structural rather than something to clean up: cancel returns before
+      // any file is touched, and `sharePaths` is never called, so there is no
+      // drive, no corestore and no manifest entry either.
+      //
+      // The folder's own name is the prefill and is available from the
+      // directory URI at this point — which is also the better default.
+      setPendingNameShare({
+        kind: "folder",
+        defaultName: leafName(dir.uri) || "Folder",
+        ext: "",
+        files: [],
+        folder: dir,
+        // Unknown until enumeration. The subtitle reads "This folder will
+        // share under this name." rather than claiming a count we have not
+        // counted.
+        fileCount: 0,
+      });
+      return;
+    } catch (e: unknown) {
+      logStructuredError("rn.share", "folder share failed", e);
+      showToast("Couldn't share that folder — give it another go?", "error");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  /** the folder path's real work, run only after the name is confirmed. */
+  async function enumerateAndShareFolder(dir: PickedDirectory, shareName: string) {
+    setShareBusy(true);
+    try {
       let enumerated;
       try {
         enumerated = await enumerateFolder(dir, { maxFiles: 1000 });
@@ -1634,7 +1902,9 @@ export default function MainScreen() {
       }
       const paths = enumerated.map((f) => f.uri);
       const relPaths = enumerated.map((f) => f.relPath);
-      const out = await sharePaths(paths, relPaths);
+      // the confirmed name becomes the share title, which the
+      // receiver uses as the folder name for the wrapped download.
+      const out = await sharePaths(paths, relPaths, shareName);
       if (!out.ok || !out.shareLink) {
         showToast("Couldn't share that folder.", "error");
         return;
@@ -1663,7 +1933,10 @@ export default function MainScreen() {
         );
         return;
       }
-      showToast(`Folder error: ${String((e as Error)?.message || e)}`, "error");
+      // "Folder error:" prefixing an errno
+      // string told the user nothing they could act on.
+      logStructuredError("rn.share", "folder pick failed", e);
+      showToast("Couldn't read that folder — give it another go?", "error");
     } finally {
       setShareBusy(false);
     }
@@ -1671,23 +1944,28 @@ export default function MainScreen() {
 
   async function onPickPhotosAndShare() {
     setPickerSheet(null);
-    // these double as the in-app picker's escape hatches, so
-    // dismiss it before launching the OS picker behind it.
+    // These double as the in-app picker's escape hatches, so dismiss it
+    // before launching the OS picker behind it.
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
-      // restores the 2026-05-14 fix that the v5 rewrite dropped.
-      // On older Android / OEM ROMs `launchImageLibraryAsync` can throw
-      // outright (permission denied, vendor gallery missing). Left unguarded
-      // that throw reached the outer catch and dead-ended the user on a red
-      // "Photo share error" toast. Now: a throw that reads as a back-out is
-      // treated as a cancel, and anything else falls back to the SAF
-      // document picker — the same path onPickAndShare uses — instead of
-      // dead-ending.
+      // `launchImageLibraryAsync` can throw outright on some ROMs. A throw that
+      // reads as a back-out is a cancel; anything else falls back to the SAF picker.
       let outcome: PickerOutcome;
       try {
         const res = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          // images AND videos. The photos entry point used to
+          // pass MediaTypeOptions.Images, so a video was unreachable from
+          // it at any tap count and had to be hunted down through Files.
+          //
+          // This needs NO manifest change and NO media permission: on
+          // Android the picker resolves to androidx PickVisualMedia (the
+          // system photo picker), which hands back a transient read grant
+          // per item. The READ_MEDIA_* strip stays exactly as it is.
+          //
+          // Array form rather than the MediaTypeOptions enum — the enum is
+          // deprecated in expo-image-picker 17.
+          mediaTypes: ["images", "videos"],
           allowsMultipleSelection: true,
           quality: 1,
           allowsEditing: false,
@@ -1704,7 +1982,11 @@ export default function MainScreen() {
           outcome = { kind: "cancelled" };
         } else {
           const fallback = await DocumentPicker.getDocumentAsync({
-            type: "image/*",
+            // widened alongside the primary picker. This is the
+            // OEM-throw escape hatch, so leaving it at "image/*" would
+            // have meant videos were reachable on most devices and
+            // silently absent on exactly the ROMs that already misbehave.
+            type: ["image/*", "video/*"],
             copyToCacheDirectory: true,
             multiple: true,
           });
@@ -1719,23 +2001,15 @@ export default function MainScreen() {
         return;
       }
       const files = outcome.files;
-      if (files.length > 1) {
-        setPendingNameShare({
-          kind: "photos",
-          defaultName: defaultShareName("photos", files.length),
-          files,
-        });
-        return;
-      }
-      await shareFilesAndTrack(files, {
-        errorLabel: "Couldn't create that share.",
-      });
+      setPendingNameShare(pendingShareFor("photos", files));
+      return;
     } catch (e: unknown) {
       if (isPickerCancellation(e)) {
         handlePickerExit({ kind: "cancelled" }, { empty: "No photos picked." });
         return;
       }
-      showToast(`Photo share error: ${String((e as Error)?.message || e)}`, "error");
+      logStructuredError("rn.share", "photo share failed", e);
+      showToast("Couldn't share those photos — give it another go?", "error");
     } finally {
       setShareBusy(false);
     }
@@ -1745,12 +2019,44 @@ export default function MainScreen() {
     setKebabSheet(null);
     const res = await activateDrive(drive.id);
     if (!res.ok) {
-      showToast(errorMessage(res.error) || "Couldn't activate that one.", "error");
+      // `errorMessage(...) || fallback` LOOKED
+      // like it had a safety net and did not — a structured engine error always
+      // carries a message, so the fallback could never fire and "Engine not
+      // initialized." rendered instead. `userFacingError` makes the fallback the
+      // thing that actually shows.
+      logStructuredError("rn.share", "activate failed", res.error);
+      showToast(userFacingError(res.error, "Couldn't activate that one."), "error");
       return;
     }
     haptics.success();
     setQrDriveId(drive.id);
     void refreshDrives();
+  }
+
+  /**
+   * "Share again" on a Recent Shares row. Starts sharing first and then offers the
+   * link, through the one hosted activation path in this screen; the Send sheet is
+   * dismissed first so two RN modals do not stack. Received rows are refused twice:
+   * their id is `share:<shareKey>`, which `engineActivateDrive` cannot find.
+   */
+  function onShareAgainFromRecents(id: string) {
+    const drive = sortedDrives.find((d) => d.id === id);
+    if (!drive) return;
+    if (drive.origin === "received") return;
+    setPickerSheet(null);
+    if (
+      canOfferStartSharing({
+        id: drive.id,
+        origin: drive.origin,
+        isActive: activeDriveIds.has(drive.id),
+      })
+    ) {
+      void onShareIt(drive);
+      return;
+    }
+    // Hydration failed, so the drive is still in `activeDriveIds` and re-activating
+    // early-returns without re-attaching a swarm. Open the modal, which says "failed".
+    setQrDriveId(drive.id);
   }
 
   // useCallback so the identity is stable across renders and the row
@@ -1760,7 +2066,9 @@ export default function MainScreen() {
       setKebabSheet(null);
       const res = await deactivateDrive(drive.id);
       if (!res.ok) {
-        showToast(errorMessage(res.error) || "Couldn't stop that one.", "error");
+        // see the activate site above.
+        logStructuredError("rn.share", "stop failed", res.error);
+        showToast(userFacingError(res.error, "Couldn't stop that one."), "error");
         return;
       }
       haptics.actionDone();
@@ -1770,7 +2078,45 @@ export default function MainScreen() {
     [deactivateDrive, refreshDrives, showToast],
   );
 
-  // unified pin / favorite toggles. Route to the right storage
+  /**
+   * One handler for both directions of re-sharing a received copy. `onShareIt`
+   * passes no `opts` at all — the third state — which keeps a hosted drive
+   * announcing and a received one client-only; do not route it through here. Stop is
+   * `serve: false`: deactivating leaves the persisted `reshared` intent set, so the
+   * engine's boot rule would re-announce the copy on the next launch.
+   */
+  const onReshare = useCallback(
+    async (drive: DriveRow, serve: boolean) => {
+      setKebabSheet(null);
+      const shareKey = (drive.share?.shareKey ?? "").toLowerCase();
+      const signals = reshareSignalsFor(drive);
+      const driveId = signals.driveId;
+      if (!driveId || !shareKey) return;
+      const res = await activateDrive(driveId, { serve });
+      const out = serve ? reshareStartOutcome(res) : reshareStopOutcome(res);
+      // Record the mode the engine REPORTED, whatever it was. This is the
+      // value every Copy Link / QR gate reads, so writing an optimistic one
+      // here would hand out a link for a swarm that does not exist.
+      setObservedReshareModes((prev) =>
+        prev[shareKey] === out.mode ? prev : { ...prev, [shareKey]: out.mode },
+      );
+      if (out.kind === "failed") {
+        logStructuredError(
+          "rn.share",
+          serve ? "re-share failed" : "re-share stop failed",
+          res.error,
+        );
+        showToast(userFacingError(res.error, out.text), "error");
+        return;
+      }
+      if (out.tone === "success") haptics.actionDone();
+      showToast(out.text, out.tone);
+      void refreshDrives();
+    },
+    [activateDrive, refreshDrives, reshareSignalsFor, showToast],
+  );
+
+  // Sprint 3M: unified pin / favorite toggles. Route to the right storage
   // based on the share's origin. Received shares carry the flags on their
   // ReceivedShare record; hosted drives go through the hostedShareFlags
   // side-store keyed by engine driveId.
@@ -1815,13 +2161,30 @@ export default function MainScreen() {
       });
       setFolderModalId((cur) => (cur === id ? null : cur));
       haptics.actionDone();
-      showToast("Deleted.");
       if (drive.share) {
         // received share. Drop the per-share record, then purge
         // every engine drive whose key matches — the share may have produced
         // several short-lived engine drive entries across re-pastes.
         const shareKey = drive.share.shareKey;
-        void deleteShare(shareKey);
+        // `deleteShare` now removes the app's
+        // own copies under `downloads/` as well as the record — see its header
+        // for why the removal lives in the store and not here.
+        //
+        // The toast used to fire above this block, before any delete had been
+        // attempted, in both branches. It now waits for the part of the work
+        // this realm can actually observe, and says something different when a
+        // file would not go. The engine's corestore purge below stays
+        // fire-and-forget; the row has already left the list either way.
+        void (async () => {
+          const { failed } = await deleteShare(shareKey);
+          showToast(
+            failed.length === 0
+              ? "Deleted."
+              : failed.length === 1
+                ? "Deleted. One file couldn't be removed."
+                : `Deleted. ${failed.length} files couldn't be removed.`,
+          );
+        })();
         const matchingEngineIds = (drives ?? [])
           .filter((d) => d.origin === "received" && d.key === shareKey)
           .map((d) => d.id);
@@ -1830,6 +2193,7 @@ export default function MainScreen() {
         }
         void refreshDrives();
       } else {
+        showToast("Deleted.");
         // Hosted drive — the existing fire-and-forget engine purge.
         void cancelTransfer(id, { purge: true }).then(() => {
           void refreshDrives();
@@ -1841,6 +2205,31 @@ export default function MainScreen() {
       }
     },
     [cancelTransfer, drives, refreshDrives, showToast],
+  );
+
+  /**
+   * Cancel an in-flight download from the row menu, through the single
+   * `cancelInFlight` implementation rather than a copy. No confirmation, unlike
+   * `onDelete`: cancelling keeps every byte already written, and a confirm on a
+   * reversible action trains people to dismiss the irreversible one next to it.
+   * The engine settles the row; nothing optimistic is written here.
+   */
+  const onCancelDownload = useCallback(
+    async (drive: DriveRow) => {
+      setKebabSheet(null);
+      // Same id set as `performDelete` and `kebabDownloadInFlight`: a received
+      // synth row may be backed by several engine drive entries.
+      const ids = new Set<string>([drive.id]);
+      const shareKey = drive.share?.shareKey;
+      if (shareKey) {
+        for (const d of drives ?? []) {
+          if (d.origin === "received" && d.key === shareKey) ids.add(d.id);
+        }
+      }
+      for (const id of ids) void cancelInFlight(id);
+      haptics.actionDone();
+    },
+    [cancelInFlight, drives],
   );
 
   const onDelete = useCallback((drive: DriveRow) => {
@@ -1868,10 +2257,22 @@ export default function MainScreen() {
       const name = rowDisplayName(drive);
       const bytes = totalBytesOf(drive);
       const ts = drive.lastActivityAt ?? drive.createdAt;
-      const meta = `${formatBytes(bytes)} · ${formatRelativeOrDate(ts) ?? "—"}`;
-      const t = transferByDriveId.get(drive.id);
-      const transferring =
-        !!t && !t.completed && (t.percent ?? 0) > 0 && (t.percent ?? 0) < 100;
+      /**
+       * A received row must report what this device has, not what was sent:
+       * without an `isDownloaded` filter a share where 3 of 12 files landed
+       * reads exactly like one where all 12 did. Hosted rows keep the manifest
+       * total, which is what you have when you are serving the share.
+       */
+      const holdings = drive.share ? describeHoldings(drive.share.files) : null;
+      const meta = `${
+        holdings ? holdingsBytesLabel(holdings) : formatBytes(bytes)
+      } · ${formatRelativeOrDate(ts) ?? "—"}`;
+      const t = transferForRow(drive);
+      const isReceived = drive.origin === "received";
+      // the `transferring` local that used to live here moved
+      // into `hostedRowStatus` with the rest of the hosted chain. It had one
+      // reader, and leaving it behind would have left two definitions of
+      // "is this share in flight" to drift apart.
       const iconName = driveIconName(drive);
       const isBundle = !!drive.isBundle;
       const peers = t?.peersConnected ?? 0;
@@ -1886,6 +2287,9 @@ export default function MainScreen() {
       // single-file rows, or a "N files" summary for bundles.
       const typePrefix = ((): string => {
         const files = drive.files ?? [];
+        // A received bundle states how many of its files are actually here; a
+        // hosted bundle keeps the plain count, true of a share you are serving.
+        if (isBundle && holdings) return holdingsCountLabel(holdings, "Files");
         if (isBundle) return `${files.length} Files`;
         const firstName = drive.primaryFile?.name ?? files[0]?.name ?? "";
         const mode = firstName ? previewModeFor(firstName) : "unsupported";
@@ -1898,13 +2302,35 @@ export default function MainScreen() {
       let status: ShareRowStatus | null = null;
       if (isFailed) {
         status = { label: `${typePrefix} · Couldn't restore`, tone: "danger" };
-      } else if (transferring) {
-        const pct = Math.round(Math.max(0, Math.min(100, t?.percent ?? 0)));
-        status = { label: `${typePrefix} · Sharing (${pct}%)`, tone: "warning" };
-      } else if (t?.completed) {
-        status = { label: `${typePrefix} · Completed`, tone: "primary" };
-      } else if (isActive) {
-        status = { label: `${typePrefix} · Active`, tone: "primary" };
+      } else if (isReceived) {
+        // received rows get their own state machine. The hosted
+        // branch below says "Sharing", which is wrong wording for a grab,
+        // and — more importantly — its in-flight guard excludes
+        // percent >= 100, so a download sitting at 100 while the engine
+        // still pipes files to disk fell through to "Active" or to nothing
+        // at all. That made a finished download and a stalled one look
+        // identical, which was the actual complaint. `receiveRowStatus`
+        // separates "Finishing…" from the terminal "Saved".
+        const receive = receiveRowStatus(t);
+        status =
+          receive.state === "idle"
+            ? isActive
+              ? { label: `${typePrefix} · Active`, tone: "primary" }
+              : null
+            : { label: `${typePrefix} · ${receive.label}`, tone: receive.tone };
+      } else {
+        // the hosted chain that used to be inline here —
+        // Sharing / Completed / Active — moved to `hostedRowStatus`, with a
+        // `cancelled` branch AHEAD of it. `markCancelled` sets
+        // `completed: true` on both origins, so a hosted share the user
+        // stopped fell to the `completed` arm and read "Completed". Fixing
+        // it in place would have been a change no test could reach: this
+        // file is `.tsx`, and the suite collects only `*.test.ts`.
+        const hosted = hostedRowStatus(t, { isActive });
+        status =
+          hosted.state === "idle"
+            ? null
+            : { label: `${typePrefix} · ${hosted.label}`, tone: hosted.tone };
       }
 
       // v5 thumbnail: show the primary file's image directly for single-file
@@ -1969,27 +2395,27 @@ export default function MainScreen() {
       swipeCloseTick,
       theme,
       toggleSelected,
-      transferByDriveId,
+      transferForRow,
     ],
   );
 
-  const emptyState = useMemo(
-    () =>
-      viewMode === "favorites" ? (
-        <EmptyState
-          icon="heart-outline"
-          title="No favorites yet"
-          subtitle="Tap the heart on a share to add it."
-        />
-      ) : (
-        <EmptyState
-          icon="folder-open-outline"
-          title="Nothing here yet"
-          subtitle="Pick files above or paste a link."
-        />
-      ),
-    [viewMode],
-  );
+  /**
+   * An empty list that is actually a failure must not render as an absence, so
+   * this cannot branch on `viewMode` alone. The decision itself is in
+   * `src/lib/shareListEmptyState.ts` so it can be tested: `jest.config.js` cannot
+   * import a `.tsx`. Key any new error state off `state.isError`, not `state.kind`.
+   */
+  const emptyState = useMemo(() => {
+    const state = shareListEmptyState({ manifestUnavailable, viewMode });
+    return (
+      <EmptyState
+        icon={state.icon as React.ComponentProps<typeof EmptyState>["icon"]}
+        title={state.title}
+        subtitle={state.subtitle}
+        isError={state.isError}
+      />
+    );
+  }, [manifestUnavailable, viewMode]);
 
   const kebabDrive = kebabSheet?.drive;
   const kebabActive = kebabDrive ? activeDriveIds.has(kebabDrive.id) : false;
@@ -2044,16 +2470,36 @@ export default function MainScreen() {
         : undefined,
     [folderModalId, visibleDrives, sortedDrives],
   );
+  // same share-key indirection as the list rows. This modal is
+  // where a grab actually lands (the completion effect below opens it), so
+  // a received bundle that showed no progress in the list showed none here
+  // either — for the same reason.
   const folderModalTransfer = folderModalDrive
-    ? transferByDriveId.get(folderModalDrive.id)
+    ? transferForRow(folderModalDrive)
     : undefined;
+  const folderModalIsReceived = folderModalDrive?.origin === "received";
   const folderModalIsActive =
     !!folderModalDrive && activeDriveIds.has(folderModalDrive.id);
+  /**
+   * May this modal's Copy Link CTA be offered at all? `FolderContentsModal` gates
+   * that button on `shareLink` existing and nothing else, and the post-grab effect
+   * opens this modal after every multi-file grab — so a received folder would offer
+   * a link for a drive this phone announces nothing about. Hosted rows pass `true`.
+   */
+  const folderModalCanOfferLink = folderModalDrive
+    ? folderModalIsReceived
+      ? receivedShareIsAnnouncing(reshareSignalsFor(folderModalDrive))
+      : true
+    : false;
   const folderModalTransferring =
     !!folderModalTransfer &&
     !folderModalTransfer.completed &&
     (folderModalTransfer.percent ?? 0) > 0 &&
     (folderModalTransfer.percent ?? 0) < 100;
+  const folderModalReceiveStatus = useMemo(
+    () => receiveRowStatus(folderModalIsReceived ? folderModalTransfer : null),
+    [folderModalIsReceived, folderModalTransfer],
+  );
   const folderModalFiles = useMemo<FolderContentsFile[]>(() => {
     if (!folderModalDrive) return [];
     const children = buildFolderChildren(folderModalDrive);
@@ -2069,6 +2515,9 @@ export default function MainScreen() {
       if (isMissing) {
         statusLabel = "Not on device";
         statusTone = "muted";
+      } else if (folderModalIsReceived && folderModalReceiveStatus.state !== "idle") {
+        statusLabel = folderModalReceiveStatus.label;
+        statusTone = folderModalReceiveStatus.tone;
       } else if (folderModalTransferring) {
         statusLabel = `Sharing (${pct}%)`;
         statusTone = "warning";
@@ -2106,17 +2555,19 @@ export default function MainScreen() {
           c.parentId,
         );
       };
-      const onRightControlPress = () => {
-        if (statusTone === "warning" && folderModalDrive) {
-          void onStopSharing(folderModalDrive);
-          return;
-        }
-        if (hasLocal && c.localPath) {
-          void onOpenFile(c.localPath);
-          return;
-        }
-        onPress();
-      };
+      /**
+       * The handler is severed from the status tone. Both of the modal's control
+       * branches call this one handler, so keying it off `statusTone` would leave
+       * whole-share deactivation live behind an "Open in another app" label. A
+       * per-file control may open that one file and nothing else.
+       */
+      const control = folderRowControl({ fileName: displayName, hasLocalCopy: hasLocal });
+      const onRightControlPress =
+        control.kind === "open" && c.localPath
+          ? () => {
+              void onOpenFile(c.localPath as string);
+            }
+          : undefined;
       // Row thumbnail: images render inline; videos generate a one-frame
       // preview via expo-video-thumbnails (cached). Missing/remote files
       // fall back to the type-icon tile.
@@ -2139,7 +2590,13 @@ export default function MainScreen() {
         videoUri: childVideoUri,
         statusLabel,
         statusTone,
-        isActiveShare: statusTone === "warning",
+        // STEP 2: the per-row stop control
+        // is gone. `isActiveShare` was `statusTone === "warning"`, and
+        // W0-UI-5's proposed `!isReceived && transferring` replacement is
+        // INSUFFICIENT: it is uniformly true across every child of a hosted
+        // folder that is transferring, so it would have kept the whole-share
+        // stop on all of them. The prop no longer exists.
+        rightControl: control,
         dim: isMissing || !hasLocal,
         blink,
         onPress,
@@ -2151,31 +2608,85 @@ export default function MainScreen() {
     folderModalTransfer,
     folderModalTransferring,
     folderModalIsActive,
+    folderModalIsReceived,
+    folderModalReceiveStatus,
     childBlinkTarget,
     buildFolderChildren,
     onOpenFile,
-    onStopSharing,
+    // `onStopSharing` was removed from this
+    // memo's body along with the deactivate branch — the folder modal no longer
+    // offers "Stop sharing" for a file. The dependency is gone with it; it now
+    // survives only in the comment above that records what used to be here.
     previewFile,
     setLinkDraft,
     setPendingPreselection,
     showToast,
   ]);
   const folderModalStatus = folderModalDrive
-    ? folderModalTransferring
+    ? folderModalIsReceived && folderModalReceiveStatus.state !== "idle"
       ? {
-          label: `Sharing (${Math.round(
-            Math.max(0, Math.min(100, folderModalTransfer?.percent ?? 0)),
-          )}%)`,
-          tone: "warning" as const,
+          label: folderModalReceiveStatus.label,
+          tone: folderModalReceiveStatus.tone,
         }
-      : folderModalIsActive
-        ? { label: "Active", tone: "primary" as const }
-        : { label: "Inactive", tone: "muted" as const }
+      : folderModalTransferring
+        ? {
+            label: `Sharing (${Math.round(
+              Math.max(0, Math.min(100, folderModalTransfer?.percent ?? 0)),
+            )}%)`,
+            tone: "warning" as const,
+          }
+        : folderModalIsActive
+          ? { label: "Active", tone: "primary" as const }
+          : { label: "Inactive", tone: "muted" as const }
     : null;
   // received-share rows don't expose Share-it / Stop-sharing in
   // this sprint — the engine maps activate by driveId, not shareKey, so
-  // there's no clean "this share" toggle yet. Out of scope to wire fully.
+  // there's no clean "this share" toggle yet.
+  //
+  // (phase 2i): they do now, via `kebabReshare` below.
+  // `onShareIt` / `onStopSharing` still refuse them — those route by row id —
+  // and the re-share pair routes by the engine driveId instead.
   const kebabIsReceivedShare = !!kebabDrive?.share;
+  /**
+   * (phase 2i) — the received row's Share / Stop control,
+   * and the announcing flag the link surfaces are gated on.
+   *
+   * `kebabActive` is NOT the gate. Boot hydration puts every received drive in
+   * `activeDriveIds` with no swarm, so `kebabActive` is true for a copy that is
+   * announcing nothing — which is how Copy Link and Show QR came to be offered
+   * for a link no peer can resolve.
+   */
+  const kebabReshare = kebabDrive
+    ? reshareControl(reshareSignalsFor(kebabDrive))
+    : null;
+  const kebabAnnouncing =
+    !!kebabDrive && receivedShareIsAnnouncing(reshareSignalsFor(kebabDrive));
+  /** Hosted rows keep `active`; received rows must actually be announcing. */
+  const kebabCanOfferLink = kebabIsReceivedShare
+    ? kebabAnnouncing
+    : kebabActive;
+
+  /**
+   * Is this row a download happening right now? Derived from `classifyTransfer`,
+   * the single answer to "is a transfer in flight"; a second definition here would
+   * drift from the one the foreground service uses. `=== "download"` rather than
+   * `!== null`, so a hosted share keeps Delete while a peer is connected. The id
+   * set mirrors `performDelete`'s: a synth row may span several drive entries.
+   */
+  const kebabDownloadInFlight = useMemo(() => {
+    if (!kebabDrive) return false;
+    const ids = new Set<string>([kebabDrive.id]);
+    const shareKey = kebabDrive.share?.shareKey;
+    if (shareKey) {
+      for (const d of drives ?? []) {
+        if (d.origin === "received" && d.key === shareKey) ids.add(d.id);
+      }
+    }
+    const now = Date.now();
+    return transfers.some(
+      (t) => ids.has(t.driveId) && classifyTransfer(t, now) === "download",
+    );
+  }, [kebabDrive, drives, transfers]);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top + 4 }]}>
@@ -2307,13 +2818,13 @@ export default function MainScreen() {
         onPickFolder={() => void onPickFolderAndShare()}
         recentShares={recentShares}
         onCopyRecentLink={(link) => void onCopyLink(link)}
+        onShareAgain={(id) => onShareAgainFromRecents(id)}
       />
 
-      {/* in-app file selection — recents + one level of a
-          SAF-granted Downloads folder, with the OS picker as fallback.
-          Cancel routes through the shared 5D picker-exit path so backing
-          out of this screen behaves exactly like backing out of the OS
-          picker: Send sheet restored, silent, nothing half-built. */}
+      {/* In-app file selection — recents plus one level of a SAF-granted
+          Downloads folder, with the OS picker as fallback. Cancel routes
+          through the shared picker-exit path so backing out behaves like
+          backing out of the OS picker: Send sheet restored, nothing half-built. */}
       <FilePickerSheet
         visible={inAppPickerOpen}
         history={sharedPaths}
@@ -2328,13 +2839,23 @@ export default function MainScreen() {
         onPickPhotos={() => void onPickPhotosAndShare()}
       />
 
-      {/* Multi-file share name prompt. Opens after the OS picker returns
-         >1 asset; on Share we hand the confirmed name off to
-         `shareFilesAndTrack` so it's persisted alongside the drive. */}
+      {/* The naming step for every share — single file, bundle and folder.
+         Cancel here means no share was ever created: `sharePaths` is not called,
+         and on the folder path nothing has been copied to cache yet. */}
       <NameShareModal
         visible={!!pendingNameShare}
         defaultName={pendingNameShare?.defaultName ?? ""}
-        fileCount={pendingNameShare?.files.length ?? 0}
+        fileCount={pendingNameShare?.fileCount ?? 0}
+        subtitle={
+          pendingNameShare?.kind === "folder"
+            ? "This folder will share under this name."
+            : undefined
+        }
+        // Fixed, non-editable extension for a single file; empty otherwise.
+        fixedSuffix={pendingNameShare?.ext ?? ""}
+        // Empty shows nothing and just disables Share; any other refusal
+        // shows its reason inline.
+        validate={(raw) => checkShareName(raw).message ?? null}
         onCancel={() => {
           setPendingNameShare(null);
           setShareBusy(false);
@@ -2343,20 +2864,28 @@ export default function MainScreen() {
           const pending = pendingNameShare;
           setPendingNameShare(null);
           if (!pending) return;
+          if (!canConfirmShareName(name)) return;
+          // Send the base, never a recombined filename: the engine treats
+          // `shareName` as a base and appends the real extension itself.
+          const finalName = checkShareName(name).value ?? name;
           void (async () => {
             try {
+              if (pending.kind === "folder") {
+                if (pending.folder) {
+                  await enumerateAndShareFolder(pending.folder, finalName);
+                }
+                return;
+              }
               await shareFilesAndTrack(pending.files, {
-                customName: name,
+                shareName: finalName,
                 errorLabel:
                   pending.kind === "photos"
                     ? "Couldn't create that share."
                     : "Couldn't create that share — give it another go?",
               });
             } catch (e: unknown) {
-              showToast(
-                `Couldn't share — ${String((e as Error)?.message || e)}`,
-                "error",
-              );
+              logStructuredError("rn.share", "re-share failed", e);
+              showToast("Couldn't share those — give it another go?", "error");
             } finally {
               setShareBusy(false);
             }
@@ -2408,6 +2937,27 @@ export default function MainScreen() {
                 void onOpenFile(f.path);
               },
             });
+            // ONE save destination.
+            //
+            // 9G briefly shipped two — "Save to Downloads" beside a renamed
+            // share sheet ("Send to another app…") — on the reasoning that
+            // they answered different questions. In use they read as two
+            // spellings of the same thing, and the share sheet was removed.
+            //
+            // This is the export route for a received file now. `Open in
+            // another app` above is a different feature and stays: it hands
+            // the file to a viewer rather than putting a copy anywhere.
+            if (canSaveToDownloads) {
+              list.push({
+                key: "save-downloads",
+                icon: "download-outline",
+                label: "Save to Downloads",
+                onPress: () => {
+                  setKebabSheet(null);
+                  void onSaveToDownloads(f.path, f.name);
+                },
+              });
+            }
           }
           list.push({
             key: "favorite",
@@ -2421,12 +2971,10 @@ export default function MainScreen() {
               setKebabSheet(null);
             },
           });
-          // v5 kebab: Copy link + Show QR only make sense while the drive
-          // is actively seeding — a dormant drive has no live link/QR to
-          // hand out. When inactive, the "Start sharing" action at the
-          // bottom is the meaningful next step instead.
+          // Copy link and Show QR only make sense while a drive is seeding, and
+          // `kebabActive` is true for hydrated received copies that announce nothing.
           const shareLink = kebabDrive.shareLink;
-          if (kebabActive && shareLink) {
+          if (kebabCanOfferLink && shareLink) {
             list.push({
               key: "copy",
               icon: "link-outline",
@@ -2437,7 +2985,7 @@ export default function MainScreen() {
               },
             });
           }
-          if (kebabActive) {
+          if (kebabCanOfferLink) {
             list.push({
               key: "qr",
               icon: "qr-code-outline",
@@ -2478,7 +3026,29 @@ export default function MainScreen() {
               setKebabSheet(null);
             },
           });
-          if (!kebabIsReceivedShare && kebabActive) {
+          // (phase 2i) — the received row's re-share pair.
+          //
+          // Ahead of the hosted branches and mutually exclusive with them:
+          // `reshareControl` returns `none` for anything that is not a
+          // received row, and `canOfferStartSharing` refuses every received
+          // row, so exactly one of the three blocks can fire.
+          //
+          // The disabled arm is VISIBLE, not omitted. An incomplete copy is
+          // the case the user most needs told, and `disabledReason` is the one
+          // sentence that tells them.
+          if (kebabReshare && kebabReshare.kind !== "none") {
+            const control = kebabReshare;
+            const d = kebabDrive;
+            list.push({
+              key: "reshare",
+              icon: control.kind === "stop" ? "stop-circle" : "share-outline",
+              label: control.label,
+              tone: control.kind === "stop" ? "danger" : "default",
+              disabled: !control.enabled,
+              sublabel: control.disabledReason,
+              onPress: () => void onReshare(d, control.kind === "share"),
+            });
+          } else if (!kebabIsReceivedShare && kebabActive) {
             list.push({
               key: "stop",
               icon: "stop-circle",
@@ -2486,11 +3056,22 @@ export default function MainScreen() {
               tone: "danger",
               onPress: () => void onStopSharing(kebabDrive),
             });
-          } else if (!kebabActive) {
-            // Start sharing is offered for any inactive row — hosted or
-            // received. For received-share synth rows the activate call
-            // still routes through onShareIt; if the engine can't resume
-            // by driveId yet the toast surfaces the failure.
+          } else if (
+            canOfferStartSharing({
+              id: kebabDrive.id,
+              origin: kebabDrive.origin,
+              isActive: kebabActive,
+            })
+          ) {
+            // (A2): hosted-only.
+            //
+            // This used to read "offered for any inactive row — hosted or
+            // received… if the engine can't resume by driveId yet the toast
+            // surfaces the failure." It could not resume by driveId, it still
+            // cannot, and the toast that surfaced was "Drive not found" — the
+            // engine's `drive-not-found` message rendered verbatim. Shipping an
+            // action whose documented fallback is an error toast is the thing
+            // not to repeat.
             list.push({
               key: "share",
               icon: "share-outline",
@@ -2498,12 +3079,25 @@ export default function MainScreen() {
               onPress: () => void onShareIt(kebabDrive),
             });
           }
+          // ONE row, two states — not two rows with one hidden.
+          //
+          // While a download is in flight the destructive row reads Cancel and
+          // calls the single cancel path 9G shipped. Once it finishes, the same
+          // row reverts to Delete. Before this, Delete was the only option on a
+          // live download, and it reached `engineStopDrive({purge:true})` —
+          // which purged the corestore out from under the running loop and
+          // then reported "Download complete". The engine-side guard added
+          // this sprint means Delete is no longer dangerous either way; this
+          // makes it say the right word as well.
           list.push({
             key: "delete",
-            icon: "trash-outline",
-            label: "Delete",
+            icon: kebabDownloadInFlight ? "close-circle-outline" : "trash-outline",
+            label: kebabDownloadInFlight ? "Cancel" : "Delete",
             tone: "danger",
-            onPress: () => onDelete(kebabDrive),
+            onPress: () =>
+              kebabDownloadInFlight
+                ? onCancelDownload(kebabDrive)
+                : onDelete(kebabDrive),
           });
           return list;
         })()}
@@ -2525,6 +3119,23 @@ export default function MainScreen() {
         // regardless of live state. A same-height placeholder tile fills
         // in when the string is genuinely absent — see ShareQrModal.
         const link = drive?.shareLink ?? "";
+        /**
+         * (phase 2i), owner ruling — the QR and Copy Link
+         * are gated on ANNOUNCING for a received row, on `isActive` (unchanged)
+         * for a hosted one.
+         *
+         * The comment above is still true of a hosted share and was never true
+         * of a received one: a received link is "the string that grabbed the
+         * share", and handing it on only works while THIS phone announces the
+         * drive. `isActive` cannot see that — every hydrated received copy is
+         * active with no swarm.
+         */
+        const qrIsReceived = !!drive?.share;
+        const qrCanOfferLink = drive
+          ? qrIsReceived
+            ? receivedShareIsAnnouncing(reshareSignalsFor(drive))
+            : isActive
+          : false;
         const t = drive ? transferByDriveId.get(drive.id) : undefined;
         // Header block: mirrors the ShareRow tile. For single-file drives
         // we pass the primary file's URI so the header shows a real image
@@ -2594,6 +3205,12 @@ export default function MainScreen() {
                 : undefined
             }
             isActive={isActive}
+            canOfferLink={qrCanOfferLink}
+            // (A2): `drive.share` is set only on a received synth
+            // row (built at ~line 1037) and is the idiom this file already
+            // uses for the test — see `kebabIsReceivedShare` and
+            // `previewParentDrive`.
+            presentation={drive?.share ? "received" : "hosted"}
             info={
               drive
                 ? {
@@ -2611,7 +3228,7 @@ export default function MainScreen() {
             }
             onClose={() => setQrDriveId(null)}
             onCopy={
-              isActive && link ? () => void onCopyLink(link) : undefined
+              qrCanOfferLink && link ? () => void onCopyLink(link) : undefined
             }
             onRemove={
               drive && !isActive
@@ -2625,8 +3242,15 @@ export default function MainScreen() {
                   }
                 : undefined
             }
+            // Never offered on a received row: its id is `share:<shareKey>`, which
+            // `engineActivateDrive` cannot find. Every site uses `canOfferStartSharing`.
             onActivate={
-              drive && !isActive
+              drive &&
+              canOfferStartSharing({
+                id: drive.id,
+                origin: drive.origin,
+                isActive,
+              })
                 ? () => {
                     const d = drive;
                     void onShareIt(d);
@@ -2637,12 +3261,10 @@ export default function MainScreen() {
         );
       })()}
 
-      {/* ZZZZZZ: fullscreen takeover preview. Pure black behind
-       *  the media. Chrome floats over the video and auto-hides during
-       *  playback; image/text/audio keep chrome visible. Dismiss is the
-       *  back arrow (or Android back button) — no tap-outside, no swipe.
-       *  Custom video controls (no `nativeControls`) — playback toggles
-       *  on any tap of the video tap-surface, mirroring the OS player. */}
+      {/* Fullscreen takeover preview. Pure black behind the media. Chrome
+       *  floats over the video and auto-hides during playback; image/text/audio
+       *  keep chrome visible. Dismiss is the back arrow — no tap-outside, no
+       *  swipe. Playback toggles on any tap of the video tap-surface. */}
       <Modal
         visible={!!preview}
         transparent={false}
@@ -2802,10 +3424,9 @@ export default function MainScreen() {
               </View>
             )}
 
-            {/* top bar holds only the back arrow now. Three-dots
-              *  removed in favor of an inline share button below the video.
-              *  Safe-area top inset clears the status bar so the icon is
-              *  fully tappable. Bigger touch target + hitSlop. */}
+            {/* Top bar holds only the back arrow — the share button is inline
+              *  below the video. Safe-area top inset clears the status bar so
+              *  the icon is fully tappable. Bigger touch target + hitSlop. */}
             <Animated.View
               pointerEvents={chromeVisible ? "box-none" : "none"}
               style={[
@@ -2879,12 +3500,10 @@ export default function MainScreen() {
                     {videoDuration > 0 ? formatClock(videoDuration) : "—:—"}
                   </Text>
                 </View>
-                {/* share/stop-sharing toggle below the scrubber.
-                  *  Only renders for hosted drives (received synth rows
-                  *  can't activate via this path in this sprint).
+                {/* Share/stop-sharing toggle below the scrubber. Hosted drives
+                  *  only; received synth rows cannot activate via this path.
                   *  - Stop sharing: deactivates inline, preview stays open
-                  *  - Share it: closes the preview and opens the main-page
-                  *    QR modal so the user can hand off the link */}
+                  *  - Share it: closes the preview and opens the QR modal */}
                 {previewParentDrive ? (
                   <View style={styles.fsShareBtnRow}>
                     <Pressable
@@ -2897,7 +3516,7 @@ export default function MainScreen() {
                             const res = await deactivateDrive(d.id);
                             if (!res.ok) {
                               showToast(
-                                errorMessage(res.error) || "Couldn't stop that one.",
+                                userFacingError(res.error, "Couldn't stop that one."),
                                 "error",
                               );
                               return;
@@ -2953,13 +3572,26 @@ export default function MainScreen() {
         }
         status={folderModalStatus}
         files={folderModalFiles}
-        shareLink={folderModalDrive?.shareLink ?? null}
+        shareLink={
+          folderModalCanOfferLink ? folderModalDrive?.shareLink ?? null : null
+        }
         onCopyLink={() => {
           const link = folderModalDrive?.shareLink;
-          if (link) void onCopyLink(link);
+          if (folderModalCanOfferLink && link) void onCopyLink(link);
         }}
+        // (A2): the third reachable "Start sharing" → "Drive not
+        // found" path, and the one on the busiest route — the post-grab
+        // completion effect (~line 937) opens THIS modal on `share:<shareKey>`
+        // after every multi-file grab, so a received folder showed the button
+        // immediately after a successful download. Same id mismatch, same
+        // engine error, same removal as the other two.
         onStartSharing={
-          folderModalDrive && !folderModalIsActive
+          folderModalDrive &&
+          canOfferStartSharing({
+            id: folderModalDrive.id,
+            origin: folderModalDrive.origin,
+            isActive: folderModalIsActive,
+          })
             ? () => {
                 const d = folderModalDrive;
                 setFolderModalId(null);
@@ -2978,10 +3610,14 @@ export default function MainScreen() {
         }
       />
 
+      {/* The confirm says what actually happens, differently for a received
+          share: the text names both what goes (PearDrop's own copy) and what
+          stays (anything saved to Downloads). The wording lives in
+          `src/lib/deleteReceivedPlan.ts` so it is reachable from the suite. */}
       <ConfirmModal
         visible={!!pendingDelete}
-        title="Delete this drive?"
-        body="Removes the data from your device. Can't undo."
+        title={describeDeleteConfirm(pendingDelete?.share ? "received" : "hosted").title}
+        body={describeDeleteConfirm(pendingDelete?.share ? "received" : "hosted").body}
         confirmLabel="Delete"
         cancelLabel="Keep"
         tone="destructive"

@@ -11,5 +11,5 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "android", "ios", ".expo", "coverage"]
+  "exclude": ["node_modules", "android", "ios", ".expo", "coverage", "agent-pack"]
 }

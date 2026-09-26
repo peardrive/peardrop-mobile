@@ -1,4 +1,4 @@
-package com.peardrop.mobile
+package com.anjouinc.peardrop
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build

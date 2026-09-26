@@ -23,11 +23,11 @@
  * ## Two things that shape how a result must be read
  *
  * 1. **The library dispatches on `Build.BRAND`. `isXiaomiDevice()` matches
- *    `Build.MANUFACTURER`.** Both fields are in the Phase 3 readout precisely
+ *    `Build.MANUFACTURER`.** Both fields are in the readout precisely
  *    because the most-maintained library in this space picked the other one.
  *
- * 2. **Android 11+ package visibility.** With no `<queries>` block — and this
- *    sprint deliberately adds none — a start into a package this app cannot
+ * 2. **Android 11+ package visibility.** With no `<queries>` block — and none
+ *    is declared here — a start into a package this app cannot
  *    see throws `ActivityNotFoundException` whether or not the activity
  *    exists. So `not-found` means "could not launch", NOT "does not exist".
  *    A `launched` result is unambiguous; a `not-found` is not. The shipping
@@ -86,8 +86,13 @@ export type ProbeCandidate = {
   note?: string;
 };
 
-/** This app. Several OEM screens take it as an extra to scope themselves. */
-const PACKAGE = "com.peardrop.mobile";
+/**
+ * This app. Several OEM screens take it as an extra to scope themselves.
+ *
+ * Must track `applicationId` from `android/app/build.gradle`, not `namespace`
+ * — an OEM settings screen resolves the extra against the installed package.
+ */
+const PACKAGE = "com.anjouinc.peardrop";
 
 /** Explicit components are started with ACTION_MAIN — see the module header. */
 const MAIN = "android.intent.action.MAIN";
@@ -108,7 +113,7 @@ const MAIN = "android.intent.action.MAIN";
  */
 export const OEM_PROBE_CANDIDATES: readonly ProbeCandidate[] = [
   // ---------------------------------------------------------------
-  // Xiaomi / Redmi / Poco — measured on HyperOS V816, 2026-09-02/07
+  // Xiaomi / Redmi / Poco — measured on HyperOS V816
   // ---------------------------------------------------------------
   {
     key: "miui-autostart-op",

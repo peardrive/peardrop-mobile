@@ -18,24 +18,34 @@ export type NameShareModalProps = {
   visible: boolean;
   /** Prefilled name; user can edit before confirming. */
   defaultName: string;
-  /** How many files this share will bundle — surfaced in the subtitle so
-   *  the user knows what they're naming. Ignored when `subtitle` is set. */
+  /** How many files this share bundles, surfaced in the subtitle so the user
+   *  knows what they are naming. Ignored when `subtitle` is set. */
   fileCount: number;
   onCancel: () => void;
   /** Fires with the trimmed name once the user taps Share. */
   onConfirm: (name: string) => void;
-  // -------------------------------------------------------------------
-  // optional copy overrides so the same one-field prompt can
-  // serve the debug-log export ("label this log") without shipping
-  // share-specific wording there. Every default below reproduces the
-  // original share behaviour exactly, so existing call sites are
-  // unchanged.
-  // -------------------------------------------------------------------
+  // Copy overrides, so the same one-field prompt can serve the debug-log
+  // export without share-specific wording. Defaults keep the share behaviour.
   title?: string;
   subtitle?: string;
   placeholder?: string;
   confirmLabel?: string;
   confirmIcon?: React.ComponentProps<typeof Ionicons>["name"];
+  // Single-file naming.
+  /**
+   * The file's extension, rendered as fixed text beside the field and not
+   * editable. Empty for bundles and for the debug-log label. `onConfirm`
+   * receives the base only; `joinNameAndExt` recombines in one place,
+   * including the double-extension rule, since a visible suffix does not
+   * stop people typing it.
+   */
+  fixedSuffix?: string;
+  /**
+   * Validate as the user types. Returns a reason to show, or null when the
+   * name is usable. Injected rather than imported so this stays a dumb
+   * prompt: the debug-log caller has no share-name rules to inherit.
+   */
+  validate?: (raw: string) => string | null;
 };
 
 /**
@@ -54,6 +64,8 @@ export default function NameShareModal({
   placeholder = "e.g. Trip photos",
   confirmLabel = "Share",
   confirmIcon = "share-outline",
+  fixedSuffix = "",
+  validate,
 }: NameShareModalProps) {
   const { theme } = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -70,7 +82,12 @@ export default function NameShareModal({
   }, [visible, defaultName]);
 
   const trimmed = name.trim();
-  const canConfirm = trimmed.length > 0;
+  const isEmpty = trimmed.length === 0;
+
+  // An empty field shows no error and disables the button; the user cleared
+  // it on purpose. Any other refusal shows its reason inline.
+  const problem = isEmpty || !validate ? null : validate(name);
+  const canConfirm = !isEmpty && problem === null;
 
   return (
     <Modal
@@ -118,20 +135,42 @@ export default function NameShareModal({
                   : `${fileCount} files will share under this name.`)}
             </Text>
 
-            <TextInput
-              style={styles.input}
-              value={name}
-              onChangeText={setName}
-              placeholder={placeholder}
-              placeholderTextColor={theme.muted}
-              autoFocus
-              autoCorrect={false}
-              returnKeyType="done"
-              onSubmitEditing={() => {
-                if (canConfirm) onConfirm(trimmed);
-              }}
-              accessibilityLabel="Share name"
-            />
+            {/*
+              The field and its fixed suffix share one bordered row: the
+              input takes `flex: 1` and the suffix does not shrink, so a long
+              base scrolls inside the input while the extension stays pinned
+              and visible. With no suffix the row is a plain bordered input.
+            */}
+            <View style={[styles.inputRow, !!problem && styles.inputRowError]}>
+              <TextInput
+                style={styles.input}
+                value={name}
+                onChangeText={setName}
+                placeholder={placeholder}
+                placeholderTextColor={theme.muted}
+                autoFocus
+                // Selected on focus so typing replaces the prefill rather
+                // than appending to it.
+                selectTextOnFocus
+                autoCorrect={false}
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (canConfirm) onConfirm(trimmed);
+                }}
+                accessibilityLabel="Share name"
+              />
+              {fixedSuffix ? (
+                <Text style={styles.suffix} numberOfLines={1}>
+                  {fixedSuffix}
+                </Text>
+              ) : null}
+            </View>
+
+            {problem ? (
+              <Text style={styles.error} accessibilityRole="alert">
+                {problem}
+              </Text>
+            ) : null}
 
             <View style={styles.actions}>
               <Pressable
@@ -214,15 +253,38 @@ function createStyles(theme: AppTheme, topInset: number) {
       fontSize: 13,
       textAlign: "center",
     },
-    input: {
-      color: theme.text,
-      fontSize: 15,
+    inputRow: {
+      flexDirection: "row",
+      alignItems: "center",
       borderWidth: 1,
       borderColor: theme.border,
       backgroundColor: theme.surfaceSubtle,
       borderRadius: 12,
       paddingHorizontal: 14,
+    },
+    inputRowError: {
+      borderColor: theme.danger,
+    },
+    input: {
+      // flex:1 is what lets a long base scroll inside the field instead of
+      // pushing the suffix out of view.
+      flex: 1,
+      color: theme.text,
+      fontSize: 15,
       paddingVertical: 12,
+      paddingHorizontal: 0,
+    },
+    suffix: {
+      color: theme.muted,
+      fontSize: 15,
+      // Never shrink: the extension staying visible is the whole point.
+      flexShrink: 0,
+      paddingLeft: 2,
+    },
+    error: {
+      color: theme.danger,
+      fontSize: 12,
+      marginTop: -4,
     },
     actions: {
       flexDirection: "row",

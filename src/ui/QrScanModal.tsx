@@ -15,6 +15,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../state/ThemeContext";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
 import { haptics } from "../lib/haptics";
+// One parser for every scan entry path. The decision and the copy live in
+// `src/lib/scanOutcome.ts` so they stay testable outside a `.tsx`.
+import { classifyScan, type ScanOutcome } from "../lib/scanOutcome";
 import type { AppTheme } from "./themes";
 
 function createStyles(theme: AppTheme) {
@@ -173,6 +176,12 @@ function createStyles(theme: AppTheme) {
   });
 }
 
+/**
+ * Must stay at module scope, not in the render body: built per render, this
+ * remounts the camera subtree every time.
+ */
+const AnimatedCorner = Animated.createAnimatedComponent(View);
+
 export default function QrScanModal() {
   const { theme } = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -183,11 +192,17 @@ export default function QrScanModal() {
   const scannedRef = useRef(false);
   const [scanned, setScanned] = useState(false);
   const flash = useRef(new Animated.Value(0)).current;
+  // The last rejected scan. Same shape and copy source as `ReceiveSheet`'s,
+  // so there is one rejection taxonomy rather than two.
+  const [scanError, setScanError] = useState<
+    Extract<ScanOutcome, { kind: "rejected" }> | null
+  >(null);
 
   useEffect(() => {
     if (qrVisible) {
       scannedRef.current = false;
       setScanned(false);
+      setScanError(null);
       flash.setValue(0);
     }
   }, [qrVisible, flash]);
@@ -195,9 +210,24 @@ export default function QrScanModal() {
   const canScan = permission?.granted === true;
   const canRequest = permission?.canAskAgain !== false;
 
+  /**
+   * Classified through `classifyScan`, the same single parser the sheet, the
+   * deep link and the paste path use: any QR at all must not read as a
+   * success. A rejected scan does not latch, because the camera is still
+   * pointed at something and the next code should be read.
+   */
   const onScan = (data: string) => {
     if (!data || scannedRef.current) return;
+    const outcome = classifyScan(data);
+    if (outcome.kind === "rejected") {
+      // `warning`, not `error`: pointing the camera at the wrong thing is a
+      // soft miss the user fixes by moving the phone.
+      haptics.warning();
+      setScanError(outcome);
+      return;
+    }
     scannedRef.current = true;
+    setScanError(null);
     setScanned(true);
     haptics.actionDone();
     Animated.sequence([
@@ -212,20 +242,19 @@ export default function QrScanModal() {
         useNativeDriver: false,
       }),
     ]).start();
-    void resolveFromScan(data);
+    // The canonical `peardrop://<key>`, never the raw payload: the
+    // downstream record joins on the canonical form.
+    void resolveFromScan(outcome.link);
   };
 
-  // v5 polish: "Enter link manually" closes the scanner AND signals the
-  // Receive sheet to reopen with the paste input focused.
+  // "Enter link manually" closes the scanner and signals the Receive sheet
+  // to reopen with the paste input focused.
   const enterManually = () => requestManualEntry();
 
   const cornerColor = flash.interpolate({
     inputRange: [0, 1],
     outputRange: [theme.primary, theme.primary],
   });
-  // Wrap corners in Animated so we can flash on scan.
-  const AnimatedCorner = Animated.createAnimatedComponent(View);
-
   return (
     <Modal
       visible={qrVisible}
@@ -334,10 +363,15 @@ export default function QrScanModal() {
                 </View>
               </View>
             </View>
+            {/* "Got it — opening…" is reachable only for a code that really
+                is a PearDrop link. A rejected scan says what happened, and
+                the scanner keeps reading. */}
             <Text style={styles.hint}>
               {scanned
                 ? "Got it — opening…"
-                : "Point at a QR code to receive."}
+                : scanError
+                  ? `${scanError.title} — ${scanError.message}`
+                  : "Point at a QR code to receive."}
             </Text>
             <View style={styles.actions}>
               <Pressable

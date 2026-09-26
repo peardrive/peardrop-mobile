@@ -1,15 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * One-time educational hint for "how to back out of the OS picker without
- * selecting" (Phase ZZ, Sprint 2C). Some Android pickers — Google Drive
- * in particular — don't expose an obvious back affordance, so users can
- * get stuck not knowing they can swipe from the edge or tap the system
- * back button. We surface a brief toast the first time we detect a
- * cancelled picker, then never again.
- *
- * AsyncStorage pattern matches [`swipeHintStorage`](swipeHintStorage.ts):
- * single boolean, cached in memory for the session, best-effort persist.
+ * One-time hint about backing out of the OS picker without selecting. Some
+ * Android pickers expose no obvious back affordance, so a user can be stuck
+ * without knowing the edge swipe or the system back button works. Shown as
+ * a toast the first time a cancelled picker is detected, then never again.
  */
 
 const STORAGE_KEY = "peardrop.has-seen-picker-back-hint";

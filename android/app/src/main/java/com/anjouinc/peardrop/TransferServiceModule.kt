@@ -1,4 +1,4 @@
-package com.peardrop.mobile
+package com.anjouinc.peardrop
 
 import android.content.Context
 import android.content.Intent
@@ -109,17 +109,45 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
    * break the transfer it is describing.
    */
   @ReactMethod
-  fun update(title: String, text: String, percent: Double, promise: Promise) {
+  fun update(
+    title: String,
+    text: String,
+    percent: Double,
+    cancelLabel: String,
+    promise: Promise
+  ) {
     try {
       TransferService.updateNotification(
         reactApplicationContext,
         title,
         text,
-        percent.toInt()
+        percent.toInt(),
+        cancelLabel
       )
       promise.resolve("updated")
     } catch (e: Exception) {
       promise.resolve("error:${e.javaClass.simpleName}:${e.message ?: ""}")
+    }
+  }
+
+  /**
+   * was a Cancel tapped that could not be delivered to JS?
+   *
+   * The notification's Cancel emits `PeardropCancelAllTransfers` directly
+   * when a `ReactContext` is available, which is the expected path — the
+   * foreground service exists to keep the process alive, so one should be.
+   * This is the fallback for when it is not: the tap is recorded and the JS
+   * side drains it on its next foreground transition, so a cancel the user
+   * pressed is never silently lost.
+   *
+   * Clears the flag as it reads, so draining twice does not cancel twice.
+   */
+  @ReactMethod
+  fun drainPendingCancel(promise: Promise) {
+    try {
+      promise.resolve(TransferService.drainPendingCancel())
+    } catch (e: Exception) {
+      promise.resolve(false)
     }
   }
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  NativeModules,
   Platform,
   Pressable,
   ScrollView,
@@ -39,6 +40,7 @@ import {
 } from "../lib/debugLog";
 import {
   APP_VERSION,
+  APP_VERSION_CODE,
   BUILD_TYPE,
   DEV_GATE_SOURCE,
   IS_DEBUGGABLE,
@@ -91,9 +93,8 @@ import NameShareModal from "../ui/NameShareModal";
  * (`Math.max(4000, …)`), so this is the shortest run available.
  */
 /**
- * how long a probe verdict stays on screen. Longer than the 2.6 s
- * default because the operator is working down a list with a pen in hand and
- * may be reading it on the way back from an OEM settings screen.
+ * How long a probe verdict stays on screen. Longer than the default because
+ * it may be read on the way back from an OEM settings screen.
  */
 const PROBE_TOAST_MS = 6_000;
 
@@ -101,80 +102,77 @@ const SIMULATE_DURATION_MS = 4_000;
 /** Simulation tick. Completion can only land on a tick boundary. */
 const SIMULATE_TICK_MS = 500;
 /**
- * how long the simulation ACTUALLY takes — 3 s, not the 4 s
- * `SIMULATE_DURATION_MS` implies. 6I's label was 1 s optimistic because of
- * this gap, and the device run showed completions at ~14.0 s against a
- * promised 15 s.
- *
- * Where the second goes: the engine reads `earlyCompletePeers` as
- * `Number(opts.earlyCompletePeers || 1)`. 6I passed `0` to disable early
- * disconnect, but `0` is falsy, so `|| 1` silently restores it to 1. One
- * peer is therefore disconnected at `durationMs * 0.65` = 2600 ms, leaving
- * nobody connected; the next tick at 3000 ms sees `activeWeight <= 0` with
- * every peer having joined and completes via the `path=no-peers` branch —
- * exactly what 6I's log recorded.
- *
- * That coercion lives in `backend/`, which this sprint must not touch, so
- * the early disconnect is treated as the intended behaviour and the offset
- * is matched to it rather than fought. Completion is therefore
- * deterministic at `ceil(4000 * 0.65 / 500) * 500` = 3000 ms.
+ * How long the simulation actually takes, which is shorter than the nominal
+ * duration implies. One peer disconnects at `durationMs * 0.65`, leaving
+ * nobody connected, so the next tick completes the run. Matching the offset
+ * to that makes completion deterministic.
  */
 const SIMULATE_RUN_MS =
   Math.ceil((SIMULATE_DURATION_MS * 0.65) / SIMULATE_TICK_MS) * SIMULATE_TICK_MS;
 
 /**
- * the SUSTAINED simulate — a peer that stays connected.
- *
- * The primary instrument for test case A. The existing delayed simulate
- * cannot serve: it emits nothing for the whole delay (the engine's delayed
- * branch returns immediately without events), so `transfers` is empty and
- * the predicate is correctly false at the moment the protocol says to
- * background. Its real activity then lasts 2.6 s before the peer
- * disconnects, after which only 8A's 10-minute idle-host grace keeps the
- * predicate true — the wrong branch.
- *
- * Two argument changes make the peer stay attached, both RN-side; `backend/`
- * is untouched.
- *
- * `earlyCompletePeers: 0` is the one that matters. The engine reads it with
- * `??` rather than `||` precisely so zero is meaningful — its own comment
- * says zero means "no peer disconnects early". That removes the
- * `durationMs * 0.65` disconnect, which is the entire mechanism
- * SIMULATE_RUN_MS exists to model.
- *
- * `startDelayMs: 0` removes the wait. The peer connects during the RPC, so
- * the predicate is already true when the operator backgrounds.
- *
- * THE SIMULATE_RUN_MS COUPLING IS UNAFFECTED. That constant converts a
- * promised completion time into a start delay, and models the 0.65
- * disconnect. This instrument sets both inputs to zero, so it leaves the
- * arithmetic entirely rather than changing it. The existing 15 s / 1 min /
- * 3 min options still use it, unmodified.
- *
- * How long the peer actually stays: the single peer progresses at
- * `weight × fileBytes / durationMs`, and peer 0's weight is 0.75, so it
- * finishes at `durationMs / 0.75` — 20 minutes for the value below. Sized
- * so that even at weight 1.0 it would still hold the full 15 minutes the
- * label promises. Longer than needed is the safe direction: the run not
- * completing inside the test window costs nothing.
+ * The sustained simulate: a peer that stays connected for the whole run.
+ * `earlyCompletePeers: 0` is the load-bearing argument — the engine reads it
+ * with `??` and never `||`, so zero genuinely means "no peer disconnects
+ * early" and removes the 0.65 disconnect. `startDelayMs: 0` attaches the
+ * peer during the RPC. Sized long, since overrunning the window costs
+ * nothing and finishing early loses the measurement.
  */
 const SUSTAINED_DURATION_MS = 900_000;
 /**
- * 5 s, not the 500 ms the short simulate uses. `tickMs` sets event
- * granularity only — total duration is `fileBytes / (rate × weight)` and is
- * independent of it — so this trades nothing but log volume, turning 1,800
- * progress events into 180.
+ * Coarser than the short simulate's tick. `tickMs` sets event granularity
+ * only and total duration is independent of it, so this trades nothing but
+ * log volume.
  */
 const SUSTAINED_TICK_MS = 5_000;
 
-// dev-mode cards + demo panel are gone. The v5
-// redesign groups the surviving surfaces (Theme + follow-system + stats)
-// into a section list (Appearance / Support).
-//
-// the profile placeholder block, Edit Account, About and Report
-// a bug were removed — every one of them was a toast stub or a screen that
-// claimed to send something it never sent. Language survives because
-// "English" is a true statement about the app even unwired.
+/**
+ * The simulated download's nominal length, matched to the upload so the two
+ * rows compare directly in an exported log. The receive simulator advances
+ * at a flat rate with no peer-weight divisor, so the label is the duration.
+ */
+const SUSTAINED_DOWNLOAD_MS = 900_000;
+/** Same reasoning as SUSTAINED_TICK_MS: granularity only, 180 events. */
+const SUSTAINED_DOWNLOAD_TICK_MS = 5_000;
+/** A plausible receive size. Only ever a denominator — no bytes are moved. */
+const SUSTAINED_DOWNLOAD_BYTES = 256 * 1024 * 1024;
+/**
+ * The stall variant's onset. Inside the run window and well past the delay
+ * the watchdog needs to flip `stalled`, so a backgrounded run sees both the
+ * holding and the released state.
+ */
+const SIM_DOWNLOAD_STALL_AT_MS = 120_000;
+
+/**
+ * The generated build stamp, read from the native constant. `"unknown"`
+ * rather than `""` when the constant is absent: an empty row is
+ * indistinguishable from a build that has no stamp, and a build that cannot
+ * name itself gets its reports attributed to the wrong one.
+ */
+const BUILD_STAMP: string =
+  (NativeModules as { PeardropBuildInfo?: { buildStamp?: string } })
+    .PeardropBuildInfo?.buildStamp || "unknown";
+
+/**
+ * The worklet bundle id, taken from the backend context and never re-derived
+ * here: a second reader of the bundle can be fresh while the running worklet
+ * is stale. Read structurally, so the row shows `unknown` rather than
+ * breaking when the field is absent.
+ */
+function readWorkletBundleId(ctx: unknown): string {
+  const raw = (ctx as { workletBundleId?: unknown } | null | undefined)
+    ?.workletBundleId;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : "unknown";
+}
+
+/**
+ * A short prefix of the hash. The full id goes in the export log header,
+ * which is machine-read; this is the surface a person reads aloud, and the
+ * prefix is enough to tell two packs apart.
+ */
+function shortBundleId(id: string): string {
+  return id === "unknown" ? id : id.slice(0, 12);
+}
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -188,7 +186,9 @@ export default function SettingsScreen() {
     setMode,
   } = useAppTheme();
   const { show: showToast } = useToast();
-  const { runFakeUploadTest } = useBackend();
+  const backend = useBackend();
+  const { runFakeUploadTest, runFakeDownloadTest } = backend;
+  const workletBundleId = readWorkletBundleId(backend);
   const { delayMs, setDelayMs } = useSimulateDelay();
   const followSystem = mode === "system";
   const [stats, setStats] = useState<Stats>({
@@ -253,11 +253,10 @@ export default function SettingsScreen() {
   }, [refreshLogSize, debugEnabled]);
 
   /**
-   * Export: label prompt → bundle → share sheet → "Log shared?" confirm.
-   *
-   * The orchestrator owns the ordering guarantee (the log is only ever
-   * cleared on an explicit "Clear it"); this callback only supplies the
-   * side effects and reports the outcome.
+   * Export: label prompt, bundle, share sheet, then the shared confirm.
+   * The orchestrator owns the ordering guarantee that the log is cleared
+   * only on an explicit confirmation; this callback supplies the side
+   * effects and reports the outcome.
    */
   const onExportWithLabel = useCallback(
     async (label: string) => {
@@ -270,9 +269,8 @@ export default function SettingsScreen() {
           confirmClear: () =>
             askConfirm({
               title: "Log shared?",
-              // Deliberately explicit: Android can't tell us whether the
-              // share actually went through, so the user is the source of
-              // truth and needs to know what each button does.
+              // Android cannot report whether the share went through, so
+              // the user is the source of truth and each button says so.
               body:
                 "If the log reached its destination you can clear it to start fresh. " +
                 "Not sure? Keep it — nothing is lost either way.",
@@ -345,14 +343,9 @@ export default function SettingsScreen() {
 
   /**
    * Post a notification directly, bypassing the engine and
-   * `notifyTransferComplete` entirely.
-   *
-   * This exists so a failed device test can tell "the channel is wrong"
-   * apart from "the worklet was asleep". Going through
-   * `notifyTransferComplete` would reintroduce both the AppState guard and
-   * the dependency on a real transfer, which is exactly what needs
-   * isolating. Because it skips that guard, this one *does* show while the
-   * app is in the foreground — that is the point.
+   * `notifyTransferComplete`, so a failed device test can tell a wrong
+   * channel apart from a sleeping worklet. Skipping the guard is the point:
+   * this one does show while the app is in the foreground.
    */
   const onTestNotification = useCallback(async () => {
     try {
@@ -369,8 +362,8 @@ export default function SettingsScreen() {
           title: "PearDrop test notification",
           body: "If you can see this, the transfers channel is working.",
           sound: true,
-          // same accent as the real path, so this row still
-          // isolates the channel rather than also differing in appearance.
+          // The same accent as the real path, so this row isolates the
+          // channel rather than also differing in appearance.
           color: NOTIFICATION_ACCENT,
         },
         trigger: { channelId: TRANSFER_CHANNEL_ID },
@@ -388,18 +381,11 @@ export default function SettingsScreen() {
   }, [showToast]);
 
   /**
-   * fire a REAL `upload-complete` from the engine after a delay,
-   * so the tester can background the app and see whether the notification
-   * actually arrives.
-   *
-   * Deliberately not a shortcut to `notifyTransferComplete`: this goes
-   * engine → IPC → BackendProvider's upload-complete handler → the same
-   * AppState guard and the same wording every real transfer uses. A
-   * simulation that skipped that chain would prove nothing about it.
-   *
-   * The complement of "Send a test notification" above, not a replacement:
-   * that one bypasses the guard to isolate the channel, this one exercises
-   * the whole path. A failure in one and not the other localises the fault.
+   * Fire a real `upload-complete` from the engine after a delay, so the app
+   * can be backgrounded and the notification observed. Not a shortcut to
+   * `notifyTransferComplete`: it runs the whole chain, including the same
+   * AppState guard and wording a real transfer uses. A failure here and not
+   * in the direct test localises the fault.
    */
   const onSimulateComplete = useCallback(async () => {
     try {
@@ -410,15 +396,15 @@ export default function SettingsScreen() {
         return;
       }
       const res = await runFakeUploadTest({
-        // Subtract the simulation's real 3 s so the total lands on the
-        // delay the label promises. See SIMULATE_RUN_MS.
+        // Subtract the simulation's real run time so the total lands on the
+        // delay the label promises.
         startDelayMs: Math.max(0, delayMs - SIMULATE_RUN_MS),
         durationMs: SIMULATE_DURATION_MS,
         tickMs: SIMULATE_TICK_MS,
         peers: 1,
         forceSelfPeer: true,
-        // Engine floor. Kept minimal because the RN handler tallies a
-        // hosted completion into lifetime "sent" stats — see the report.
+        // Engine floor, kept minimal because a hosted completion tallies
+        // into the lifetime "sent" stats.
         totalBytes: 1024 * 1024,
       });
       if (!res?.ok) {
@@ -446,19 +432,11 @@ export default function SettingsScreen() {
   }, [delayMs, runFakeUploadTest, showToast]);
 
   /**
-   * fire one OEM candidate and report the outcome three ways.
-   *
-   * Three outcomes, not two. `not-found` is an ActivityNotFoundException —
-   * could not launch, and under Android 11+ package visibility that is
-   * genuinely ambiguous between "the activity is absent" and "the package is
-   * invisible to us". `error` is anything else, and carries its exception
-   * class: a SecurityException from a component that exists but is not
-   * exported is a different finding entirely, and collapsing the two into
-   * "didn't work" would discard it.
-   *
-   * The toast is for the operator standing in front of the phone; the
-   * `rn.probe.oem` log line written inside `runProbe` is the record. Both
-   * always, because a borrowed-device session is read afterwards.
+   * Fire one OEM candidate and report the outcome three ways, not two.
+   * `not-found` cannot distinguish an absent activity from one hidden by
+   * package visibility, and `error` carries its exception class, because a
+   * security failure on a component that exists is a different finding.
+   * The toast is for whoever holds the phone; the log line is the record.
    */
   const onProbe = useCallback(
     (candidate: ProbeCandidate) => async () => {
@@ -487,22 +465,15 @@ export default function SettingsScreen() {
     [showToast],
   );
 
-  // ---------------------------------------------------------------
-  // Phase 2B: the foreground service, as three harness rows.
-  //
-  // 6R's null result was measured on Xiaomi with Autostart off, where nothing
-  // but Autostart would have helped. On a Pixel or a Samsung a foreground
-  // service is the standard mechanism and has never been tried. Three rows
-  // rather than one, because the foreground start, the background start and
-  // the stop are three different questions.
-  // ---------------------------------------------------------------
+  // The foreground service, as three harness rows: the foreground start,
+  // the background start and the stop are three different questions.
   const [bgStartArmed, setBgStartArmed] = useState(isBackgroundStartArmed);
   useEffect(() => subscribeBackgroundStart(setBgStartArmed), []);
 
   /**
-   * whether the per-OEM fallback row has been earned. Subscribed
-   * rather than read once, so the row appears in the same moment the third
-   * bad window is recorded — the user may well be looking at this screen.
+   * Whether the per-OEM fallback row has been earned. Subscribed rather than
+   * read once, so the row appears the moment it is, with the user possibly
+   * looking at this screen.
    */
   const backgroundHealth = useBackgroundHealth();
   const fallbackReady = backgroundHealth
@@ -550,11 +521,10 @@ export default function SettingsScreen() {
   }, [reportService]);
 
   /**
-   * Arms (or disarms) the AppState handler — it does not start anything now.
-   * The start happens on the next transition to `background`, which is the
-   * path Android 12+ restricts and which this targets SDK 36 build is subject
-   * to. A ForegroundServiceStartNotAllowedException there is the result, and
-   * the native side resolves it as a value rather than throwing.
+   * Arms or disarms the AppState handler; it starts nothing now. The start
+   * happens on the next transition to background, which is the path modern
+   * Android restricts, and the native side resolves the restriction as a
+   * value rather than throwing.
    */
   const onArmBackgroundStart = useCallback(() => {
     if (!isForegroundServiceAvailable()) {
@@ -576,9 +546,8 @@ export default function SettingsScreen() {
   }, [showToast]);
 
   /**
-   * instrument (a): a simulate whose peer stays connected, so the
-   * predicate returns `upload` for the whole run rather than falling through
-   * to the idle-host grace window after 2.6 s.
+   * A simulate whose peer stays connected, so the predicate returns `upload`
+   * for the whole run rather than falling through to the idle-host grace.
    */
   const onSustainedSimulate = useCallback(async () => {
     try {
@@ -618,9 +587,63 @@ export default function SettingsScreen() {
   }, [runFakeUploadTest, showToast]);
 
   /**
-   * instrument (b): the forced override. Fallback, not primary —
-   * it bypasses `classifyTransfer` entirely, so it proves the service starts
-   * and stops, not that a real transfer satisfies the predicate.
+   * A sustained simulated download, the only instrument that makes
+   * `classifyTransfer` return `download` on hardware. "run" completes
+   * normally; "hold" pins at 100% forever, proving a stuck download looks
+   * different from a finished one; "stall" goes silent so the watchdog flips
+   * `stalled` and the service must release rather than hold a dead transfer.
+   */
+  const onSimulateDownload = useCallback(
+    async (variant: "run" | "hold" | "stall") => {
+      try {
+        const res = await runFakeDownloadTest({
+          durationMs: SUSTAINED_DOWNLOAD_MS,
+          tickMs: SUSTAINED_DOWNLOAD_TICK_MS,
+          totalBytes: SUSTAINED_DOWNLOAD_BYTES,
+          startDelayMs: 0,
+          shareName: `Simulated receive (${variant})`,
+          ...(variant === "hold" ? { holdAtPercent: 100 } : {}),
+          ...(variant === "stall"
+            ? { stallAtMs: SIM_DOWNLOAD_STALL_AT_MS, stallDurationMs: 0 }
+            : {}),
+        });
+        if (!res?.ok) {
+          showToast("Couldn't start the simulated download.", { kind: "error" });
+          return;
+        }
+        debugLog(
+          "warn",
+          "rn.probe.oem",
+          `simulated download started variant=${variant} drive=${res.driveId ?? "?"} ` +
+            `shareKey=${(res.shareKey ?? "").slice(0, 12)}… bytes=${res.totalBytes ?? "?"} ` +
+            `holdAtPercent=${res.holdAtPercent ?? 0} durationMs=${SUSTAINED_DOWNLOAD_MS}`
+        );
+        showToast(
+          variant === "hold"
+            ? "Pins at 100% and never completes — the row must say Finishing…, not Saved."
+            : variant === "stall"
+              ? "Goes silent after 2 min. Background now; the service must release."
+              : "Receiving. Background the app now, then lock.",
+          {
+            kind: "success",
+            title: `simulated download (${variant})`,
+            durationMs: PROBE_TOAST_MS,
+          }
+        );
+      } catch (err: unknown) {
+        showToast(
+          `Simulated download failed — ${String((err as Error)?.message || err)}`,
+          { kind: "error", durationMs: PROBE_TOAST_MS }
+        );
+      }
+    },
+    [runFakeDownloadTest, showToast]
+  );
+
+  /**
+   * The forced override, a fallback rather than the primary instrument: it
+   * bypasses `classifyTransfer`, so it proves the service starts and stops,
+   * not that a real transfer satisfies the predicate.
    */
   const [forcedActive, setForcedActiveState] = useState(isForcedTransferActive);
   const onToggleForcedActive = useCallback(() => {
@@ -641,9 +664,9 @@ export default function SettingsScreen() {
   }, [showToast]);
 
   /**
-   * put the record into the state three service-attributed
-   * freezes would have produced, so the prompt fires and the row appears
-   * without waiting for a device to actually defeat the service.
+   * Put the record into the state repeated service-attributed freezes would
+   * have produced, so the prompt and the row can be seen without waiting for
+   * a device to actually defeat the service.
    */
   const onForceFallback = useCallback(async () => {
     const next = await forceFallbackTriggered();
@@ -654,9 +677,8 @@ export default function SettingsScreen() {
   }, [showToast]);
 
   /**
-   * clear the streak, the sticky stamp and promptedVersion, so
-   * the prompt can be read again. Freeze history is preserved — see the
-   * writer.
+   * Clear the streak, the sticky stamp and the prompt version so the prompt
+   * can be seen again. Freeze history is preserved.
    */
   const onResetBackgroundHealth = useCallback(async () => {
     const next = await resetBackgroundHealthForTesting();
@@ -679,30 +701,10 @@ export default function SettingsScreen() {
   const activeThemeLabel = themes[themeId].label;
 
   /**
-   * Which element leads the Support card.
-   *
-   * The card clips to a rounded corner, so a top hairline on whatever
-   * renders first shows as a stray line hugging that corner. The
-   * test-notification row is build-gated, so "first" cannot be a static prop
-   * on it.
-   *
-   * the background row is now permanent, so it always leads in a
-   * release build and the Debugging row can never be first. Order here must
-   * match render order.
-   */
-  /**
-   * Which Support row renders first, so it can suppress its top hairline.
-   *
-   * the `"autostart"` case is gone with the row it named. Keeping
-   * it would have been worse than cosmetic — on a Xiaomi release build it
-   * would still have resolved to `"autostart"`, so NO row would have claimed
-   * `first`, and the fallback row would have worn a hairline against the
-   * card's rounded edge.
-   *
-   * `"none"` is the honest answer when no SettingsRow leads the card, which
-   * is now the common case: a release build on a device the service is
-   * working on shows no row here at all. The Debugging toggle that follows
-   * draws no border of its own and looks correct unaided.
+   * Which Support row renders first, so it can suppress its top hairline
+   * against the card's rounded corner. The leading row is build-gated, so
+   * this cannot be a static prop, and the order here must match render
+   * order. `"none"` is correct when no row leads the card at all.
    */
   const firstSupportRow: "test" | "battery" | "none" = IS_DEBUG_BUILD
     ? "test"
@@ -828,14 +830,10 @@ export default function SettingsScreen() {
       {/* Support section */}
       <SectionLabel theme={theme}>Support</SectionLabel>
       <View style={styles.sectionCard}>
-        {/* Posts straight to the transfers channel — no engine, no
-            AppState guard. Lets a tester confirm notifications work at all
-            before blaming a transfer for not announcing itself.
-
-            dev-gated. It had deliberately stayed in release as a
-            support tool for real bug reports; that call was reversed — a
-            release build should not offer a diagnostic that only means
-            something to us. */}
+        {/* Posts straight to the transfers channel, with no engine and no
+            AppState guard, to confirm notifications work at all before
+            blaming a transfer. Dev-gated: a release build should not offer
+            a diagnostic only its developers can read. */}
         {IS_DEBUG_BUILD ? (
           <SettingsRow
             theme={theme}
@@ -846,43 +844,13 @@ export default function SettingsScreen() {
             first={firstSupportRow === "test"}
           />
         ) : null}
-        {/* removed the always-present Xiaomi Autostart row that
-            stood here.
-
-            7A/7B made it permanent for a good reason at the time: the prompt
-            was one-shot, so a user who dismissed it had no way back and a
-            user who never froze never learned the option existed. But it
-            asked every Xiaomi owner to grant a permission before knowing
-            whether they needed it, and the 2026-09-13 runs showed most of
-            them do not — the foreground service sustained the engine on the
-            Redmi with Autostart OFF, outperforming Autostart's own
-            screen-locked run (2.0 s worst gap against 29 s).
-
-            The row below replaces it and inverts the default: nothing is
-            offered until this specific device has demonstrably defeated the
-            service three times, and then it stays for good. Same destination
-            on Xiaomi, same ladder, reached only by users who need it.
-
-            `openAutostartSettings()` and its ladder are deliberately kept —
-            see the note in openBackgroundSettings.ts. */}
-        {/* the fallback row.
-
-            Appears ONLY once the foreground service has demonstrably failed
-            on this device — three weighted service-attributed bad background
-            windows — and then stays, because the user has been told their
-            phone stops PearDrop and withdrawing the fix after one good
-            window would be worse than leaving it.
-
-            Before it triggers there is nothing to fix and no row: the
-            service handles the problem without asking, on every device
-            measured on 2026-09-13. This replaces 7A/7B's always-present
-            Autostart row, which asked everyone for a permission most of them
-            never needed.
-
-            Label and subtitle come from the same module the prompt reads, so
-            the setting named here is the one on the screen that opens. Both
-            destinations are global lists rather than PearDrop's own page, so
-            the subtitle has to say what to look for once you arrive. */}
+        {/* The fallback row appears only once the foreground service has
+            demonstrably failed on this device, and then stays: the user has
+            been told their phone stops PearDrop, and withdrawing the fix
+            after one good window would be worse than leaving it. Label and
+            subtitle come from the same module the prompt reads, so the
+            setting named here is the one on the screen that opens, and both
+            destinations are global lists rather than PearDrop's own page. */}
         {fallbackReady ? (
           <SettingsRow
             theme={theme}
@@ -895,15 +863,11 @@ export default function SettingsScreen() {
           />
         ) : null}
 
-        {/* the other half of the pair above. That row proves the
-            channel works; this one drives a real engine `upload-complete`
-            through the full notification path, including the AppState
-            guard — so it shows nothing unless the app is backgrounded.
-            Dev-only: the flag is false in release, so the whole subtree —
-            row, delay picker, and the useSimulateDelay subscription it
-            reads — is unreachable. As of 6W the test-notification row above
-            is gated on the same flag, so the pair appears and disappears
-            together. */}
+        {/* The other half of the pair above. That row proves the channel
+            works; this one drives a real engine `upload-complete` through
+            the full notification path including the AppState guard, so it
+            shows nothing unless the app is backgrounded. Dev-only, on the
+            same flag as the row above, so the pair appears together. */}
         {IS_DEBUG_BUILD ? (
         <View style={styles.debugRow}>
           <View style={{ flex: 1 }}>
@@ -916,9 +880,8 @@ export default function SettingsScreen() {
               is on screen. Pick a delay longer than a minute to test what
               happens once the system freezes the app.
             </Text>
-            {/* same Pressable + radio idiom as the theme list
-                above, laid out in a row because three short values don't
-                warrant full-width rows. */}
+            {/* Same pressable-radio idiom as the theme list above, laid out
+                in a row because three short values do not need full rows. */}
             <View style={styles.delayPicker}>
               {SIMULATE_DELAY_OPTIONS.map((ms) => {
                 const active = ms === delayMs;
@@ -955,10 +918,9 @@ export default function SettingsScreen() {
         </View>
         ) : null}
 
-        {/* debugging. The toggle itself is NOT dev-gated: it's a
-            real feature for bug reports, and the log export hanging off it
-            is the only way to get diagnostics off a user's device. Only the
-            instrumentation built on top of it is gated. */}
+        {/* The debugging toggle is not dev-gated: the log export hanging off
+            it is the only way to get diagnostics off a user's device. Only
+            the instrumentation built on top of it is gated. */}
         <View style={styles.debugRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.followLabel}>Debugging</Text>
@@ -1017,26 +979,39 @@ export default function SettingsScreen() {
           </View>
         ) : null}
 
-        {/* Read-only build identity. An operator checks this before starting
-            a ten-minute background run instead of discovering afterwards that
-            the log was empty; a 2026-09-06 session lost five runs that way.
-            `selectable` so the gate source can be copied into a report.
+        {/* The version row is ungated, because "read me the version" has to
+            be answerable on the build someone actually runs. Three
+            identifiers, because one is not enough: version and code name the
+            drop, the build stamp distinguishes two builds of the same drop,
+            and the worklet id names the packed backend inside it. The
+            worklet is stamped separately on purpose — a fresh RN bundle over
+            a stale worklet is the most common phantom bug here, and a
+            combined stamp would move on the RN rebuild and hide it. The
+            gate-state diagnostics below stay gated; a version does not. */}
+        <View style={styles.debugRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.followLabel}>Version</Text>
+            <Text style={styles.debugMeta} selectable>
+              {`${APP_VERSION} (${
+                APP_VERSION_CODE === null ? "?" : APP_VERSION_CODE
+              }) · ${BUILD_TYPE}`}
+            </Text>
+            <Text style={styles.debugMeta} selectable>
+              {`build ${BUILD_STAMP}`}
+            </Text>
+            <Text style={styles.debugMeta} selectable>
+              {`worklet ${shortBundleId(workletBundleId)}`}
+            </Text>
+          </View>
+        </View>
 
-            Gated, since 7C. It shipped ungated for one release because the
-            reasoning was "it must work in the build where everything else is
-            off" — which was about the INSTRUMENTED build, where the flag is
-            true anyway. It never needed to be ungated to do its job, and
-            ungating it put four lines of internal diagnostics in front of
-            users, led by "Instrumentation NOT ARMED", which reads as
-            something being broken.
-
-            The wording is now unconditional, because the gate and the text
-            read the same constant: inside this wrapper IS_DEBUG_BUILD is
-            true by construction, so a NOT ARMED branch here could never
-            render. The state it used to describe — an operator on a build
-            with the gate off — is now conveyed by the row's ABSENCE, and by
-            the export header's `instrument:` line, which is ungated and
-            still says NOT ARMED in exactly that case. */}
+        {/* Read-only instrumentation identity, checked before starting a
+            long background run rather than discovering afterwards that the
+            log was empty. `selectable` so the gate source can be pasted into
+            a report. The wording is unconditional because the gate and the
+            text read the same constant, so a not-armed branch here could
+            never render; that state shows as the row's absence, and in the
+            export header's ungated instrument line. */}
         {IS_DEBUG_BUILD ? (
         <View style={styles.debugRow}>
           <View style={{ flex: 1 }}>
@@ -1045,7 +1020,7 @@ export default function SettingsScreen() {
               Instrumentation ARMED — heartbeats and probe will be recorded.
             </Text>
             <Text style={styles.debugMeta} selectable>
-              {`${APP_VERSION} · ${BUILD_TYPE} · debuggable ${
+              {`debuggable ${
                 IS_DEBUGGABLE === null ? "unknown" : IS_DEBUGGABLE ? "yes" : "no"
               }`}
             </Text>
@@ -1056,36 +1031,16 @@ export default function SettingsScreen() {
         </View>
         ) : null}
 
-        {/* "Keep transfers awake (experimental)" was removed
-            here. Device runs on 2026-08-24 showed the counter-`resume()` it
-            drove made no difference in either direction — the worklet froze
-            with it on and off under battery restriction. It was fighting
-            SmartPower's process freeze, which `resume()` does not affect.
-            The suspend probe's *logging* survives in backend.ts, gated on
-            the debug-build flag and needing no toggle. */}
       </View>
 
-      {/* ---------------------------------------------------------------
-          the OEM background-settings test harness.
-
-          A TEST INSTRUMENT, not a feature. Nothing here is reachable from a
-          release build, and nothing here is wired into the shipping ladder
-          in openBackgroundSettings.ts — that stays exactly as it was.
-
-          Every row is visible on every device regardless of manufacturer,
-          deliberately. The harness exists to find out which of these intents
-          resolve where, and that requires trying the non-matching ones: a
-          Samsung component that unexpectedly resolves on a Xiaomi is a
-          finding, and gating rows by manufacturer would hide it.
-
-          Android 11+ package visibility means queryIntentActivities returns
-          nothing for undeclared packages, so there is no honest way to show
-          "resolves / doesn't resolve" BEFORE the tap. The outcome is reported
-          after the attempt instead. This sprint adds no <queries> block.
-
-          One row, one intent, no fall-through. A ladder would hide which rung
-          worked, which is precisely what needs measuring.
-          --------------------------------------------------------------- */}
+      {/* The OEM background-settings test harness: an instrument, not a
+          feature, unreachable from a release build and not wired into the
+          shipping ladder. Every row shows on every device on purpose — a
+          component that resolves on the wrong manufacturer is a finding, and
+          gating by manufacturer would hide it. Package visibility makes
+          pre-tap resolution unknowable, so the outcome is reported after the
+          attempt. One row, one intent, no fall-through: a ladder would hide
+          which rung worked. */}
       {IS_DEBUG_BUILD ? (
         <>
           <SectionLabel theme={theme}>
@@ -1118,27 +1073,50 @@ export default function SettingsScreen() {
               />
             ))}
 
-            {/* the foreground service. Same card, because it is the
-                same question asked a different way — "can this app keep
-                running" — and the operator works down one list.
+            {/* The foreground service shares this card because it answers
+                the same question a different way. It is declared only in the
+                instrumented release build, and the bridge module is
+                registered on the same flag, so any other build reports
+                "unavailable" and says why.
 
-                The service is declared only in the instrumented release
-                build (src/instrumented/AndroidManifest.xml, added to the
-                release source set under -PdevInstrumentation=true), and the
-                bridge module is registered on the same flag. In any other
-                build these three report "unavailable" and say why. */}
-            {/* the two test-case-A instruments, in priority
-                order. The first exercises the real `upload` branch of
-                `isTransferActive()`; the second bypasses the predicate
-                entirely and is the fallback. The decision log distinguishes
-                them — `upload=1` versus `forced=true` — so a run can never
-                be mistaken for the other afterwards. */}
+                Two instruments in priority order: the first exercises the
+                real upload branch of the predicate, the second bypasses the
+                predicate and is the fallback. The decision log distinguishes
+                them, so one run is never mistaken for the other. */}
             <SettingsRow
               theme={theme}
               icon="cloud-done-outline"
               label="Simulate sustained upload (15 min)"
               subtitle="Peer stays connected — exercises the real upload branch"
               onPress={() => void onSustainedSimulate()}
+              trailing="chevron-forward"
+            />
+            {/* The receive-side counterparts: the only instruments that make
+                the predicate return `download` on hardware. The decision
+                line prints `simulated=N` alongside `download=N`, so a
+                synthetic run is never mistaken for a real receive. */}
+            <SettingsRow
+              theme={theme}
+              icon="cloud-download-outline"
+              label="Simulate sustained download (15 min)"
+              subtitle="Real received row — exercises the download branch"
+              onPress={() => void onSimulateDownload("run")}
+              trailing="chevron-forward"
+            />
+            <SettingsRow
+              theme={theme}
+              icon="pause-circle-outline"
+              label="Simulate download stuck at 100%"
+              subtitle="Must read Finishing…, never Saved"
+              onPress={() => void onSimulateDownload("hold")}
+              trailing="chevron-forward"
+            />
+            <SettingsRow
+              theme={theme}
+              icon="alert-circle-outline"
+              label="Simulate download that stalls"
+              subtitle="Goes silent after 2 min — the service must release"
+              onPress={() => void onSimulateDownload("stall")}
               trailing="chevron-forward"
             />
             <SettingsRow
@@ -1151,20 +1129,12 @@ export default function SettingsScreen() {
               trailing="chevron-forward"
             />
 
-            {/* the fallback instruments.
-
-                These write PERSISTED state, unlike the session-only
-                forced-active flag above — the fallback's whole behaviour is
-                "sticky once earned", and a session-only version could not
-                test stickiness. The reset row is what undoes them, and it
-                also closes the gap carried since 7B: prompt copy could
-                previously be seen exactly once per install.
-
-                Both log under `rn.fallback.forced`, saying in the line
-                itself that the state was written rather than measured. Same
-                principle as `forced=true` on the decision line — an
-                exported log must never show a fallback that was really a
-                test. */}
+            {/* The fallback instruments write persisted state, unlike the
+                session-only forced-active flag above: the fallback is
+                sticky once earned, and a session-only version could not
+                test stickiness. The reset row undoes them. Both log that
+                the state was written rather than measured, so an exported
+                log never shows a fallback that was really a test. */}
             <SettingsRow
               theme={theme}
               icon="warning-outline"
@@ -1209,24 +1179,14 @@ export default function SettingsScreen() {
               trailing="chevron-forward"
             />
 
-            {/* who this device says it is.
-
-                Read FIRST, before any row is tapped — a result is only
-                interpretable next to the device that produced it, and the
-                whole block is `selectable` so it can be copied into a report
-                rather than transcribed by hand off a borrowed phone.
-
-                MANUFACTURER and BRAND lead, and are two fields rather than
-                two spellings of one. `isXiaomiDevice()` matches MANUFACTURER;
-                AutoStarter — the source for most of the candidates above —
-                dispatches on BRAND. On a Redmi both agree and the question
-                never arises; on a rebranded or carrier build it will, and
-                which field is the right one is exactly what these rows are
-                collected to answer.
-
-                The last line is the live result of `isXiaomiDevice()` itself,
-                not a re-derivation of its body, so the readout cannot drift
-                from the predicate it is measuring. */}
+            {/* Who this device says it is, read before any row is tapped: a
+                result is only interpretable next to the device that produced
+                it, and the block is `selectable` so it can be copied rather
+                than transcribed. MANUFACTURER and BRAND are separate fields
+                because the predicate and the intent ladder key off different
+                ones, and where they disagree that is the finding. The last
+                line is the live predicate result, never a re-derivation, so
+                the readout cannot drift from what it measures. */}
             <View style={styles.identityPanel}>
               <Text style={styles.followLabel}>Device identity</Text>
               <Text style={styles.followHint}>

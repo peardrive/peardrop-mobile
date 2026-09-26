@@ -41,8 +41,8 @@ export type GrabIntoFolderSheetProps = {
 
 /**
  * Post-selection sheet for the "grab into folder" flow: editable folder
- * name, file checklist, Pick-all toggle, full-width Grab CTA. Purely
- * presentational — parent owns the download plumbing.
+ * name, file checklist, Pick-all toggle, full-width Grab CTA.
+ * Presentational only; the parent owns the download plumbing.
  */
 export default function GrabIntoFolderSheet({
   visible,

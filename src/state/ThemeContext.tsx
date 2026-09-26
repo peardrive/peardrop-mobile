@@ -20,12 +20,9 @@ const STORAGE_KEY_ID = "peardrop.themeId";
 const STORAGE_KEY_MODE = "peardrop.themeMode";
 
 /**
- * Theme strategy:
- *   - "manual": use the theme the user picked explicitly.
- *   - "system": follow the OS color scheme. We map to our default dark
- *     ("void") when the system is dark and our flagship light ("paper")
- *     when the system is light. If the user picks specific light/dark
- *     themes later this will be extended to remember both.
+ * Theme strategy. "manual" uses the theme the user picked explicitly;
+ * "system" follows the OS color scheme, mapping to the default dark theme
+ * when the system is dark and the default light one when it is light.
  */
 export type ThemeMode = "manual" | "system";
 
@@ -81,7 +78,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Only subscribe to Appearance while we're actually following it.
+  // Only subscribe to Appearance while the system scheme is being followed.
   useEffect(() => {
     if (mode !== "system") return;
     const sub = Appearance.addChangeListener(({ colorScheme }) => {

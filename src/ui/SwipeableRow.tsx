@@ -22,35 +22,25 @@ type Props = {
   accessibilityLabel?: string;
   containerStyle?: StyleProp<ViewStyle>;
   /**
-   * Background color for the moving "front" surface. Must be opaque so the
-   * red delete backer doesn't bleed through gaps in row content. Defaults
-   * to `theme.bg` — the only AppTheme color guaranteed to be fully opaque
-   * across all 10 themes. (Was `theme.card` until Phase BB; that's
-   * translucent — alpha 0.05–0.08 — in 8 of 10 themes, which let the row's
-   * red `theme.danger` background bleed through at rest. See Phase BB
-   * notes in CHANGELOG.) Pass an explicit color when the row's parent has
-   * a different backdrop and you want the front to match.
+   * Background color for the moving "front" surface. Must be opaque or the
+   * red delete backer bleeds through gaps in the row content. Defaults to
+   * `theme.bg`, the only color guaranteed opaque in every theme; `theme.card`
+   * is translucent in most. Pass a color when the parent backdrop differs.
    */
   frontBackground?: string;
   /**
-   * One-shot peek animation for the swipe-discoverability cue (Phase W.1).
-   * When this transitions to true, the row slides ~30 px left over 400 ms,
-   * holds 200 ms, then slides back over 400 ms — total ~1000 ms. Calls
+   * One-shot peek animation cueing that the row can be swiped. Calls
    * `onPeekDone` when the sequence finishes so the parent can clear the
-   * trigger and persist the "seen" flag. Subsequent transitions to true
-   * after that are no-ops in the parent (the AsyncStorage flag prevents
-   * re-firing). PanResponder is unaffected — peek snaps cleanly to 0
-   * before any user gesture can race it.
+   * trigger and persist the seen flag. The pan responder is unaffected:
+   * peek snaps to 0 before any user gesture can race it.
    */
   peek?: boolean;
   onPeekDone?: () => void;
   /**
-   * Imperative close-from-outside trigger. When this value changes (any
-   * non-equal value vs. the previous render), the row snaps back to its
-   * resting position. Used by parents that take a deliberate action after
-   * `onDelete` fires (e.g. open a confirmation modal) and then need to
-   * close the swipe regardless of whether the user confirmed or cancelled.
-   * Pass `undefined` (or a stable value) to opt out.
+   * Close-from-outside trigger: any change of value snaps the row back to
+   * rest. For parents that open a confirmation after `onDelete` and must
+   * close the swipe whether the user confirms or cancels. Pass `undefined`
+   * or a stable value to opt out.
    */
   closeSignal?: number | string | boolean;
 };
@@ -60,16 +50,11 @@ const REVEAL_THRESHOLD = -REVEAL_WIDTH * 0.4;
 const COMMIT_THRESHOLD = -REVEAL_WIDTH * 1.6;
 
 /**
- * Swipe-to-delete row built on Animated + PanResponder so we don't drag in
- * react-native-gesture-handler / reanimated as new native deps. Behavior:
- *
- *  - Drag left to peek the delete affordance; release past 40% of REVEAL_WIDTH
- *    snaps it open, otherwise it springs back closed.
- *  - Drag past 1.6× REVEAL_WIDTH commits delete on release (long flick).
- *  - PanResponder only claims movement when horizontal motion dominates, so
- *    the parent FlatList keeps its vertical scroll.
- *  - accessibilityActions exposes a "delete" action for TalkBack users who
- *    can't gesture.
+ * Swipe-to-delete row built on Animated and PanResponder, to avoid adding a
+ * gesture library as a native dependency. The responder claims movement only
+ * when horizontal motion dominates, so the parent list keeps its vertical
+ * scroll, and an accessibility action exposes delete to users who cannot
+ * gesture.
  */
 export default function SwipeableRow({
   children,
@@ -87,10 +72,8 @@ export default function SwipeableRow({
   const frontBg = frontBackground ?? theme.bg;
   const translateX = useRef(new Animated.Value(0)).current;
   const offsetRef = useRef(0);
-  // Phase W.1: peek animation. Drives translateX through a one-shot
-  // -30 → hold → 0 sequence. We track `running` so a re-render with
-  // peek still true (e.g., parent re-renders before clearing) doesn't
-  // re-trigger.
+  // Tracked so a re-render while `peek` is still true does not re-trigger
+  // the one-shot sequence.
   const peekRunning = useRef(false);
 
   const commit = () => {
@@ -126,11 +109,8 @@ export default function SwipeableRow({
         translateX.setValue(0);
       },
       onPanResponderMove: (_, gs) => {
-        // Cap so the combined translation never goes past the resting
-        // position (0). From a revealed state (offset = -REVEAL_WIDTH),
-        // the max allowed positive dx is +REVEAL_WIDTH, which lets the
-        // user drag the row back to close — the piece the earlier
-        // `Math.min(0, gs.dx)` implementation blocked.
+        // Cap so the combined translation never passes the resting position.
+        // From a revealed state this still lets the user drag back to close.
         const maxDx = -offsetRef.current;
         const dx = Math.min(maxDx, gs.dx);
         translateX.setValue(dx);
@@ -188,7 +168,7 @@ export default function SwipeableRow({
     ]);
     seq.start(({ finished }) => {
       peekRunning.current = false;
-      // Make sure we land at exactly 0 in case the animation was interrupted.
+      // Land at exactly 0 in case the animation was interrupted.
       if (!finished) translateX.setValue(0);
       offsetRef.current = 0;
       onPeekDone?.();

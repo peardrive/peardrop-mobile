@@ -42,9 +42,9 @@ export type ShareRowProps = {
   /** Row divider at top. `false` on the first row of the list. */
   showTopDivider?: boolean;
   /**
-   * v5 multi-select: when true, the row swaps the kebab for a leading
-   * checkbox and forwards taps to `onPress` as a toggle-selection
-   * shortcut. Chevron stays for bundles (still expandable).
+   * Multi-select: the row swaps the kebab for a leading checkbox and
+   * forwards taps to `onPress` as a toggle. The chevron stays for bundles,
+   * which remain expandable.
    */
   selectionMode?: boolean;
   /** Only meaningful when `selectionMode` is true. */
@@ -52,9 +52,8 @@ export type ShareRowProps = {
 };
 
 /**
- * v5 list row. Thumbnail tile (image preview or type icon), name + color-
- * coded status sub-line, optional inline star + pin, optional inline stop-
- * circle while sharing, kebab. Wraps in SwipeableRow at the call site.
+ * List row: thumbnail tile, name, color-coded status sub-line, optional
+ * inline star and pin, and a kebab. Wrapped in SwipeableRow at the call site.
  */
 export default function ShareRow({
   iconName,
@@ -107,9 +106,8 @@ export default function ShareRow({
             resizeMode="cover"
           />
         ) : isBundle ? (
-          // Unified folder treatment: outline glyph in the brand green
-          // on the same subtle-surface tile every folder uses across
-          // the app (list row, kebab header, info modal, folder modal).
+          // One folder treatment everywhere: outline glyph in the brand
+          // green on the same subtle-surface tile every folder surface uses.
           <Ionicons name="folder-outline" size={28} color={theme.primary} />
         ) : (
           <Ionicons name={iconName} size={26} color={theme.text} />
@@ -225,9 +223,8 @@ function createStyles(theme: AppTheme) {
       width: 48,
       height: 48,
       borderRadius: 12,
-      // v5: filled tile (cardStrong) for non-image thumbs so video/audio/doc
-      // read as tiles-with-glyph rather than thin outlined icons. Folders
-      // override with theme.secondary at the call site.
+      // Filled tile for non-image thumbs, so video, audio and documents read
+      // as tiles with a glyph rather than thin outlined icons.
       backgroundColor: theme.cardStrong,
       borderWidth: 1,
       borderColor: theme.border,

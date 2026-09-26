@@ -19,26 +19,10 @@ export type BottomSheetProps = {
   /** Optional sheet title (shown at top-left, bold). */
   title?: string;
   /**
-   * Shows a filled circle-X close button top-right when true. Defaults to a
-   * bare muted close.
-   *
-   * Both branches now draw a `muted` glyph, so the fill is the only thing
-   * that varies — hence the name.
-   *
-   * Called `dangerClose` until Sprint 6W, because the circle used to be
-   * filled with `theme.danger`. Dismissing a sheet destroys nothing, and
-   * every other dismiss control in the app is muted (see `closeMuted`
-   * below, Toast, TransferCard), so the red read as a destructive warning
-   * it had no business making. It was also a contrast failure in Paper and
-   * Pear, where a near-black `onPrimary` glyph sat on `#b91c1c` at ~2.8:1.
-   * 6V moved it to a neutral `tabBadgeBg` fill; 6W renamed the prop to
-   * match. `theme.danger` is still correct for genuinely destructive
-   * controls — ConfirmModal's destructive button, SwipeableRow's delete,
-   * FolderContentsModal's "Stop sharing".
-   *
-   * Note: `design_process/*.md` still describe this as `dangerClose` with a
-   * red circle-X. Those are a record of the original deck, not of current
-   * behaviour.
+   * Shows a filled circle-X close button top-right; otherwise a bare close.
+   * Both branches draw a `muted` glyph on a neutral fill. Dismissing a sheet
+   * destroys nothing, so `theme.danger` stays reserved for genuinely
+   * destructive controls.
    */
   filledClose?: boolean;
   /** Show the drag handle at top of sheet. Default true. */
@@ -47,24 +31,18 @@ export type BottomSheetProps = {
   maxHeight?: string | number;
   /**
    * Inset the sheet from the screen's left/right edges so it reads as a
-   * floating card rather than edge-to-edge. Also bumps the top corner
-   * radius. Off by default to preserve full-width behavior for existing
-   * callers.
+   * floating card, and bump the top corner radius. Off by default: existing
+   * callers rely on full width.
    */
   sideInset?: boolean;
   children?: React.ReactNode;
 };
 
 /**
- * Base bottom-sheet component: full-screen scrim (tap to dismiss) + safe-
- * area-inset sheet container + optional grab handle + optional title bar
- * with close button.
- *
- * Uses `theme.bg` for the sheet background — the only token that is
- * guaranteed opaque across every theme (many themes' `theme.card` is a
- * translucent rgba, which would let the underlying UI bleed through the
- * sheet body — the exact bug that surfaced in Send/Receive/Kebab on
- * v5.) Same lesson as Phase Y in the original SharePreviewModal.
+ * Base bottom-sheet: tap-to-dismiss scrim, safe-area-inset container,
+ * optional grab handle and title bar. Uses `theme.bg` for the sheet
+ * background, the only token guaranteed opaque across every theme; many
+ * themes' `theme.card` is translucent and lets the UI underneath bleed in.
  */
 export default function BottomSheet({
   visible,

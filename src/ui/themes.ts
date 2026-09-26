@@ -132,9 +132,8 @@ const paperTheme: AppTheme = {
   // zinc-600 (#52525b) pushes small-text contrast above WCAG AA (~7:1).
   muted: "#52525b",
   primary: "#84cc16",
-  // Contrast audit: WCAG prefers deeper greens for accent text over white
-  // cards; primaryMuted moved to #4d7c0f (lime-700) for border/checkbox
-  // secondary states.
+  // A deeper green for accent text over white cards, used by border and
+  // checkbox secondary states, so the contrast holds.
   primaryMuted: "#4d7c0f",
   secondary: "#0891b2",
   secondaryDark: "#0e7490",
@@ -366,10 +365,8 @@ export const THEME_ORDER: ThemeId[] = [
 ];
 
 /**
- * IDs of the themes whose backgrounds are light (i.e., need dark status-bar
- * icons for contrast). Consumed by Phase MMM's ThemedRoot in app/index.tsx
- * to pick the right `StatusBar barStyle`. Add new light themes here when
- * they're introduced; defaulting to "dark text on light bg" is a one-line
- * change away from defaulting to "light text on dark bg" otherwise.
+ * IDs of the themes with light backgrounds, which need dark status-bar icons
+ * for contrast. Add a new light theme here when it is introduced: a theme
+ * missing from this list gets light icons on a light bar.
  */
 export const LIGHT_THEME_IDS: ThemeId[] = ["pear", "paper", "cream"];

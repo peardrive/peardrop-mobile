@@ -1,17 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * One-time discovery flag for the swipe-to-delete gesture. Once the user
- * has seen the peek animation (or explicitly cleared the flag from
- * Settings → Demo & testing), this flips to true and the animation never
- * fires again unless reset.
- *
- * Shared across both swipeable lists (Share bundles, Receive downloaded
- * files): seeing the peek on either list counts as discovery for both.
- *
- * Built on AsyncStorage rather than RNFS because it's a single boolean
- * and survives reinstalls more reliably (matches the devModeStorage
- * pattern from Phase J.1).
+ * One-time discovery flag for the swipe-to-delete gesture: once the peek
+ * animation has been seen it never fires again unless the flag is reset.
+ * Shared across both swipeable lists, so seeing the peek on either counts
+ * as discovery for both.
  */
 
 const STORAGE_KEY = "peardrop.has-seen-swipe-hint";

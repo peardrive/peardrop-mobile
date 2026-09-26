@@ -48,10 +48,8 @@ describe("ladderFor — autostart", () => {
   });
 
   test("never includes the per-app permissions editor", () => {
-    // APP_PERM_EDITOR was rung 1 for one sprint. It resolves, wins, and lands
-    // on a page containing only "Other permissions" — Autostart is not on it
-    // on HyperOS V816. Verified on device 2026-09-07. Re-adding it would
-    // shadow both working rungs below.
+    // APP_PERM_EDITOR resolves and wins, but lands on a page that does not
+    // carry Autostart, so it would shadow both working rungs below.
     expect(ladderFor("autostart", "Xiaomi")).not.toContain(
       "miui-autostart-perm-editor" as unknown as CandidateLabel
     );
@@ -118,10 +116,8 @@ describe("ladderFor — invariants across both kinds", () => {
 
 describe("ladderFor('fallback')", () => {
   test.each(XIAOMI)("%s goes to Autostart, NOT the battery screen", (m) => {
-    // Measured 2026-09-13: with the battery restriction REMOVED and no
-    // service, the Redmi still produced a 115 s stall and a completion 49 s
-    // late. Battery is the weakest lever on that platform, so sending a
-    // Xiaomi user there would send them to the screen known not to help.
+    // With the battery restriction removed and no service, the Redmi still
+    // stalled and completed late: battery is the weakest lever there.
     expect(ladderFor("fallback", m)).toEqual([
       "miui-autostart-op",
       "miui-autostart-management",

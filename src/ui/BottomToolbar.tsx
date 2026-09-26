@@ -12,9 +12,9 @@ export type BottomToolbarProps = {
 };
 
 /**
- * v5 floating bottom toolbar: three circular icon-only buttons sitting on
- * a lighter parent panel (`theme.card` fill + border), lifted off the
- * bottom edge so it reads as a floating bar rather than flush chrome.
+ * Floating bottom toolbar: three circular icon-only buttons on a lighter
+ * parent panel, lifted off the bottom edge so it reads as a floating bar
+ * rather than flush chrome.
  */
 export default function BottomToolbar({
   onSend,
@@ -92,9 +92,8 @@ function createStyles(theme: AppTheme) {
       gap: 36,
       paddingHorizontal: 28,
       paddingVertical: 12,
-      // Lighter parent to group the three buttons into a visual unit
-      // (per design deck). theme.card is opaque in every theme so the
-      // panel reads as a distinct floating card, not a translucent tint.
+      // Lighter parent groups the three buttons into a visual unit.
+      // theme.card is opaque in every theme, so it reads as a card not a tint.
       backgroundColor: theme.card,
       borderRadius: 999,
       borderWidth: 1,

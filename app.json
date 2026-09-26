@@ -2,7 +2,7 @@
   "expo": {
     "name": "PearDrop",
     "slug": "peardrop-mobile",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "newArchEnabled": true,
     "orientation": "portrait",
     "scheme": ["peardrop.mobile", "peardrop"],
@@ -16,7 +16,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.peardrop.mobile"
+      "bundleIdentifier": "com.anjouinc.peardrop"
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +24,8 @@
         "monochromeImage": "./assets/images/monochrome-icon.png",
         "backgroundColor": "#201e1f"
       },
-      "package": "com.peardrop.mobile"
+      "package": "com.anjouinc.peardrop",
+      "versionCode": 2
     },
     "plugins": [
       [

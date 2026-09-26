@@ -1,35 +1,14 @@
-// structured engine errors.
+// Structured engine errors. Every engine failure — thrown or returned via
+// {ok:false, error} — is an EngineError carrying a dot-namespaced `category`
+// stable across releases, a short machine-readable `cause` that RN
+// pattern-matches on, a human-readable `message` never used for control flow,
+// and an optional JSON-serializable `detail`.
 //
-// One base class, one convention. Every engine failure — thrown or
-// returned via {ok:false, error} — is an EngineError with:
+// `JSON.stringify` calls `toJSON()` automatically, so an instance survives the
+// RPC boundary and RN receives a plain object of the same shape; `toString()`
+// returns the message so a defensive `String(err)` in RN degrades cleanly.
 //
-//   - `category`: a dot-namespaced bucket (e.g. "receive.stall",
-//     "manifest.write-fail"). Stable across releases. Callers may
-//     branch on category prefix if useful.
-//   - `cause`: a short machine-readable identifier within the category
-//     (e.g. "file-stall", "peer-path-traversal"). This is what RN
-//     pattern-matches on.
-//   - `message`: human-readable, used in logs and (eventually) in
-//     user-visible copy. Never used for control flow.
-//   - `detail?`: optional structured payload — original error code,
-//     offending key, size, etc. Must be JSON-serializable.
-//
-// Wire transport. `toJSON()` produces a plain object with the four
-// fields; `JSON.stringify` calls it automatically, so an EngineError
-// instance survives the RPC boundary intact and RN receives a plain
-// object shaped identically. `toString()` returns the message so
-// defensive `String(err)` in RN code degrades cleanly.
-//
-// The taxonomy is documented in claude_doc.md §8 "Error taxonomy" and
-// in Unify_process/proposal.md §5.5. Keep the two in sync when adding
-// categories.
-//
-// the taxonomy now self-records. Every EngineError logs
-// itself at construction with category + cause + detail intact, so the
-// ~25 `failure()` sites, the 11 bridge wrappers and `outerCatchReply`
-// all became instrumented in one edit — no per-site logging needed. This
-// was the highest-value / lowest-effort item in the gap map: the
-// structure already existed, nothing was capturing it.
+// Construction logs the error, so no call site needs its own logging.
 
 import { blog, describeError } from "./debug-log.mjs";
 
@@ -60,10 +39,9 @@ export class EngineError extends Error {
   }
 }
 
-// Wrap an arbitrary caught value (usually from bare-fs, hyperdrive, or
-// hyperswarm) into an EngineError. Preserves the underlying error's
-// message and code where useful; assigns a fallback category / cause
-// when the caller doesn't have a more specific one.
+// Wrap an arbitrary caught value into an EngineError, preserving the
+// underlying message and code and falling back to a generic category / cause.
+// An already-typed error passes through, so wrapping is idempotent.
 export function wrapError(err, { category, cause, message, detail } = {}) {
   if (err instanceof EngineError) {
     // Already typed (and already logged at construction) — record the
@@ -83,9 +61,7 @@ export function wrapError(err, { category, cause, message, detail } = {}) {
   });
 }
 
-// Small helper for the common failure-return pattern. Reads left-to-right:
-//   return failure("receive", "invalid-link", "expect peardrop:// + 64 hex");
-// Produces the {ok:false, error: EngineError} shape.
+// Produces the {ok:false, error: EngineError} failure-return shape.
 export function failure(category, cause, message, detail) {
   return {
     ok: false,

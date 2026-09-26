@@ -1,46 +1,42 @@
 // Manifest load/save for the mobile engine.
 //
-// reduced from a full recovery chain to a
-// non-destructive four-rule loader that mirrors desktop v0.24.0's
-// approach. The filename stayed "manifest-recovery.mjs" so engine
-// imports don't churn, but "recovery" is no longer what this module
-// does — it just loads and saves.
+// Despite the filename this is a non-destructive loader: it parses or starts empty,
+// never prunes entries, never touches drive folders, and backs up a corrupted manifest.
 //
-// The four rules:
-//   1. Parse or start empty. If drives-manifest.json parses as valid
-//      JSON with the expected top-level shape, use it. Otherwise back
-//      it up as <path>.corrupted.<epoch-ms> and return an empty
-//      manifest to the engine.
-//   2. Never prune entries. This loader does not compare manifest
-//      entries against the on-disk drives folder. Missing storage is a
-//      per-drive concern that engineHydrateDrives handles at open time.
-//   3. Never touch drive folders. This loader reads the manifest file
-//      only. Corestore folders are inspected by the engine (during
-//      hydrate) or removed by the engine (during in-flight cleanup and
-//      user-initiated delete), never here.
-//   4. Backup on failure. Any corrupt / mis-shaped / unreadable
-//      manifest gets backed up with .corrupted.<timestamp> before the
-//      empty state is returned. Multiple backups may accumulate across
-//      boots; that is fine (they're small; they preserve forensic
-//      state; the user can inspect them).
-//
-// Why the reduction: Sprint 3D landed a four-step recovery chain
-// (partial-JSON salvage, rebuild-from-drives-folder, etc.) ported from
-// desktop v0.23.1. Desktop v0.24.0 subsequently deleted that same
-// chain, citing production data loss — the `validateAndSync` pruning
-// step would delete every manifest entry when the drives folder was
-// transiently unreadable. Sprint 3P closed the specific "torn write"
-// motivator for the recovery chain via atomic manifest writes; the
-// rebuild-from-scan path was theoretical (no known real user hit it);
-// the partial-JSON salvage covered the same failure mode Sprint 3P
-// closed. So the whole chain was replaced with this loader.
-//
-// See Unify_process/proposal.md §3 (the decision point) and Sprint 3Q
-// changelog for the full rationale.
+// A non-ENOENT read failure must never fall through to an empty manifest that the next
+// save writes over the intact file, so an unreadable path is retried, then marked unsafe
+// to write and reported by `isManifestUnavailable()`.
 
 import fs from "bare-fs/promises";
 
 import { atomicWriteJson } from "./atomic-save.mjs";
+
+// Read-retry schedule, in ms between attempts. Four attempts total: short
+// enough that boot is not visibly delayed, long enough to ride out an OS
+// scanner holding the file, a permission race after a restore, or a brief
+// EBUSY.
+const READ_RETRY_BACKOFF_MS = [50, 150, 400];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Manifest paths that exist but could not be read. A path in this set must
+// never be written over: the bytes on disk are the user's only copy of their
+// shares, and an unread file cannot be shown to be a subset of memory.
+//
+// Keyed by path so one manifest cannot poison another. Cleared by a
+// subsequent successful or ENOENT load of the same path.
+const unreadablePaths = new Set();
+
+/**
+ * True when `manifestPath` exists but could not be read, so the in-memory
+ * manifest is not authoritative and nothing may overwrite the file. Exported
+ * rather than inferred so there is exactly one definition of it.
+ */
+export function isManifestUnavailable(manifestPath) {
+  return unreadablePaths.has(String(manifestPath));
+}
 
 function defaultManifest() {
   return {
@@ -58,12 +54,9 @@ function isWellFormed(parsed) {
   );
 }
 
-// Best-effort backup: read the current file and write it beside the
-// original with a .corrupted.<ts> suffix. If the source read fails
-// too (rare — usually the caller already failed to parse it), we swallow
-// the backup error rather than let it break the boot. The original file
-// on disk is left untouched by this function; a subsequent engine save
-// will overwrite it.
+// Best-effort backup: read the current file and write it beside the original
+// with a .corrupted.<ts> suffix. A failed backup is swallowed rather than
+// allowed to break the boot. The original on disk is left untouched here.
 async function backupCorrupted(manifestPath) {
   try {
     const raw = await fs.readFile(manifestPath, "utf8");
@@ -77,35 +70,71 @@ async function backupCorrupted(manifestPath) {
   }
 }
 
-// Load the manifest from disk.
+// Read the manifest, retrying a non-ENOENT failure a few times with short
+// backoff. Returns one of three outcomes and never throws:
 //
-// - Returns the parsed manifest if the file exists and has the expected
-//   top-level shape.
-// - Returns an empty manifest if the file does not exist.
-// - Returns an empty manifest AND writes a .corrupted.<ts> backup of
-//   the original file if the file exists but doesn't parse or has the
-//   wrong shape.
+//   { raw }      the bytes
+//   { missing }  ENOENT — there is genuinely no manifest
+//   { error }    still unreadable after every attempt
 //
-// Non-throwing except on unexpected errors from bare-fs itself (which
-// the engine's own try/catch catches). The engine's saveManifest is
-// what puts the empty manifest on disk if a subsequent state change
-// fires.
-export async function loadManifest(manifestPath) {
-  let raw;
-  try {
-    raw = await fs.readFile(manifestPath, "utf8");
-  } catch (err) {
-    if (err?.code === "ENOENT") {
-      return defaultManifest();
+// ENOENT short-circuits: a file that is not there will not appear after a
+// 50 ms wait, and delaying first boot for nothing is worse than useless.
+async function readManifestWithRetry(manifestPath) {
+  let lastErr = null;
+  const attempts = READ_RETRY_BACKOFF_MS.length + 1;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return { raw: await fs.readFile(manifestPath, "utf8") };
+    } catch (err) {
+      if (err?.code === "ENOENT") return { missing: true };
+      lastErr = err;
+      const wait = READ_RETRY_BACKOFF_MS[i];
+      if (wait === undefined) break;
+      console.warn(
+        `[manifest] read failed (attempt ${i + 1}/${attempts}, retrying in ${wait}ms):`,
+        err?.message || err,
+      );
+      await sleep(wait);
     }
-    // Anything else (permission, i/o error) — treat as unreadable and
-    // start empty. Do not attempt backup (the read already failed).
+  }
+  return { error: lastErr };
+}
+
+// Load the manifest from disk. Returns the parsed manifest, or an empty one
+// when the file is absent. A file that exists but does not parse or has the
+// wrong shape is backed up as .corrupted.<ts> first. A file that exists but
+// could not be read after the retry schedule marks the path unavailable: the
+// empty manifest is a placeholder so the engine can boot far enough to tell
+// the user, it is not authoritative, and every write to the path is refused
+// until a later load succeeds.
+export async function loadManifest(manifestPath) {
+  const key = String(manifestPath);
+  const read = await readManifestWithRetry(manifestPath);
+
+  if (read.error) {
+    // The destructive branch. The path is marked unsafe to overwrite and
+    // stays that way until a load succeeds. No backup is attempted: the read
+    // already failed, and the original bytes are untouched where they are,
+    // which is the only place a recovery could come from.
+    unreadablePaths.add(key);
     console.warn(
-      "[manifest] read failed (starting empty):",
-      err?.message || err,
+      "[manifest] UNREADABLE after retries — refusing to overwrite it; " +
+        "the engine will run with an empty in-memory manifest and block " +
+        "share creation until it can be read:",
+      read.error?.message || read.error,
     );
     return defaultManifest();
   }
+
+  // Any successful outcome clears a previous unavailable mark: the file is
+  // readable again, or genuinely absent, so saves may proceed.
+  unreadablePaths.delete(key);
+
+  if (read.missing) {
+    return defaultManifest();
+  }
+
+  const raw = read.raw;
 
   let parsed;
   try {
@@ -120,9 +149,8 @@ export async function loadManifest(manifestPath) {
     return defaultManifest();
   }
 
-  // Merge stats defaults in case an older/hand-edited manifest is
-  // missing some fields. The default's fields are additive; the parsed
-  // fields override.
+  // Merge stats defaults in case a manifest is missing some fields; the
+  // parsed fields override.
   return {
     drives: parsed.drives,
     stats: {
@@ -134,13 +162,21 @@ export async function loadManifest(manifestPath) {
   };
 }
 
-// separate serialization chain from the engine's saveManifest.
-// This save is only used if a caller of loadManifest wants to persist
-// its result immediately (e.g. after a first-boot empty-manifest
-// creation). Errors are swallowed — the caller can retry.
+// A serialization chain separate from the engine's own saveManifest, so a
+// stall in one cannot back up the other. Errors are swallowed; callers retry.
 let _saveChain = Promise.resolve();
 
 export async function saveManifest(manifestPath, manifest) {
+  // Refuse to write over a manifest that could not be read. This is one of
+  // the two routes to atomicWriteJson on the manifest path; the other is
+  // hyperdrive-engine.mjs's own saveManifest, which carries the same guard.
+  if (isManifestUnavailable(manifestPath)) {
+    console.warn(
+      "[manifest] save REFUSED — the manifest on disk could not be read, " +
+        "so overwriting it would destroy the only copy of the user's shares",
+    );
+    return;
+  }
   const next = _saveChain
     .catch(() => {})
     .then(() => atomicWriteJson(manifestPath, manifest));

@@ -222,7 +222,6 @@ describe("selection → share mapping", () => {
   });
 });
 
-
 describe("thumbnailFor", () => {
   it("asks for a real thumbnail only for image types", () => {
     for (const n of ["a.jpg", "b.JPEG", "c.png", "d.gif", "e.webp", "f.heic"]) {

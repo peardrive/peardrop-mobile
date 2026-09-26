@@ -1,15 +1,12 @@
 import { runExportFlow, runManualReset, type ExportDeps } from "../debugLogExport";
 
 /**
- * the guarantee this whole module exists to enforce.
- *
- * Android's share sheet resolves on dismissal and reports neither the
- * chosen target nor a cancel — so "the export succeeded" is not knowable.
- * The log is therefore cleared if and only if the user explicitly answers
- * "Clear it" to the confirm shown AFTER the sheet returns.
- *
- * Every test below is really one assertion in different clothes: did
- * `clearLog` run when it shouldn't have?
+ * The guarantee this module exists to enforce. Android's share sheet resolves
+ * on dismissal and reports neither the chosen target nor a cancel, so "the
+ * export succeeded" is not knowable. The log is cleared if and only if the
+ * user explicitly answers "Clear it" to the confirm shown after the sheet
+ * returns. Every test below asks one question: did `clearLog` run when it
+ * should not have?
  */
 
 type Calls = string[];

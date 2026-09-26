@@ -1,4 +1,4 @@
-package com.peardrop.mobile
+package com.anjouinc.peardrop
 
 import android.view.View
 import com.facebook.react.ReactPackage

@@ -1,17 +1,13 @@
 import RNFS from "react-native-fs";
+import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 
 /**
- * per-share record of the local cache paths the user's picked
- * files live at. The engine's manifest only stores in-drive storage paths
- * (relative to corestore), so without this side-store we can't preview or
- * "open in another app" for files the user originally shared.
- *
- * Cache eviction caveat: these paths live under DocumentPicker's
- * `copyToCacheDirectory` output or ImagePicker's cache dir — the OS may
- * purge them over time. The UI checks file existence before relying on a
- * path (see `MainScreen.tsx`); a missing local copy is a soft failure
- * (preview/open hidden) and does not affect the Hyperdrive-served share
- * itself, which lives in corestore.
+ * Per-share record of the local cache paths the user's picked files live
+ * at. The engine's manifest stores only in-drive paths, so without this
+ * side-store a file the user shared cannot be previewed or opened
+ * elsewhere. The paths sit in picker cache directories the OS may purge, so
+ * the UI checks existence first: a missing copy hides preview and open, and
+ * does not affect the served share itself.
  */
 
 export type SharedFilePath = {
@@ -61,20 +57,17 @@ function sanitize(raw: unknown): SharedFilePathsEntry[] {
   return out;
 }
 
+/** see `src/lib/atomicFile.ts`. */
 async function readFromDisk(): Promise<SharedFilePathsEntry[]> {
-  try {
-    const exists = await RNFS.exists(STORAGE_FILE);
-    if (!exists) return [];
-    const raw = await RNFS.readFile(STORAGE_FILE, "utf8");
-    return sanitize(JSON.parse(raw));
-  } catch {
-    return [];
-  }
+  const result = await readJsonFile(STORAGE_FILE);
+  if (result.status === "ok") return sanitize(result.value);
+  return [];
 }
 
+/** temp + rename, was a bare writeFile. */
 async function writeToDisk(entries: SharedFilePathsEntry[]): Promise<void> {
   try {
-    await RNFS.writeFile(STORAGE_FILE, JSON.stringify(entries, null, 2), "utf8");
+    await writeJsonAtomic(STORAGE_FILE, entries);
   } catch {
     // Best-effort — in-memory cache stays accurate this session.
   }

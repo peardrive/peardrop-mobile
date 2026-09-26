@@ -29,10 +29,14 @@ export function baseTransfer(
     peersConnected: 0,
     peerIds: [],
     completed: false,
+    cancelled: false,
+    // null, not 0. Nothing has been cancelled, so there
+    // is no kept-count to report — and 0 would render as "nothing saved".
+    filesKept: null,
     progressEverReceived: false,
     stalled: false,
     lastEventAt: now,
-    // no peer has ever left a transfer that has just been created.
+    // No peer has ever left a transfer that has just been created.
     lastPeerLeftAt: null,
   };
 }
@@ -44,16 +48,11 @@ export type TransferUpdate =
 export type OriginResolver = (driveId: string) => TransferOrigin;
 
 /**
- * Pure reducer: given the current transfers array and an update for a single
- * drive, return the new array. Centralizes the "known" origin resolution and
- * the per-driveId insert/update/cap bookkeeping that used to live inline in
- * BackendProvider. Kept backend-agnostic so tests can drive it without
- * mounting React.
- *
- * When `update` is an object patch, we merge it into the base and normalize
- * origin/direction from the resolver. When `update` is a function the caller
- * takes full control, but we still re-assert origin/direction after it runs
- * so a dropped field can't desync routing.
+ * Pure reducer over the transfers array, holding the origin resolution and
+ * the per-driveId insert, update and cap bookkeeping in one place, free of
+ * React so tests can drive it. An object patch is merged into the base; a
+ * function hands the caller full control. Either way origin and direction
+ * are re-asserted afterwards, so a dropped field cannot desync routing.
  */
 export function upsertTransfer(
   transfers: TransferSummary[],

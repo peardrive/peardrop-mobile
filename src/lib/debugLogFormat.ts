@@ -1,24 +1,17 @@
-// pure formatting + size-cap math for the debug logging
-// subsystem. Deliberately RN-free (no react-native, no react-native-fs,
-// no expo-*) so Jest can exercise it under `testEnvironment: "node"` —
-// see jest.config.js, which only picks up `.ts` under src/.
-//
-// Everything that decides *what a log line looks like* or *when the file
-// rotates* lives here. The side-effecting writer (src/lib/debugLog.ts)
-// imports these and supplies the filesystem.
+// Pure formatting and size-cap math for the debug logging subsystem.
+// Deliberately RN-free (no react-native, no react-native-fs, no expo-*) so
+// Jest can exercise it under `testEnvironment: "node"`. Everything deciding
+// what a log line looks like or when the file rotates lives here; the
+// side-effecting writer in src/lib/debugLog.ts supplies the filesystem.
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /** Order matters — index doubles as severity rank for threshold filters. */
 export const LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
-/**
- * Per-entry byte clamp. One pathological payload (a stringified manifest,
- * a base64 blob that slipped into a `detail`) must not be able to eat the
- * whole file budget on its own. Entries longer than this are truncated
- * with a visible marker so the reader knows data was dropped rather than
- * silently mis-reading a half-line.
- */
+/** Per-entry byte clamp, so one pathological payload cannot eat the whole
+ *  file budget. Longer entries are truncated with a visible marker, so a
+ *  reader knows data was dropped rather than mis-reading a half-line. */
 export const MAX_ENTRY_BYTES = 2048;
 
 /** Rotation threshold. At 2 MB the live file rolls to `.1`. */
@@ -30,13 +23,9 @@ function pad(n: number, width = 2): string {
   return String(n).padStart(width, "0");
 }
 
-/**
- * Local-time stamp, millisecond resolution: `2026-08-08 14:03:07.412`.
- *
- * Local rather than ISO/UTC on purpose — a tester says "it broke around
- * quarter past two" and we need to find that in the file without doing
- * timezone arithmetic. The export filename carries the date separately.
- */
+/** Local-time stamp, millisecond resolution. Local rather than UTC so a
+ *  report of "around quarter past two" can be found in the file without
+ *  timezone arithmetic; the export filename carries the date separately. */
 export function formatTimestamp(ts: number): string {
   const d = new Date(ts);
   return (
@@ -46,16 +35,10 @@ export function formatTimestamp(ts: number): string {
   );
 }
 
-/**
- * Render a single log entry.
- *
- *   2026-08-08 14:03:07.412  WARN [engine.open] drive.update raced abort
- *
- * Fixed-width level keeps the tag column aligned, which matters a lot when
- * you're eyeballing 2 MB of it. Newlines inside `msg` are escaped to `\n`
- * so one entry is always exactly one line — the export is grep-able and a
- * torn multi-line entry can't be mistaken for two events.
- */
+/** Render a single log entry. The fixed-width level keeps the tag column
+ *  aligned, and newlines inside `msg` are escaped so one entry is always
+ *  exactly one line — the export stays grep-able and a torn multi-line entry
+ *  cannot be mistaken for two events. */
 export function formatEntry(
   ts: number,
   level: LogLevel,
@@ -70,27 +53,21 @@ export function formatEntry(
   return clampEntry(line);
 }
 
-/**
- * Clamp one rendered entry to MAX_ENTRY_BYTES. Uses UTF-16 length as a
- * cheap proxy for bytes — it over-counts nothing and under-counts only
- * for astral-plane characters, which is fine for a safety valve.
- */
+/** Clamp one rendered entry to MAX_ENTRY_BYTES. UTF-16 length is a cheap
+ *  proxy for bytes; it under-counts only astral-plane characters, which is
+ *  fine for a safety valve. */
 export function clampEntry(line: string, max = MAX_ENTRY_BYTES): string {
   if (line.length <= max) return line;
-  // Final slice matters for the degenerate case where `max` is shorter
-  // than the marker itself — otherwise the marker alone would overrun the
-  // cap this function exists to enforce.
+  // The final slice covers `max` being shorter than the marker itself, where
+  // the marker alone would overrun the cap.
   return (
     line.slice(0, Math.max(0, max - TRUNCATION_MARKER.length)) + TRUNCATION_MARKER
   ).slice(0, max);
 }
 
-/**
- * Serialize an arbitrary value for the message field. Structured engine
- * errors ({category, cause, detail}) must survive as structure — the whole
- * point of Sprint 5I's B4 fix is that we stopped flattening them to
- * `String(err.message)`.
- */
+/** Serialize an arbitrary value for the message field. Structured engine
+ *  errors must survive as structure rather than being flattened to
+ *  `String(err.message)`. */
 export function stringifyDetail(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -108,11 +85,9 @@ export function stringifyDetail(value: unknown): string {
   }
 }
 
-/**
- * Render an engine-style structured error preserving category + cause +
- * detail. `errorMessage()` in src/lib/errorMessage.ts is the *display*
- * path; this is the *diagnostic* path and deliberately keeps everything.
- */
+/** Render an engine-style structured error preserving category, cause and
+ *  detail. `errorMessage()` is the display path; this is the diagnostic path
+ *  and deliberately keeps everything. */
 export function formatStructuredError(err: unknown): string {
   if (err == null) return "";
   if (typeof err !== "object") return String(err);
@@ -132,17 +107,10 @@ export function formatStructuredError(err: unknown): string {
   return parts.join(" ");
 }
 
-/**
- * Decide whether a pending write forces a rotation.
- *
- * Pure so the boundary condition is testable without touching a disk:
- * given the live file's current size and the number of bytes about to be
- * appended, does the result cross the cap?
- *
- * Note the `currentBytes > 0` guard: a single append larger than the cap
- * on an *empty* file must still be written, otherwise an oversized burst
- * would rotate forever and never record anything.
- */
+/** Decide whether a pending write forces a rotation. Pure, so the boundary
+ *  is testable without a disk. The `currentBytes > 0` guard matters: a single
+ *  append larger than the cap on an empty file must still be written, or an
+ *  oversized burst would rotate forever and record nothing. */
 export function shouldRotate(
   currentBytes: number,
   pendingBytes: number,
@@ -152,24 +120,15 @@ export function shouldRotate(
   return currentBytes + pendingBytes > max;
 }
 
-/**
- * Total worst-case on-disk footprint of the subsystem: the live file plus
- * one rotated segment. Exposed so the Settings screen can state the real
- * ceiling rather than a hand-wave.
- */
+/** Worst-case on-disk footprint: the live file plus one rotated segment.
+ *  Exposed so the Settings screen can state the real ceiling. */
 export function maxOnDiskBytes(max = MAX_LOG_BYTES): number {
   return max * 2;
 }
 
-/**
- * Filesystem-safe slug for a user-supplied export label.
- *
- * Testers type things like "crash on grab (2nd try)" — that has to become
- * something a share sheet, an email attachment, and a Windows filesystem
- * will all accept. Collapses runs of unsafe characters to a single dash,
- * trims leading/trailing dashes, caps length, and falls back to "log" when
- * the input reduces to nothing.
- */
+/** Filesystem-safe slug for a user-supplied export label, so an arbitrary
+ *  typed string survives a share sheet, a mail attachment and a Windows
+ *  filesystem. Falls back to "log" when the input reduces to nothing. */
 export function slugifyLabel(raw: string, maxLen = 40): string {
   const slug = String(raw ?? "")
     .trim()
@@ -181,25 +140,17 @@ export function slugifyLabel(raw: string, maxLen = 40): string {
   return slug || "log";
 }
 
-/**
- * `peardrop-log_<label>_<YYYY-MM-DD>.txt`
- *
- * The label is what makes a tester's attachment self-describing when it
- * lands in our inbox next to four others.
- */
+/** `peardrop-log_<label>_<YYYY-MM-DD>.txt`. The label is what makes an
+ *  attachment self-describing among several others. */
 export function buildLogFilename(label: string, date: Date | number): string {
   const d = typeof date === "number" ? new Date(date) : date;
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   return `peardrop-log_${slugifyLabel(label)}_${stamp}.txt`;
 }
 
-/**
- * Which build produced a log, and whether its instrumentation was armed.
- *
- * Plain data, supplied by the caller, so this module keeps its RN-free
- * property — `src/lib/devGate.ts` reads the native constants and hands the
- * result in. See `BuildIdentity` there; the shapes are deliberately the same.
- */
+/** Which build produced a log, and whether its instrumentation was armed.
+ *  Plain data supplied by the caller, so this module stays RN-free;
+ *  `src/lib/devGate.ts` reads the native constants and hands the result in. */
 export type BuildContext = {
   appVersion: string;
   appVersionCode: number | null;
@@ -208,28 +159,36 @@ export type BuildContext = {
   isDebuggable: boolean | null;
   gateSource: string;
   platform: string;
+  /** The generated build stamp, computed at Gradle configuration time, which
+   *  tells two builds of the same versionCode apart. Optional so callers that
+   *  do not supply it still compile; the header then reads `unknown`, because
+   *  a missing line cannot be told from an older build's header. */
+  buildStamp?: string | null;
+  /** The content hash `bare-pack` writes into the packed worklet header. It
+   *  changes only when packed backend source changes, which detects a fresh
+   *  RN bundle over a stale worklet — so it stays out of `buildStamp`, whose
+   *  value would move on the RN rebuild and hide exactly that. */
+  workletBundleId?: string | null;
 };
 
 function yesNo(v: boolean | null): string {
   return v === null ? "unknown" : v ? "yes" : "no";
 }
 
-/**
- * Header prepended to an export bundle. Gives whoever reads the file the
- * context that isn't in any individual line, and states plainly that the
- * contents are unscrubbed (Sprint 5I ships raw logs by decision — see the
- * privacy note in the sprint summary).
- *
- * The `instrument:` line is the one that matters most. A 2026-09-06 session
- * produced five logs containing no instrumentation at all, because the
- * installed APK was a release build — correct behaviour, invisible in the
- * file, and it cost the whole session. ARMED / NOT ARMED is therefore stated
- * in words, on its own line, before anything else a reader might trust.
- *
- * `build` is optional so existing callers and tests keep working; when it is
- * absent the header simply omits those lines rather than printing "unknown"
- * four times.
- */
+/** Print `unknown` for an identifier that did not reach the header, rather
+ *  than an empty value or a dropped line: a blank cannot be told apart from
+ *  a stamp that was never plumbed through, and a wrong attribution is worse
+ *  than none. */
+function orUnknown(v: string | null | undefined): string {
+  const s = String(v ?? "").trim();
+  return s || "unknown";
+}
+
+/** Header prepended to an export bundle. The `instrument:` line states ARMED
+ *  or NOT ARMED in words, because a release build yields a normal-looking log
+ *  with no instrumentation in it. The build identifiers live here because the
+ *  header cannot be evicted, and `stamp:` and `worklet:` stay separate so a
+ *  stale worklet under a fresh RN bundle is visible. */
 export function buildBundleHeader(
   label: string,
   at: number,
@@ -246,6 +205,8 @@ export function buildBundleHeader(
     const code = build.appVersionCode === null ? "?" : build.appVersionCode;
     lines.push(
       `app:       ${build.appVersion} (${code}) ${build.buildType} / ${build.platform}`,
+      `stamp:     ${orUnknown(build.buildStamp)}`,
+      `worklet:   ${orUnknown(build.workletBundleId)}`,
       `instrument: ${build.isDebugBuild ? "ARMED" : "NOT ARMED"} — heartbeats and probe are ` +
         `${build.isDebugBuild ? "present" : "ABSENT"} from this log`,
       `debuggable: ${yesNo(build.isDebuggable)}`,
@@ -260,13 +221,9 @@ export function buildBundleHeader(
   return lines.join("\n");
 }
 
-/**
- * Join rotation segments oldest-first into the exported bundle.
- *
- * Oldest-first matters: if the live file rotated mid-session, the run-up
- * to the failure is in `.1` and the failure itself is in the live file.
- * Concatenating newest-first would put the cause after the effect.
- */
+/** Join rotation segments oldest-first. If the live file rotated mid-session
+ *  the run-up to a failure is in `.1` and the failure is in the live file, so
+ *  newest-first would put the cause after the effect. */
 export function buildBundle(
   label: string,
   at: number,

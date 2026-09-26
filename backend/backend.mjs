@@ -9,6 +9,7 @@ import {
   RPC_HYPERDRIVE_OPEN,
   RPC_HYPERDRIVE_ABORT,
   RPC_HYPERDRIVE_DOWNLOAD,
+  RPC_HYPERDRIVE_CANCEL,
   RPC_HYPERDRIVE_STATUS,
   RPC_DRIVES_LIST,
   RPC_DRIVES_PAUSE,
@@ -16,6 +17,7 @@ import {
   RPC_DRIVES_REMOVE,
   RPC_DRIVES_CHECK_FILES,
   RPC_TEST_FAKE_UPLOAD,
+  RPC_TEST_FAKE_DOWNLOAD,
   RPC_REFRESH_SWARM,
   RPC_SET_DEBUG_LOGGING,
 } from "../rpc-commands.mjs";
@@ -28,6 +30,7 @@ import {
   bridgeOpenLink,
   bridgeAbortOpen,
   bridgeDownload,
+  bridgeCancelTransfer,
   bridgeStopDrive,
   bridgeStatus,
   bridgeListDrives,
@@ -36,16 +39,15 @@ import {
   bridgeRemoveDrive,
   bridgeCheckFiles,
   bridgeFakeUploadTest,
+  bridgeFakeDownloadTest,
   bridgeRefreshSwarm,
 } from "./bridge.mjs";
 import { wrapError } from "./engine-errors.mjs";
 
 const { IPC } = BareKit;
 
-// extract a display-safe string from a structured res.error
-// so the `emit({type:"error", message: ...})` sideband keeps carrying a
-// plain string (RN treats event.message as text). Falls back to the
-// object's toString if it lacks a .message field.
+// Extract a display-safe string from a structured res.error so the
+// `emit({type:"error", message: ...})` sideband keeps carrying a plain string.
 function messageOf(err) {
   if (err == null) return "";
   if (typeof err === "string") return err;
@@ -53,10 +55,9 @@ function messageOf(err) {
   return String(err);
 }
 
-// last-line-of-defense wrapper for the top-level RPC handler
-// catches. The bridge already produces typed errors for anything that
-// bubbles out of the engine; this fires only for programmer errors
-// (unknown state, opcode-level bugs).
+// Last line of defence for the top-level RPC handler catches. The bridge
+// already types anything that bubbles out of the engine, so this fires only
+// for programmer errors.
 function outerCatchReply(err) {
   return JSON.stringify({
     ok: false,
@@ -90,6 +91,8 @@ const rpc = new RPC(IPC, async (req) => {
         return onHyperdriveAbort(req);
       case RPC_HYPERDRIVE_DOWNLOAD:
         return onHyperdriveDownload(req);
+      case RPC_HYPERDRIVE_CANCEL:
+        return onHyperdriveCancel(req);
       case RPC_HYPERDRIVE_STATUS:
         return onHyperdriveStatus(req);
       case RPC_DRIVES_LIST:
@@ -104,6 +107,8 @@ const rpc = new RPC(IPC, async (req) => {
         return onDrivesCheckFiles(req);
       case RPC_TEST_FAKE_UPLOAD:
         return onTestFakeUpload(req);
+      case RPC_TEST_FAKE_DOWNLOAD:
+        return onTestFakeDownload(req);
       case RPC_REFRESH_SWARM:
         return onRefreshSwarm(req);
       case RPC_SET_DEBUG_LOGGING:
@@ -124,33 +129,12 @@ function emit(payload) {
   request.send(safeJson(payload));
 }
 
-// the worklet never touches the log file — it ships lines over
-// this same event channel and the RN side does the single write. Wired
-// once here, immediately after `rpc` exists.
+// The worklet never touches the log file: it ships lines over this same event
+// channel and the RN side does the single write. Wired once, as `rpc` exists.
 setLogEmit(emit);
 
-// ---------------------------------------------------------------------
-// worklet liveness heartbeat
-// ---------------------------------------------------------------------
-//
-// The question: does this worklet keep executing while the app is off
-// screen? bare-kit's module-scope AppState listener calls `suspend()` on
-// background, and what that does to the Bare event loop is implemented in
-// a prebuilt AAR — source cannot answer it. A timer that ticks from
-// inside the worklet can.
-//
-// It lives HERE rather than in hyperdrive-engine.mjs because the engine's
-// `emitEvent` is only wired by `bridgeStart` (i.e. after RPC_LISTEN),
-// whereas `emit` above exists from RPC construction. Liveness is a
-// property of the worklet, not of the engine, so the probe must not
-// depend on the engine having started.
-//
-// Gated on a `heartbeat` flag carried alongside the debug-logging flag on
-// the same opcode. Requires both, and RN only sets `heartbeat` in
-// development builds.
-//
-// Payload is deliberately two numbers. At 2 s this emits 300 events over
-// a ten-minute background run; anything larger would be paying rent.
+// Only a timer inside the worklet can answer whether this realm keeps executing off screen.
+// It needs both the debug-logging flag and `heartbeat`, and must not depend on the engine.
 const HEARTBEAT_INTERVAL_MS = 2000;
 
 let heartbeatTimer = null;
@@ -161,10 +145,8 @@ function startHeartbeat() {
   heartbeatSeq = 0;
   heartbeatTimer = setInterval(() => {
     try {
-      // `n` is monotonic within one enable→disable run; `at` is the
-      // WORKLET's own clock. The RN side stamps its receive time
-      // separately — a gap in `at` and a gap in arrival mean different
-      // things (engine stopped vs IPC queued).
+      // `n` is monotonic within one enable→disable run; `at` is the worklet's
+      // own clock, and a gap in `at` differs from a gap in arrival time.
       emit({ type: "worklet-tick", n: ++heartbeatSeq, at: Date.now() });
     } catch {
       // A dead IPC must not take the worklet down; the missing tick is
@@ -181,8 +163,8 @@ function stopHeartbeat() {
 }
 
 /**
- * Push the debugging flag down from RN. Fire-and-forget from the RN side;
- * we still reply so `invoke()` has something to resolve on.
+ * Push the debugging flag down from RN. Fire-and-forget on the RN side, but
+ * the reply still happens so `invoke()` has something to resolve on.
  */
 function onSetDebugLogging(req) {
   try {
@@ -192,10 +174,10 @@ function onSetDebugLogging(req) {
     // Emitted after the flag flips so the "enabled" line itself is logged.
     binfo("backend", `debug logging ${next ? "ENABLED" : "disabled"} in worklet realm`);
 
-    // Needs BOTH flags. Debug logging is a shipping user feature, so gating
+    // Needs both flags. Debug logging is a shipping user feature, so gating
     // the heartbeat on it alone starts a 2 s IPC timer for any release user
     // who enables Debugging. This realm has no build-type constant, so the
-    // RN side owns that decision; an absent `heartbeat` must mean off.
+    // RN side owns that decision; an absent `heartbeat` means off.
     const heartbeat = next && !!body.heartbeat;
     if (heartbeat) startHeartbeat();
     else stopHeartbeat();
@@ -210,8 +192,15 @@ function onSetDebugLogging(req) {
 async function onListen(req) {
   try {
     const base = getBaseDir();
+    // The body carries RN's own idle-host grace so the worklet can expire that
+    // window in the realm that keeps running while the app is backgrounded.
+    // Same `JSON.parse(… || "{}")` idiom as every other handler here, so an
+    // empty body from an older RN half parses to `{}` and the engine never
+    // sweeps.
+    const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
     await bridgeStart({
       baseDir: base,
+      idleHostGraceMs: body.idleHostGraceMs,
       onError: (err) => emit({ type: "error", message: messageOf(err) }),
       emit,
     });
@@ -231,7 +220,11 @@ async function onHyperdriveShare(req) {
     const relPaths = Array.isArray(body.relPaths)
       ? body.relPaths.map((p) => (p == null ? "" : String(p)))
       : undefined;
-    const res = await bridgeShareFromPaths(paths, relPaths);
+    // The user's chosen name, passed through as-is: the engine validates it
+    // with the same functions it uses on a peer's title, so the guard lives in
+    // one place rather than being duplicated per caller.
+    const shareName = body.shareName == null ? undefined : String(body.shareName);
+    const res = await bridgeShareFromPaths(paths, relPaths, shareName);
     if (!res.ok) emit({ type: "error", message: messageOf(res.error) || "share failed" });
     req.reply(b4a.from(JSON.stringify(res), "utf8"));
   } catch (err) {
@@ -288,6 +281,21 @@ async function onHyperdriveDownload(req) {
   }
 }
 
+/**
+ * There is no `purge` in the body and no way to add one: cancelling never
+ * destroys storage. The distinction from RPC_HYPERDRIVE_STOP is the point of
+ * the opcode.
+ */
+async function onHyperdriveCancel(req) {
+  try {
+    const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
+    const res = await bridgeCancelTransfer(String(body.driveId || ""));
+    req.reply(b4a.from(JSON.stringify(res), "utf8"));
+  } catch (err) {
+    req.reply(b4a.from(outerCatchReply(err), "utf8"));
+  }
+}
+
 function onHyperdriveStatus(req) {
   const status = bridgeStatus();
   req.reply(b4a.from(JSON.stringify({ ok: true, status }), "utf8"));
@@ -313,7 +321,14 @@ async function onDrivesResume(req) {
   try {
     const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
     const driveId = String(body.driveId || body.id || "");
-    const res = await bridgeActivateDrive(driveId);
+    // The `serve` announce opt-in, read with `=== true` / `=== false` rather
+    // than coerced, because three states have to survive the wire: announce,
+    // do not announce, and no opinion. An older RN build sends no flag at all,
+    // and that keeps meaning "use the engine's origin-derived default" — the
+    // same rule opcode 33's `heartbeat` follows.
+    const serve =
+      body.serve === true ? true : body.serve === false ? false : undefined;
+    const res = await bridgeActivateDrive(driveId, { serve });
     req.reply(b4a.from(JSON.stringify(res), "utf8"));
   } catch (err) {
     req.reply(b4a.from(outerCatchReply(err), "utf8"));
@@ -344,6 +359,16 @@ function onTestFakeUpload(req) {
   try {
     const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
     const res = bridgeFakeUploadTest(body || {});
+    req.reply(b4a.from(JSON.stringify(res), "utf8"));
+  } catch (err) {
+    req.reply(b4a.from(outerCatchReply(err), "utf8"));
+  }
+}
+
+function onTestFakeDownload(req) {
+  try {
+    const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
+    const res = bridgeFakeDownloadTest(body || {});
     req.reply(b4a.from(JSON.stringify(res), "utf8"));
   } catch (err) {
     req.reply(b4a.from(outerCatchReply(err), "utf8"));

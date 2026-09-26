@@ -30,6 +30,20 @@ export function formatBytes(bytes?: number | null): string {
   return `${idx === 0 ? Math.round(value) : value.toFixed(1)} ${UNITS[idx]}`;
 }
 
+/**
+ * Bytes, or an honest dash when the total is not known. Separate from
+ * `formatBytes`, which answers `0 B` for `null`, `undefined`, `NaN` and `0`
+ * alike — correct at its call sites, which pass a real measured size.
+ * Here `0` means the manifest reported no sizes, not an empty share.
+ */
+export function formatBytesOrUnknown(
+  bytes?: number | null,
+  unknownLabel = "—",
+): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return unknownLabel;
+  return formatBytes(bytes);
+}
+
 export function formatRate(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "0 B/s";
   return `${formatBytes(bytesPerSecond)}/s`;

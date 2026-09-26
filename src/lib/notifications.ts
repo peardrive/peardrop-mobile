@@ -1,6 +1,7 @@
 import * as Notifications from "expo-notifications";
 import { AppState } from "react-native";
 
+import { log as debugLog } from "./debugLog";
 import { DEFAULT_THEME_ID, themes } from "../ui/themes";
 
 /**
@@ -8,9 +9,11 @@ import { DEFAULT_THEME_ID, themes } from "../ui/themes";
  * about right now are transfer completions while the app is backgrounded;
  * everything else stays in-app as toasts.
  *
- * Permission is requested lazily on the first attempt. If the user denies,
- * subsequent calls are silently dropped — we never block the transfer flow
- * waiting for OS prompts.
+ * permission is requested ONLY from the
+ * foreground, off a user gesture — `ensurePermission`. The posting path
+ * (`notifyTransferComplete`) reads the permission and never asks for it. If the
+ * user denies, subsequent calls are silently dropped — we never block the
+ * transfer flow waiting for OS prompts.
  */
 
 /**
@@ -83,8 +86,8 @@ export async function ensureNotificationsReady(): Promise<void> {
           // the notification LED / edge-light colour. Distinct
           // from the small-icon tint below — this one is a channel property
           // and Android freezes it at creation, so changing it later needs
-          // a channel id change (which is out of scope and would orphan
-          // the user's existing per-channel settings).
+          // a channel id change, which would orphan the user's existing
+          // per-channel settings.
           enableLights: true,
           lightColor: NOTIFICATION_ACCENT,
         });
@@ -97,22 +100,82 @@ export async function ensureNotificationsReady(): Promise<void> {
   return channelReady;
 }
 
+/**
+ * Ask the OS for POST_NOTIFICATIONS, prompting if it can.
+ *
+ * **this function prompts, so it may only be
+ * called from the foreground, off a user gesture.** The two product call sites
+ * are the share-creation funnel (`MainScreen.tsx`, `sharePaths` returned ok)
+ * and the Grab confirm (`ShareLinkFlowContext.tsx`, `runDownload`). Both are a
+ * tap the user just made, with the app in front of them. Nothing on a
+ * background path may call this — see `notifyTransferComplete` below, which
+ * reads the permission without prompting.
+ *
+ * Every outcome goes through `debugLog`, not `console.warn`: only `debugLog`
+ * reaches the exported log, and "was the dialog ever shown, and what did they
+ * answer" is the question a permission report turns on.
+ *
+ * The result is memoised for the process lifetime (`permissionResolved`), so a
+ * denial is terminal until the process restarts. That is deliberate — the ask
+ * is one interruption per launch — but it is also why the background read below
+ * must not go through here: a backstop that populated this memo would silently
+ * consume the one ask the foreground path is entitled to.
+ */
 export async function ensurePermission(): Promise<boolean> {
   ensureConfigured();
   if (!permissionResolved) {
     permissionResolved = (async () => {
       try {
         const existing = await Notifications.getPermissionsAsync();
-        if (existing.granted) return true;
-        if (!existing.canAskAgain) return false;
+        if (existing.granted) {
+          debugLog("info", "rn.notify", "permission already granted");
+          return true;
+        }
+        if (!existing.canAskAgain) {
+          debugLog(
+            "warn",
+            "rn.notify",
+            "permission not granted and the OS will not show the prompt again",
+          );
+          return false;
+        }
         const res = await Notifications.requestPermissionsAsync();
+        debugLog(
+          "info",
+          "rn.notify",
+          `permission prompt shown granted=${!!res.granted}`,
+        );
         return !!res.granted;
       } catch {
+        debugLog("warn", "rn.notify", "permission check threw; treating as denied");
         return false;
       }
     })();
   }
   return permissionResolved;
+}
+
+/**
+ * Read the permission WITHOUT prompting, and without touching the memo.
+ *
+ * The old `notifyTransferComplete` called
+ * `ensurePermission` from a position the `AppState === "active"` early return
+ * guarantees is backgrounded — so the only ask a receive-only user could ever
+ * get was an OS dialog thrown over whatever app they were actually using, at
+ * the moment they are least able to make sense of it. The adjacent comment in
+ * `MainScreen.tsx` already called that "the worst moment to ask and a likely
+ * denial"; the code here did it anyway.
+ *
+ * Deliberately does not populate `permissionResolved`: a background completion
+ * must leave the foreground ask untouched and unspent.
+ */
+async function hasPermission(): Promise<boolean> {
+  try {
+    const existing = await Notifications.getPermissionsAsync();
+    return !!existing.granted;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -127,8 +190,19 @@ export async function notifyTransferComplete(options: {
 }): Promise<void> {
   try {
     if (AppState.currentState === "active") return;
-    const ok = await ensurePermission();
-    if (!ok) return;
+    // a READ, never an ask. See
+    // `hasPermission` for why this cannot be `ensurePermission`.
+    const ok = await hasPermission();
+    if (!ok) {
+      debugLog(
+        "warn",
+        "rn.notify",
+        "completion notification dropped: POST_NOTIFICATIONS not granted " +
+          "(no prompt from the background — the foreground asks are the " +
+          "share funnel and the Grab confirm)",
+      );
+      return;
+    }
     await Notifications.scheduleNotificationAsync({
       content: {
         title: options.title,

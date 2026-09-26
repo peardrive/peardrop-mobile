@@ -8,25 +8,38 @@ export type EmptyStateProps = {
   icon?: React.ComponentProps<typeof Ionicons>["name"];
   title: string;
   subtitle?: string;
+  /**
+   * True when the empty list is a failure, not an absence — the shares
+   * manifest could not be read, say, so the shares are on disk but unseen.
+   * Key error states off this flag, never off a `kind` string: a kind added
+   * to the union without a matching branch here would render calm.
+   */
+  isError?: boolean;
 };
 
 /**
- * Themed empty state: soft round icon badge over a title + subtitle. Callers
- * pass Ionicons `name`; defaults to `sparkles-outline` when omitted.
+ * Themed empty state: soft round icon badge over a title and subtitle.
+ * Two palettes, calm for an absence and error for a failure, selected by
+ * `isError`.
  */
 export default function EmptyState({
   icon = "sparkles-outline",
   title,
   subtitle,
+  isError = false,
 }: EmptyStateProps) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   return (
     <View style={styles.root} accessibilityRole="summary">
-      <View style={styles.iconBadge}>
-        <Ionicons name={icon} size={28} color={theme.muted} />
+      <View style={[styles.iconBadge, isError && styles.iconBadgeError]}>
+        <Ionicons
+          name={icon}
+          size={28}
+          color={isError ? theme.danger : theme.muted}
+        />
       </View>
-      <Text style={styles.title}>{title}</Text>
+      <Text style={[styles.title, isError && styles.titleError]}>{title}</Text>
       {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
     </View>
   );
@@ -51,11 +64,19 @@ function createStyles(theme: AppTheme) {
       justifyContent: "center",
       marginBottom: 4,
     },
+    // A border and icon tint rather than a filled red panel: this is still an
+    // empty list, and every theme defines `danger`, so none falls back to calm.
+    iconBadgeError: {
+      borderColor: theme.danger,
+    },
     title: {
       color: theme.text,
       fontSize: 15,
       fontWeight: "700",
       textAlign: "center",
+    },
+    titleError: {
+      color: theme.danger,
     },
     subtitle: {
       color: theme.muted,

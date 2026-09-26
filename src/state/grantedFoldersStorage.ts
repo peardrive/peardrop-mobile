@@ -1,25 +1,15 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * Persistence for the folders the user has let PearDrop read.
- *
- * Android accumulates SAF grants rather than replacing them —
- * `takePersistableUriPermission` adds each picked tree to the app's
- * persisted-permission set — so holding Downloads *and* Trip *and*
- * anything else at once is the platform's normal behaviour, not a hack.
- * Each one still costs exactly one folder-picker dialog and no manifest
- * permission.
- *
- * This module replaces the single-URI `downloadsGrantStorage` from
- * The old key is migrated in on first read so nobody has to
- * re-grant a folder they already granted.
- *
- * Same AsyncStorage pattern as [`pickerHintStorage`](pickerHintStorage.ts):
- * value cached in memory for the session, best-effort persist.
+ * Persistence for the folders the user has let PearDrop read. Android
+ * accumulates SAF grants rather than replacing them, so holding several
+ * trees at once is normal platform behaviour; each costs one folder-picker
+ * dialog and no manifest permission. A single-folder key from an earlier
+ * version is migrated in on first read, so nothing needs re-granting.
  */
 
 const STORAGE_KEY = "peardrop.granted-folder-uris";
-/** Sprint 5E's single-folder key. Read once, then folded into the list. */
+/** The earlier single-folder key. Read once, then folded into the list. */
 const LEGACY_KEY = "peardrop.downloads-tree-uri";
 
 let cache: string[] | undefined;
@@ -51,7 +41,7 @@ async function readFromStorage(): Promise<string[]> {
         return [];
       }
     }
-    // No list yet: fold in the Sprint 5E single-folder grant if present.
+    // No list yet: fold in the single-folder grant if one is present.
     const legacy = await AsyncStorage.getItem(LEGACY_KEY);
     if (legacy && legacy.trim()) {
       const migrated = [legacy.trim()];
@@ -106,12 +96,10 @@ export async function addGrantedFolder(uri: string): Promise<string[]> {
 }
 
 /**
- * Drops a folder from our list.
- *
- * Note this doesn't hand the SAF permission back to Android — the system
- * keeps the persisted grant until the user revokes it in Settings or the
- * app is uninstalled. What it does is stop us reading or showing it,
- * which is what "remove" means from the user's side.
+ * Drops a folder from the list. This does not hand the SAF permission back
+ * to Android, which keeps the grant until the user revokes it or uninstalls
+ * the app; it stops the folder being read or shown, which is what remove
+ * means from the user's side.
  */
 export async function removeGrantedFolder(uri: string): Promise<string[]> {
   const current = await ensureHydrated();

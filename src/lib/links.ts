@@ -1,28 +1,39 @@
 /**
- * Normalization + validation helpers for peardrop share links.
- *
- * A peardrop share link looks like `peardrop://<64 hex chars>`. In practice
- * users paste or scan three shapes:
- *   1. Already-normalized:  peardrop://ab...                → return as-is
- *   2. Prefixed noise:      "Here: peardrop://ab..."        → strip the prefix
- *   3. Bare key:            "ab..." (64 hex chars)          → prepend scheme
- *
- * Anything else is returned untouched so the caller can present a friendly
- * error; treat the return value as "best-effort normalized".
+ * The one parser for peardrop share links. A link is
+ * `peardrop://<64 hex chars>`, but what arrives is rarely that clean:
+ * messaging apps append tracking parameters, launchers a trailing slash,
+ * prose a full stop. One parser for every entry path strips those and yields
+ * the canonical `peardrop://<key>`; everything downstream is keyed by that
+ * form, because a record keyed on a mangled link is never written at all.
  */
 
 const HEX_KEY_64 = /^[a-fA-F0-9]{64}$/;
-const PEARDROP_URL = /peardrop:\/\/[^\s]+/i;
+
+/**
+ * How much the caller is trusted, which is a fact about where the string
+ * came from — not about how it is normalised.
+ */
+export type LinkTrust =
+  /** Deep link, QR scan: the whole payload is the link or it is junk. */
+  | "external"
+  /** Paste / typed draft: a human is present and prose is expected. */
+  | "pasted";
 
 export function normalizeShareLink(raw: string): string {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return "";
-  const match = trimmed.match(PEARDROP_URL);
-  if (match) return match[0];
-  if (HEX_KEY_64.test(trimmed)) return `peardrop://${trimmed}`;
-  return trimmed;
+  const parsed = canonicalizeShareLink(trimmed, "pasted");
+  // Unparseable input is returned untouched so the caller can show it back
+  // to the user in a friendly error. Treat this as "best-effort".
+  return parsed.ok ? parsed.link : trimmed;
 }
 
+/**
+ * Should the debounce fire a resolve at this draft yet? Deliberately looser
+ * than the parser: `runResolve` is what shows the error for a damaged link,
+ * so tightening this to the parser would mean a user typing
+ * `peardrop://abc` gets no resolve and therefore no message at all.
+ */
 export function shouldAttemptResolve(text: string): boolean {
   const trimmed = String(text || "").trim();
   if (!trimmed) return false;
@@ -32,37 +43,34 @@ export function shouldAttemptResolve(text: string): boolean {
 }
 
 export function isValidShareLink(link: string): boolean {
-  const trimmed = String(link || "").trim();
-  const match = trimmed.match(/^peardrop:\/\/([a-fA-F0-9]+)$/);
-  if (!match || !match[1]) return false;
-  return match[1].length === 64;
+  const parsed = canonicalizeShareLink(link, "external");
+  return parsed.ok && parsed.kind === "share";
 }
 
+/**
+ * THE record key: the 64-char lowercase hex key, or null.
+ *
+ * `reconcileShareRecord`, `reconcileReceivedRunner` and
+ * `buildShareKeyDriveIndex` all key on this, so it has to answer the same
+ * for every shape of the same link — which is what `canonicalizeShareLink`
+ * guarantees. Accepts prose and bare keys (`pasted`) because its callers
+ * are handed values that already came through `normalizeShareLink`.
+ */
 export function extractKey(link: string): string | null {
-  const normalized = normalizeShareLink(link);
-  const match = normalized.match(/^peardrop:\/\/([a-fA-F0-9]{64})$/i);
-  return match && match[1] ? match[1].toLowerCase() : null;
+  const parsed = canonicalizeShareLink(link, "pasted");
+  return parsed.ok && parsed.kind === "share" ? parsed.key : null;
 }
 
 /* ------------------------------------------------------------------ *
- * strict validation for externally-supplied links.
+ * the canonical parser.
  *
- * The functions above are deliberately forgiving: they serve the paste
- * and scan affordances, where the input came from a human who is looking
- * at the screen and can be shown a friendly error. `normalizeShareLink`
- * in particular performs no validation at all — it will happily hand
- * back `peardrop://<arbitrary-garbage>` scraped out of the middle of a
- * sentence.
+ * Every function above delegates here. The shape it validates against is
+ * the one the engine actually mints: `createShareLink(keyHex)` in
+ * backend/hyperdrive-engine.mjs returns exactly `peardrop://${keyHex}`,
+ * where keyHex is a Hyperdrive public key rendered as 64 lowercase hex
+ * characters.
  *
- * An intent-filter link is a different trust class. The VIEW filter
- * carries BROWSABLE, so any web page can fire a `peardrop://` URL at the
- * app without the user ever having seen the string. Those links get
- * parsed here instead, against the shape the engine actually mints:
- * `createShareLink(keyHex)` in backend/hyperdrive-engine.mjs returns
- * exactly `peardrop://${keyHex}`, where keyHex is a Hyperdrive public
- * key rendered as 64 lowercase hex characters.
- *
- * Returns a typed result rather than throwing — the caller is a linking
+ * Returns a typed result rather than throwing — one caller is a linking
  * callback that must never take the app down.
  * ------------------------------------------------------------------ */
 
@@ -70,9 +78,14 @@ export function extractKey(link: string): string | null {
 const SHARE_KEY_HEX_LENGTH = 64;
 
 /**
- * Hard ceiling on anything we'll even look at. A launch URL is attacker-
- * controlled in length; bail before doing regex work on it. The longest
- * legitimate link is `peardrop://` + 64 + an optional trailing slash.
+ * Hard ceiling on an EXTERNAL link. A launch URL is attacker-controlled in
+ * length; bail before doing regex work on it.
+ *
+ * note: the floor is no longer `peardrop://` + 64 + a slash — a
+ * legitimate link now arrives with a messenger's tracking parameters on
+ * it, which is why 2048 rather than something tight. The paste path is not
+ * capped at all: a good link buried in a long forwarded message is a shape
+ * exists to accept, and a human typing is not a threat model.
  */
 export const MAX_INCOMING_LINK_LENGTH = 2048;
 
@@ -83,7 +96,11 @@ export type ShareLinkRejection =
   | "too-long"
   /** Doesn't begin with the `peardrop://` scheme. */
   | "not-a-peardrop-link"
-  /** Right scheme, but the remainder isn't a bare key (empty, query, path, fragment). */
+  /**
+   * Right scheme, but nothing survives the strip as a bare key — the
+   * remainder was empty, or it carries a path segment. A query string and a
+   * fragment do not land here; they are stripped.
+   */
   | "malformed"
   /** Right scheme, key is hex, but not 64 characters. */
   | "bad-key-length"
@@ -134,60 +151,149 @@ export type ParsedShareLink =
   | { ok: false; reason: ShareLinkRejection };
 
 /**
- * Strictly parse a link that arrived from outside the app (an Android
- * VIEW intent today; a notification payload once Sprint 6D resumes).
+ * The canonical parser. Every entry path — paste, QR scan, deep link, and
+ * every downstream key derivation — reaches this function, and nothing else
+ * normalises a link anywhere in `src/`.
  *
- * Accepts only `peardrop://<64 hex>`, case-insensitively on both the
- * scheme and the key, with at most one trailing slash — browsers and
- * launchers routinely normalize `scheme://host` to `scheme://host/`, and
- * dropping an otherwise-valid share over that would be a bad trade.
- * Everything else — surrounding text, bare keys, query strings, paths,
- * fragments — is rejected. Those shapes remain reachable through the
- * paste path, which is where a human is present to read an error message.
+ * The strip, in order: whitespace; the `peardrop://` scheme, anchored for
+ * `external` and scraped out of prose for `pasted`; query string and fragment
+ * discarded, never read; trailing `/` and `.` discarded in any number, since
+ * neither is hex and no key can be shortened by it; a surviving `/` means a
+ * path segment and is `malformed`, so `peardrop://host/<key>` must not
+ * resolve as `<key>`; then `demo`, else 64 hex, lowercased.
  *
- * adds exactly one allowlist entry: `peardrop://demo`. It is a
- * literal match, not a loosening of key validation — `peardrop://demo2`
- * and every other near-miss still fail the same charset check they
- * always did. The demo share resolves offline against six bundled files,
- * which makes it the only end-to-end proof of the whole incoming-link
- * chain that needs no network or second device. The threat model doesn't
- * argue against it: a web page firing `peardrop://demo` opens a preview
- * of six local files and nothing else happens.
+ * Nothing narrows: no shape the parser accepts may become rejected. The
+ * paste-path scrape takes the first candidate with a non-empty body, because
+ * `[^\s]*` matches zero characters and a bare `peardrop://` token earlier in
+ * the same paste would otherwise shadow the real link.
+ *
+ * The scheme match uses `.` rather than `[\s\S]`, so an embedded newline
+ * still fails to match and `peardrop://\n<key>` stays rejected: `.*` not
+ * crossing a line break is what keeps a multi-line payload from being read
+ * as one link.
  */
-export function parseIncomingShareLink(raw: unknown): ParsedShareLink {
+export function canonicalizeShareLink(
+  raw: unknown,
+  trust: LinkTrust
+): ParsedShareLink {
   if (typeof raw !== "string") return { ok: false, reason: "empty" };
-  // Length-check the raw string, before trim allocates a copy of it.
-  if (raw.length > MAX_INCOMING_LINK_LENGTH) {
+  // Length-check the raw string, before trim allocates a copy of it. Only
+  // on the external side: that is where length is attacker-controlled. A
+  // paste is bounded by what a human is willing to paste, and capping it
+  // would drop a good link buried in a long forwarded message.
+  if (trust === "external" && raw.length > MAX_INCOMING_LINK_LENGTH) {
     return { ok: false, reason: "too-long" };
   }
   const trimmed = raw.trim();
   if (!trimmed) return { ok: false, reason: "empty" };
 
-  // Anchored: the scheme must start the string. `normalizeShareLink`
-  // scrapes a link out of surrounding prose, which is right for a paste
-  // and wrong here — an intent URL is the whole payload or it's junk.
-  const schemeMatch = trimmed.match(/^peardrop:\/\/(.*)$/i);
-  if (!schemeMatch) return { ok: false, reason: "not-a-peardrop-link" };
+  // ---- Step 3: get to the part after the scheme. The ONLY place the two
+  // trust classes differ in how they read the string. ----
+  let body: string;
+  /**
+   * Did the `peardrop://` scheme actually appear? False only on the paste
+   * path's bare-token fallback. Read once, by the demo allowlist below.
+   */
+  let sawScheme: boolean;
+  if (trust === "external") {
+    // Anchored: an intent URL is the whole payload or it's junk. A web
+    // page can fire this without the user ever seeing the string, so
+    // "there is a link somewhere in here" is not good enough.
+    const schemeMatch = trimmed.match(/^peardrop:\/\/(.*)$/i);
+    if (!schemeMatch) return { ok: false, reason: "not-a-peardrop-link" };
+    body = schemeMatch[1] ?? "";
+    sawScheme = true;
+  } else {
+    // A human pasted this, possibly with the message it arrived in.
+    //
+    // `[^\s]*` rather than `[^\s]+` so that a bare `peardrop://` is reachable
+    // at all — but `*` matches zero characters, so with a single non-global
+    // match a bare scheme token earlier in the same paste wins and shadows
+    // the real link behind it:
+    //
+    //   "see peardrop:// then peardrop://<64 hex>"
+    //      with a single `*` match: null
+    //
+    // That is a narrowing, and this module's contract is that nothing
+    // narrows. Scrape every candidate and take the first one with anything
+    // after the scheme; the
+    // all-empty case then still falls through to the `*` behaviour.
+    const scraped = trimmed.match(/peardrop:\/\/[^\s]*/gi);
+    if (scraped) {
+      const bodies = scraped.map((m) => m.replace(/^peardrop:\/\//i, ""));
+      body = bodies.find((candidate) => candidate !== "") ?? "";
+      sawScheme = true;
+    } else {
+      // No scheme: a bare key is the third shape people paste.
+      body = trimmed;
+      sawScheme = false;
+    }
+  }
 
-  // Tolerate exactly one trailing slash, nothing else after the key.
-  const remainder = (schemeMatch[1] ?? "").replace(/\/$/, "");
-  if (!remainder) return { ok: false, reason: "malformed" };
-  // A second slash, a query, or a fragment means this isn't a bare key.
-  if (/[/?#]/.test(remainder)) return { ok: false, reason: "malformed" };
+  // ---- Steps 4-6: THE STRIP. One copy, reached by every entry path. ----
+  // Query string and fragment, whichever comes first.
+  body = body.split(/[?#]/)[0] ?? "";
+  // Trailing slashes and full stops, in any combination: launchers append
+  // `/`, prose appends `.`, and a link at the end of a sentence in a
+  // message gets both.
+  //
+  // Written as a scan rather than `replace(/[./]+$/, "")`: the
+  // anchored quantifier backtracks quadratically over a long interior run of
+  // `.`/`/` that is not at end-of-string — measured 237 ms at n=20,000 and
+  // 3,883 ms at n=80,000. Only a human paste can reach it (an external
+  // payload hits `too-long` first), but it is a three-line rewrite.
+  let end = body.length;
+  while (end > 0) {
+    const code = body.charCodeAt(end - 1);
+    // 46 = '.', 47 = '/'
+    if (code !== 46 && code !== 47) break;
+    end -= 1;
+  }
+  if (end !== body.length) body = body.slice(0, end);
+  if (!body) return { ok: false, reason: "malformed" };
+  // A surviving slash is a path segment, not a key.
+  if (body.includes("/")) return { ok: false, reason: "malformed" };
 
-  // The one allowlist entry, checked after the structural rules so
-  // `peardrop://demo?x=1` is still malformed. Exact literal match only.
-  if (remainder.toLowerCase() === "demo") {
+  // ---- Step 7 ----
+  // The single allowlist entry, reached through the same strip as a real
+  // key. It is still a literal match, not a loosening of key
+  // validation — `peardrop://demo2` and every other near-miss fail the
+  // charset check exactly as before. The demo share resolves offline
+  // against six bundled files, which makes it the only end-to-end proof of
+  // the incoming-link chain that needs no network or second device.
+  //
+  // `sawScheme` is required. Without it the bare-token
+  // fallback makes `normalizeShareLink("demo")` return `peardrop://demo`,
+  // and typing `demo` and pressing submit
+  // opens the bundled demo share: `shouldAttemptResolve("demo")` is false
+  // so the debounce never fires, but the submit path calls
+  // `runResolve(linkDraft)` directly and ungated. The
+  // bare-token fallback exists for a bare 64-hex key — an unambiguous
+  // engine-minted value — and
+  // an English word is not that.
+  if (sawScheme && body.toLowerCase() === "demo") {
     return { ok: true, kind: "demo", link: DEMO_SHARE_LINK };
   }
 
-  if (!/^[a-fA-F0-9]+$/.test(remainder)) {
+  if (!/^[a-fA-F0-9]+$/.test(body)) {
     return { ok: false, reason: "bad-key-charset" };
   }
-  if (remainder.length !== SHARE_KEY_HEX_LENGTH) {
+  if (body.length !== SHARE_KEY_HEX_LENGTH) {
     return { ok: false, reason: "bad-key-length" };
   }
 
-  const key = remainder.toLowerCase();
+  const key = body.toLowerCase();
   return { ok: true, kind: "share", link: `peardrop://${key}`, key };
+}
+
+/**
+ * The external-trust entry point: an Android VIEW intent
+ * (`app/+native-intent.ts:55`) and a QR scan (`src/lib/scanOutcome.ts:58`).
+ *
+ * Kept as its own exported name because both call sites and their tests
+ * use it, and because the name states the trust class at the call site.
+ * It adds nothing — it is `canonicalizeShareLink(raw, "external")`.
+ */
+export function parseIncomingShareLink(raw: unknown): ParsedShareLink {
+  return canonicalizeShareLink(raw, "external");
 }

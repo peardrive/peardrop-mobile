@@ -22,13 +22,9 @@ export type FolderAccessModalProps = {
 };
 
 /**
- * Manages which folders PearDrop can read.
- *
- * This is the honest surface for a permission the user granted piecemeal:
- * everything they've allowed, in one place, each removable. Android holds
- * these as persisted SAF grants, so without a screen like this the list
- * is invisible and only growable — which is exactly the pattern people
- * distrust in file-sharing apps.
+ * Manages which folders PearDrop can read. Android holds these as persisted
+ * SAF grants, so without a screen like this the list of what the user has
+ * allowed is invisible and only growable.
  */
 export default function FolderAccessModal({
   visible,
@@ -120,11 +116,9 @@ export default function FolderAccessModal({
             <Text style={styles.addText}>Add folder</Text>
           </Pressable>
 
-          {/* The subtitle already covers what Remove does. This is the
-              part it can't claim: removing stops us reading the folder,
-              but Android keeps the persisted grant until the user takes
-              it back in system settings. Saying "revoke" up top would
-              overpromise, so the precise note lives here. */}
+          {/* Removing stops the app reading the folder, but Android keeps the
+              persisted grant until the user takes it back in system
+              settings, so the top-level copy cannot say "revoke". */}
           <Text style={styles.footnote}>
             To take the Android permission back as well, use your
             device&apos;s app settings.

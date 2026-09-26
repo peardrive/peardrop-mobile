@@ -1,11 +1,11 @@
 import RNFS from "react-native-fs";
+import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 
 /**
- * Simple counter store for lifetime bytes shared / received. Uses a
- * plain JSON file so it survives reinstalls less reliably than AsyncStorage
- * but is trivial to inspect and reset. This is intentionally a RN-side
- * truth: the backend is going to be replaced by pearcore so we don't
- * want any of this bookkeeping to live there.
+ * Counter store for lifetime bytes shared and received. A plain JSON file:
+ * it survives a reinstall less reliably than AsyncStorage but is trivial to
+ * inspect and reset. Deliberately RN-side truth, so none of this
+ * bookkeeping depends on the engine.
  */
 
 export type Stats = {
@@ -35,20 +35,21 @@ function sanitize(raw: unknown): Stats {
   return { sentBytes: sent, receivedBytes: recv, updatedAt: at };
 }
 
+/** see `src/lib/atomicFile.ts`. */
 async function readFromDisk(): Promise<Stats> {
-  try {
-    const exists = await RNFS.exists(STORAGE_FILE);
-    if (!exists) return { ...EMPTY };
-    const raw = await RNFS.readFile(STORAGE_FILE, "utf8");
-    return sanitize(JSON.parse(raw));
-  } catch {
-    return { ...EMPTY };
-  }
+  const result = await readJsonFile(STORAGE_FILE);
+  if (result.status === "ok") return sanitize(result.value);
+  return { ...EMPTY };
 }
 
+/**
+ * Temp file plus rename, never a bare write. This store also keeps its own
+ * `inFlight` mutex: the per-path queue inside `writeJsonAtomic` serializes
+ * the write leg, while `mutate` serializes the whole read-modify-write.
+ */
 async function writeToDisk(s: Stats): Promise<void> {
   try {
-    await RNFS.writeFile(STORAGE_FILE, JSON.stringify(s, null, 2), "utf8");
+    await writeJsonAtomic(STORAGE_FILE, s);
   } catch {
     // Non-fatal. The counter just won't persist this tick.
   }
@@ -101,7 +102,7 @@ export async function resetStats(): Promise<void> {
 
 export function subscribeStats(listener: Listener): () => void {
   listeners.add(listener);
-  // Fire once immediately with whatever we have cached.
+  // Fire once immediately with whatever is cached.
   if (cache) {
     try {
       listener(cache);

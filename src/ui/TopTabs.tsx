@@ -29,15 +29,8 @@ const HEIGHT = 44;
 const INSET = 4;
 const OUTER_R = 14;
 const INNER_R = 10;
-// Seam geometry: the shared edge is mostly a straight vertical line at
-// horizontal center, but ends in a small quarter-arc hook at the top and
-// another at the bottom that point in opposite directions.
-//   • Top hook: starts `HOOK_W` left of center and curls down-right,
-//     landing on the vertical middle at `HOOK_H` below the top edge.
-//     Favorites' top-left corner tucks under the hook, curving into Files.
-//   • Bottom hook: starts on the vertical middle at `HOOK_H` above the
-//     bottom edge and curls down-right, landing `HOOK_W` right of center.
-//     Files' bottom-right corner rides the hook, curving into Favorites.
+// Seam geometry: the shared edge is a vertical line at horizontal center
+// ending in a quarter-arc hook at each end, curling opposite ways.
 const HOOK_W = 8;
 const HOOK_H = 12;
 const DURATION = 250;
@@ -46,24 +39,10 @@ const AnimatedPath = Animated.createAnimatedComponent(Path);
 const AnimatedText = Animated.createAnimatedComponent(Text);
 
 /**
- * Segmented Files / Favorites tabs with an interlocking S-curve seam.
- *
- * The shared edge is a mostly-vertical line at horizontal center with a
- * small quarter-arc hook at each end. The top hook curls down and to the
- * right, so Favorites' top-left tucks under it and reads as flowing into
- * Files. The bottom hook curls the opposite way — down and to the right at
- * the other end — so Files' bottom-right rides over it into Favorites.
- * The two shapes interlock like a puzzle instead of meeting at a straight
- * vertical divider.
- *
- * The seam geometry is stable; only which region is elevated changes. On
- * selection we crossfade the two region fills, so the curved seam is
- * preserved throughout the transition and the highlight visually flows
- * from one side to the other in ~250ms.
- *
- * All colors resolve from the active theme (`surfaceSubtle` track, `card`
- * elevation, `text`/`muted` labels) so the control adapts to every app
- * theme with no hardcoded values.
+ * Segmented tabs with an interlocking S-curve seam. The seam geometry is
+ * stable and only which region is elevated changes: selection crossfades
+ * the two region fills, so the curve survives the transition. All colors
+ * resolve from the active theme, with no hardcoded values.
  */
 export default function TopTabs<Value extends string>({
   tabs,
@@ -179,11 +158,10 @@ export default function TopTabs<Value extends string>({
 }
 
 /**
- * Left region (Files side). Outer three edges track the container's rounded
- * corners; the right edge is the seam — top hook, vertical middle, bottom
- * hook. Each hook is a single quadratic bezier whose control point sits at
- * the "elbow" so tangents leave/enter horizontally at the container edge
- * and vertically at the vertical middle.
+ * Left region. The outer three edges track the container's rounded corners
+ * and the right edge is the seam. Each hook is one quadratic bezier whose
+ * control point sits at the elbow, so tangents stay horizontal at the
+ * container edge and vertical at the middle.
  */
 function buildLeftPath(width: number): string {
   const left = INSET;

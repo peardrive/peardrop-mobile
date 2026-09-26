@@ -1,14 +1,9 @@
 /**
- * pure list logic for the in-app file picker.
- *
- * The picker shows two sections: "Recent" (files this app has shared
- * before — real usage history, no permission needed) and "Downloads"
- * (a single level of the folder the user granted via SAF). Everything in
- * here is deliberately free of native imports so it stays unit-testable
+ * Pure list logic for the in-app file picker: a "Recent" section from this
+ * app's own share history, and "Downloads" from one level of the folder the
+ * user granted via SAF. Free of native imports so it stays unit-testable
  * under the `testEnvironment: node` jest config; anything touching
- * expo-file-system lives in `folderShare.ts` instead.
- *
- * Not a folder tree. One level, by design (see sprint scope).
+ * expo-file-system lives in `folderShare.ts`. One level, by design.
  */
 
 import type { PickedFile } from "./pickerResult";
@@ -24,11 +19,9 @@ export type BrowseEntry = {
   /** ms since epoch. Undefined when the source can't tell us. */
   modifiedAt?: number;
   source: BrowseSource;
-  /**
-   * Which granted folder this row came from, for the origin label. Only
-   * set on "downloads" rows, and only meaningful once the merged list
-   * spans more than one folder.
-   */
+  /** Which granted folder this row came from, for the origin label. Only set
+   *  on "downloads" rows, and only meaningful once the merged list spans
+   *  more than one folder. */
   folderLabel?: string;
 };
 
@@ -38,11 +31,9 @@ export type ShareHistoryEntry = {
   savedAt: number;
 };
 
-/**
- * Newest first, with a name tiebreak so equal timestamps don't reorder
- * between renders. Entries with no timestamp sort last — an unknown date
- * is not evidence of recency.
- */
+/** Newest first, with a name tiebreak so equal timestamps do not reorder
+ *  between renders. Entries with no timestamp sort last: an unknown date is
+ *  not evidence of recency. */
 export function sortBrowseEntries(list: BrowseEntry[]): BrowseEntry[] {
   return [...list].sort((a, b) => {
     const at = a.modifiedAt ?? -1;
@@ -64,17 +55,10 @@ export function dedupeByUri(list: BrowseEntry[]): BrowseEntry[] {
   return out;
 }
 
-/**
- * Build the "Recent" section from PearDrop's own share history.
- *
- * This is the honest recents source: it's what the user actually sent,
- * not a guess from filesystem mtimes. The timestamp is the share's
- * `savedAt`, so ordering reflects "when you shared it" — which is the
- * question this list is answering.
- *
- * Cache eviction means some of these paths no longer resolve; the caller
- * existence-checks before rendering (same contract the share list uses).
- */
+/** Build the "Recent" section from PearDrop's own share history: what the
+ *  user actually sent, not a guess from filesystem mtimes. The timestamp is
+ *  the share's `savedAt`, so ordering answers "when you shared it". Cache
+ *  eviction means the caller must existence-check before rendering. */
 export function buildRecents(
   history: ShareHistoryEntry[],
   opts: { limit: number },
@@ -122,17 +106,10 @@ export function buildDownloads(
   return dedupeByUri(sortBrowseEntries(mapped)).slice(0, Math.max(0, opts.limit));
 }
 
-/**
- * Fold every granted folder's listing into one date-ordered list.
- *
- * The point of multi-folder access is that the user stops thinking about
- * folders — they see their newest files, wherever those live, and the
- * folder is just a label on the row. Sorting across the union (rather
- * than concatenating per-folder blocks) is what delivers that.
- *
- * A folder that failed to list contributes nothing and doesn't break the
- * others; the caller decides what to do about the failure.
- */
+/** Fold every granted folder's listing into one date-ordered list, so the
+ *  user sees their newest files wherever those live and the folder is just a
+ *  row label. A folder that failed to list contributes nothing and does not
+ *  break the others; the caller decides what to do about the failure. */
 export function mergeFolderListings(
   listings: BrowseEntry[][],
   opts: { limit: number },
@@ -141,22 +118,15 @@ export function mergeFolderListings(
   return dedupeByUri(sortBrowseEntries(flat)).slice(0, Math.max(0, opts.limit));
 }
 
-/**
- * Origin labels are noise when there's only one folder in play — the
- * section already says which. Show them only once the list actually
- * spans more than one.
- */
+/** Origin labels are noise when only one folder is in play, since the section
+ *  already says which. Show them only once the list spans more than one. */
 export function shouldShowFolderLabels(folderCount: number): boolean {
   return folderCount > 1;
 }
 
-/**
- * SAF hands back `content://` URIs. The engine reads through bare-fs and
- * needs a real `file://` path, so those have to be copied into cache
- * first — same constraint `folderShare.materializeToCache` exists for.
- * Cache paths from share history are already `file://` and pass straight
- * through.
- */
+/** SAF hands back `content://` URIs, and the engine needs a real `file://`
+ *  path, so those have to be copied into cache first. Cache paths from share
+ *  history are already `file://` and pass straight through. */
 export function needsMaterialization(uri: string): boolean {
   return String(uri || "").startsWith("content://");
 }
@@ -192,15 +162,10 @@ export function selectionSummary(
   };
 }
 
-/**
- * what to draw in a row's leading slot.
- *
- * Images get a real thumbnail (the platform `Image` can render the uri
- * directly — no generation step, no extra access). Everything else gets a
- * type icon. Deliberately no thumbnail *generation* for pdf/video/office
- * types: that's a rendering pipeline, not a picker feature, and it's out
- * of scope this sprint.
- */
+/** What to draw in a row's leading slot. Images get a real thumbnail, since
+ *  the platform `Image` renders the uri directly with no generation step;
+ *  everything else gets a type icon. There is deliberately no thumbnail
+ *  generation, which is a rendering pipeline rather than a picker feature. */
 export type ThumbSpec =
   | { kind: "image" }
   | { kind: "icon"; icon: IconName };
@@ -210,16 +175,10 @@ export function thumbnailFor(name: string): ThumbSpec {
   return { kind: "icon", icon: fileIconName(name) };
 }
 
-/**
- * Share history stores *bare* paths — `saveSharedFilePathsEntry` runs
- * them through `normalizeLocalPath`, which strips the `file://` scheme so
- * bare-fs can read them. The platform `Image` needs a scheme back, so add
- * one for display. Scheme-carrying uris (SAF `content://`, picker
- * `file://`) pass through untouched.
- *
- * Display only — the engine's `normalizeFilePath` accepts either form, so
- * nothing on the share path depends on this.
- */
+/** Share history stores bare paths, because `normalizeLocalPath` strips the
+ *  `file://` scheme so bare-fs can read them, and the platform `Image` needs
+ *  a scheme back. Display only: `normalizeFilePath` accepts either form, so
+ *  nothing on the share path depends on this. */
 export function toDisplayUri(uri: string): string {
   const s = String(uri || "");
   if (!s) return s;
@@ -227,31 +186,19 @@ export function toDisplayUri(uri: string): string {
   return s;
 }
 
-/**
- * Short uppercase extension label for the icon tile — the "PDF" / "PY" /
- * "ZIP" chip Telegram puts on non-image rows. Empty string when there's
- * no usable extension, so the caller can skip the chip entirely rather
- * than render an empty box.
- */
+/** Short uppercase extension label for the icon tile. Empty string when there
+ *  is no usable extension, so the caller can skip the chip entirely rather
+ *  than render an empty box. */
 export function typeBadge(name: string, maxLen = 4): string {
   const ext = fileExt(name);
   if (!ext) return "";
   return ext.slice(0, maxLen).toUpperCase();
 }
 
-/**
- * Human-readable name for a SAF tree URI, for labelling the granted
- * folder. The user can grant *any* folder (there's a "Change" affordance),
- * so the UI must not hardcode "Downloads" — it shows whatever they picked.
- *
- * Tree URIs look like:
- *   content://com.android.externalstorage.documents/tree/primary%3ADownload
- *   content://…/tree/primary%3ADocuments%2FWork
- *   content://…/tree/1234-5678%3AMyFolder          (SD card volume)
- *
- * Returns "" when nothing usable can be derived, so the caller can fall
- * back to generic wording rather than printing a URI at the user.
- */
+/** Human-readable name for a SAF tree URI, for labelling the granted folder.
+ *  The user can grant any folder, so the UI must not hardcode "Downloads".
+ *  Returns "" when nothing usable can be derived, so the caller can fall back
+ *  to generic wording rather than printing a URI at the user. */
 export function folderDisplayName(treeUri: string): string {
   const raw = String(treeUri || "");
   if (!raw) return "";
@@ -275,14 +222,9 @@ export function folderDisplayName(treeUri: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
-/**
- * incremental reveal.
- *
- * The Downloads listing can be large, and every image row mounts a real
- * `Image`. Rendering all of them at once is the jank risk, so the screen
- * reveals a page at a time. This keeps the *data* complete while bounding
- * what's mounted.
- */
+/** Incremental reveal. The Downloads listing can be large and every image row
+ *  mounts a real `Image`, so the screen reveals a page at a time. This keeps
+ *  the data complete while bounding what is mounted. */
 export function pageEntries<T>(
   list: T[],
   shown: number,
@@ -292,12 +234,10 @@ export function pageEntries<T>(
   return { visible, remaining: Math.max(0, list.length - visible.length) };
 }
 
-/**
- * Map browse rows onto the exact `PickedFile` shape the OS picker paths
- * produce, so selection joins the existing share flow with no downstream
- * change. `uriOverrides` carries post-materialization `file://` paths for
- * the SAF rows, keyed by original uri.
- */
+/** Map browse rows onto the exact `PickedFile` shape the OS picker paths
+ *  produce, so selection joins the existing share flow unchanged.
+ *  `uriOverrides` carries post-materialization `file://` paths for the SAF
+ *  rows, keyed by original uri. */
 export function toPickedFiles(
   entries: BrowseEntry[],
   uriOverrides: Record<string, string> = {},

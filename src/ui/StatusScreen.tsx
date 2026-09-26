@@ -22,10 +22,9 @@ export type StatusScreenProps = {
 };
 
 /**
- * Full-screen status/error surface: large tinted-tile icon at top, bold
- * title, muted body, one or two bottom CTAs. All colors token-driven so
- * the same shell works for No connection, Peer not found, File
- * unavailable, Something went wrong, and Report sent.
+ * Full-screen status and error surface: tinted-tile icon, title, body and
+ * one or two CTAs. All colors are token-driven so one shell covers every
+ * status the app needs to show.
  */
 export default function StatusScreen({
   tone,

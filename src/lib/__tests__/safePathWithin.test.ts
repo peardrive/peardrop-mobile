@@ -1,14 +1,12 @@
-// KKKKKKK tripwire for the safePathWithin guard against
-// peer path-traversal on receive. backend/path-safe.mjs uses bare-path;
-// Jest can't load it. We mirror the same logic under node:path and
-// exercise the six documented scenarios. Any change to the .mjs must
-// be reflected here or these tests stop catching real regressions.
+// Tripwire for the safePathWithin guard against peer path-traversal on
+// receive. backend/path-safe.mjs uses bare-path, which Jest cannot load, so
+// the same logic is mirrored under node:path. Any change to the .mjs must be
+// reflected here or these tests stop catching real regressions.
 
 import path from "node:path";
 
-// Mirror of backend/path-safe.mjs's PathTraversalError. Sprint 3S: also
-// carries category (via the shared EngineError base). We keep the mirror
-// simple — instance-of check + a category field satisfies the tripwire.
+// Mirror of backend/path-safe.mjs's PathTraversalError. An instance-of check
+// plus a category field is all the tripwire needs.
 class PathTraversalError extends Error {
   category: string;
   override cause: string;

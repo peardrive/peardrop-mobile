@@ -17,7 +17,26 @@ import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useAppTheme } from "../state/ThemeContext";
 import { haptics } from "../lib/haptics";
+import { resolveHintFor } from "../lib/resolveHint";
+// The scan payload is classified before anything is claimed about it, and
+// the copy lives with the classifier so it stays testable outside a `.tsx`.
+import { classifyScan, type ScanOutcome } from "../lib/scanOutcome";
 import type { AppTheme } from "./themes";
+
+/**
+ * How often the elapsed-resolve clock is re-read. The hint thresholds are
+ * whole seconds: a coarser tick lands a hint visibly late, and a finer one
+ * re-renders a sheet that owns a camera preview for nothing.
+ */
+const RESOLVE_TICK_MS = 1_000;
+
+/**
+ * Must stay at module scope, not in the render body. `createAnimatedComponent`
+ * returns a new component type per call and React reconciles by type
+ * identity, so building it per render tears down and re-creates the camera —
+ * a black, flickering preview. Re-rendering this sheet is frequent.
+ */
+const AnimatedView = Animated.createAnimatedComponent(View);
 
 export type ReceiveSheetProps = {
   visible: boolean;
@@ -29,8 +48,8 @@ export type ReceiveSheetProps = {
   resolving: boolean;
   /** Cancel any in-flight resolve. */
   onAbortResolving: () => void;
-  /** Fired when the embedded camera decodes a QR — parent hands off to
-   *  the existing link-flow resolveFromScan pipeline. */
+  /** Fired when the embedded camera decodes a QR. The parent hands off to
+   *  the link-flow resolve pipeline. */
   onScan: (data: string) => void;
   /** Inline error message if the link couldn't resolve. */
   linkError?: string | null;
@@ -45,11 +64,9 @@ export type ReceiveSheetProps = {
 };
 
 /**
- * v5 Receive: centered modal card with the camera preview in a bordered
- * square. Presented via a middle-of-screen dialog over a dim scrim (per
- * design). Paste-link row lives beneath the square with a green "Paste"
- * button that pulls from clipboard. The polish-round removal of
- * "Import Qrcode Image" is preserved — this modal does not surface it.
+ * Receive: a centered modal card holding the camera preview in a bordered
+ * square over a dim scrim, with the paste-link row beneath it. Importing a
+ * QR code from an image file is deliberately not offered here.
  */
 export default function ReceiveSheet({
   visible,
@@ -70,6 +87,11 @@ export default function ReceiveSheet({
   const scannedRef = useRef(false);
   const flash = useRef(new Animated.Value(0)).current;
   const [scanFlash, setScanFlash] = useState(false);
+  // The last rejected scan, rendered in place of the "Got it — opening…"
+  // badge. Cleared by the next accepted scan.
+  const [scanError, setScanError] = useState<
+    Extract<ScanOutcome, { kind: "rejected" }> | null
+  >(null);
 
   useEffect(() => {
     if (visible) {
@@ -85,12 +107,53 @@ export default function ReceiveSheet({
     return () => clearTimeout(t);
   }, [visible, focusPaste]);
 
+  /**
+   * The elapsed-resolve clock. Wall-clock delta, not a tick count: a count of
+   * intervals under-reports whenever the JS thread is starved, and RN timers
+   * stop entirely in the background, so the hint would appear late or never
+   * exactly when the wait is longest. The cleanup clears the interval on both
+   * transitions that matter, `resolving` going false and this sheet unmounting.
+   */
+  const [resolveElapsedMs, setResolveElapsedMs] = useState(0);
+  useEffect(() => {
+    if (!resolving) {
+      setResolveElapsedMs(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setResolveElapsedMs(0);
+    const id = setInterval(() => {
+      setResolveElapsedMs(Date.now() - startedAt);
+    }, RESOLVE_TICK_MS);
+    return () => clearInterval(id);
+  }, [resolving]);
+
+  // `null` until the first threshold, so the spinner stands alone at first.
+  // The copy and thresholds live in `src/lib/resolveHint.ts` to stay testable.
+  const resolveHint = resolving ? resolveHintFor(resolveElapsedMs) : null;
+
   const canScan = permission?.granted === true;
   const canRequest = permission?.canAskAgain !== false;
 
+  /**
+   * The payload is classified before anything is claimed, through the same
+   * parser the deep-link path uses rather than a second taxonomy. A rejected
+   * scan does not latch `scannedRef`: the camera is still pointed at
+   * something, so the next code is read. That is the one way this differs
+   * from the deep-link path, which arrives exactly once.
+   */
   const onBarcode = (data: string) => {
     if (!data || scannedRef.current) return;
+    const outcome = classifyScan(data);
+    if (outcome.kind === "rejected") {
+      // `warning`, not `error`: pointing the camera at the wrong thing is a
+      // soft miss the user fixes by moving the phone, not a failure.
+      haptics.warning();
+      setScanError(outcome);
+      return;
+    }
     scannedRef.current = true;
+    setScanError(null);
     setScanFlash(true);
     haptics.actionDone();
     Animated.sequence([
@@ -105,10 +168,9 @@ export default function ReceiveSheet({
         useNativeDriver: false,
       }),
     ]).start();
-    onScan(data);
+    onScan(outcome.link);
   };
 
-  const AnimatedView = Animated.createAnimatedComponent(View);
   const borderColor = flash.interpolate({
     inputRange: [0, 1],
     outputRange: [theme.border, theme.primary],
@@ -219,6 +281,18 @@ export default function ReceiveSheet({
                         Got it — opening…
                       </Text>
                     </View>
+                  ) : scanError ? (
+                    /* The badge never claims success for a code that was not
+                       a PearDrop link. It stays until the next code is read;
+                       the scanner is deliberately not latched on rejection. */
+                    <View style={styles.camScanBadge} pointerEvents="none">
+                      <Text style={styles.camScanBadgeText}>
+                        {scanError.title}
+                      </Text>
+                      <Text style={styles.camScanBadgeSub}>
+                        {scanError.message}
+                      </Text>
+                    </View>
                   ) : null}
                 </>
               )}
@@ -279,6 +353,21 @@ export default function ReceiveSheet({
                 <Text style={styles.pasteBtnText}>Paste</Text>
               </Pressable>
             </View>
+
+            {/*
+              Sits directly under the paste row that holds the spinner, so the
+              words and the spinner read as one state. Polite live region
+              because it appears mid-wait with no user action: a screen reader
+              must announce it without stealing focus from the input.
+            */}
+            {resolveHint ? (
+              <Text
+                style={styles.resolveHint}
+                accessibilityLiveRegion="polite"
+              >
+                {resolveHint}
+              </Text>
+            ) : null}
 
             {linkError ? (
               <View style={styles.errorRow}>
@@ -382,6 +471,16 @@ function createStyles(theme: AppTheme) {
       color: theme.onPrimary,
       fontWeight: "700",
       fontSize: 12,
+      textAlign: "center",
+    },
+    // Second line of a rejected-scan badge. Same pill, so the badge does not
+    // jump position between outcomes.
+    camScanBadgeSub: {
+      color: theme.onPrimary,
+      fontWeight: "500",
+      fontSize: 11,
+      textAlign: "center",
+      marginTop: 2,
     },
     permBody: {
       color: theme.muted,
@@ -449,6 +548,14 @@ function createStyles(theme: AppTheme) {
       color: theme.onPrimary,
       fontWeight: "700",
       fontSize: 13,
+    },
+    // `theme.muted`, not `theme.danger`: a resolve still running has not
+    // failed, and error colouring would tell the user to give up too early.
+    resolveHint: {
+      color: theme.muted,
+      fontSize: 13,
+      lineHeight: 18,
+      marginTop: 2,
     },
     errorRow: {
       flexDirection: "row",

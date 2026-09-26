@@ -15,7 +15,7 @@ import {
 } from "../debugLogFormat";
 
 // Local-time constructor so these assertions hold in any timezone.
-const AT = new Date(2026, 7, 8, 14, 3, 7, 412).getTime(); // 2026-08-08 14:03:07.412
+const AT = new Date(2026, 7, 8, 14, 3, 7, 412).getTime();
 
 describe("formatTimestamp", () => {
   it("renders local time to millisecond resolution", () => {
@@ -216,10 +216,9 @@ describe("buildBundle", () => {
   });
 });
 
-// A 2026-09-06 device session produced five logs with no instrumentation in
-// any of them, because the installed APK was a release build and the header
-// did not say so. These lock the header's contract: a reader must be able to
-// tell armed from not-armed without reading any log line.
+// The header's contract: a reader must be able to tell armed from not-armed
+// without reading any log line. A release-build APK carries no
+// instrumentation, and a header that does not say so wastes a whole session.
 describe("buildBundleHeader — build identity", () => {
   const ARMED = {
     appVersion: "0.1.0",
@@ -282,5 +281,95 @@ describe("buildBundleHeader — build identity", () => {
     expect(out).not.toContain("instrument:");
     expect(out).not.toContain("gate-src:");
     expect(out).toContain("label:     lbl");
+  });
+});
+
+// Three identifiers have to reach the export header, which is rebuilt at
+// export time and is the one part of the log a flood cannot evict: the
+// monotonic versionCode on the `app:` line, the generated build stamp that
+// tells two builds apart within one drop, and the worklet bundle id, stamped
+// separately from the RN half. That separation is the `bundle:backend` trap
+// detector — a fresh RN bundle over a stale worklet. A single combined stamp
+// would change on the RN rebuild and hide exactly that failure, so "both
+// values appear, on different lines" is the contract.
+describe("buildBundleHeader — the three build identifiers (D-45)", () => {
+  const FULL = {
+    appVersion: "0.2.0",
+    appVersionCode: 2,
+    buildType: "release",
+    isDebugBuild: false,
+    isDebuggable: false,
+    gateSource:
+      "PeardropBuildInfo.isDebugBuild=false buildType=release debuggable=false",
+    platform: "android",
+    buildStamp: "FIX-2026-09.20260925-143012.a3f19c",
+    workletBundleId:
+      "c9a9028f010038b9a4a7c023e5b766d42bfc47bd199c25e45b498afd0d3ad4fa",
+  };
+
+  it("carries the monotonic versionCode on the app line", () => {
+    expect(buildBundleHeader("lbl", AT, 1, FULL)).toContain(
+      "0.2.0 (2) release / android"
+    );
+  });
+
+  it("carries the generated build stamp on a line of its own", () => {
+    expect(buildBundleHeader("lbl", AT, 1, FULL)).toContain(
+      "stamp:     FIX-2026-09.20260925-143012.a3f19c"
+    );
+  });
+
+  it("carries the worklet bundle id in full, never truncated", () => {
+    expect(buildBundleHeader("lbl", AT, 1, FULL)).toContain(
+      "worklet:   c9a9028f010038b9a4a7c023e5b766d42bfc47bd199c25e45b498afd0d3ad4fa"
+    );
+  });
+
+  it("keeps the worklet id on a different line from the RN build stamp", () => {
+    const lines = buildBundleHeader("lbl", AT, 1, FULL).split("\n");
+    const stampLine = lines.findIndex((l) => l.startsWith("stamp:"));
+    const workletLine = lines.findIndex((l) => l.startsWith("worklet:"));
+    expect(stampLine).toBeGreaterThanOrEqual(0);
+    expect(workletLine).toBeGreaterThanOrEqual(0);
+    expect(workletLine).not.toBe(stampLine);
+  });
+
+  it("prints unknown rather than nothing when a value never arrived", () => {
+    const out = buildBundleHeader("lbl", AT, 1, {
+      ...FULL,
+      buildStamp: null,
+      workletBundleId: null,
+    });
+    expect(out).toContain("stamp:     unknown");
+    expect(out).toContain("worklet:   unknown");
+  });
+
+  it("still omits every build line when no context is supplied", () => {
+    const out = buildBundleHeader("lbl", AT, 1);
+    expect(out).not.toContain("stamp:");
+    expect(out).not.toContain("worklet:");
+  });
+
+  // Whole-header equality, on purpose: "two builds distinguishable from an
+  // exported log alone" means somebody has to be told the exact strings to
+  // look for. If the header moves, this fails rather than quietly drifting.
+  it("renders the exact header a reader is told to look for", () => {
+    expect(buildBundleHeader("gate", AT, 2, FULL)).toBe(
+      [
+        "==== PearDrop debug log ====",
+        "label:     gate",
+        "exported:  2026-08-08 14:03:07.412",
+        "segments:  2",
+        "app:       0.2.0 (2) release / android",
+        "stamp:     FIX-2026-09.20260925-143012.a3f19c",
+        "worklet:   c9a9028f010038b9a4a7c023e5b766d42bfc47bd199c25e45b498afd0d3ad4fa",
+        "instrument: NOT ARMED — heartbeats and probe are ABSENT from this log",
+        "debuggable: no",
+        "gate-src:  PeardropBuildInfo.isDebugBuild=false buildType=release debuggable=false",
+        "note:      raw log — may contain file paths, file names and share keys.",
+        "============================",
+        "",
+      ].join("\n")
+    );
   });
 });

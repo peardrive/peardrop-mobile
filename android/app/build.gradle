@@ -112,6 +112,52 @@ if (devInstrumentation) {
 }
 
 /**
+ * section 1.2: the generated build stamp.
+ *
+ * Every build this project had ever produced called itself `0.1.0 (1)`, so no
+ * tester report could be attached to a build and no fix could be proved to
+ * have shipped. `versionCode` fixes "which drop"; this fixes "which build
+ * within the drop", which is the part a version number cannot express.
+ *
+ * Shape: <sprint>.<yyyyMMdd-HHmmss>.<nonce>
+ *   e.g. FIX-2026-09.20260925-143012.a3f19c
+ *
+ * The version is deliberately NOT repeated inside the stamp. It sits on the
+ * line immediately above it in the export header and in the Settings row, and
+ * a second copy here would be a second place to forget to bump.
+ *
+ * GENERATED, NEVER HAND-MAINTAINED. A stamp a human edits drifts, and a
+ * drifted stamp is worse than none: it manufactures a false attribution.
+ *
+ * NO GIT. There is no `.git` in the development tree and git is forbidden in
+ * all three trees, so there is no commit hash, no `describe` and no
+ * dirty-tree check here. A wall-clock timestamp plus a random nonce is
+ * sufficient: it needs to be DISTINCT per build, not meaningful.
+ *
+ * The sprint label is overridable so a measurement run can name itself:
+ *
+ *     ./gradlew -p android assembleRelease -PpeardropSprint=FIX-2026-09-B
+ *
+ * Non-alphanumerics are stripped from the label and the nonce before they
+ * reach `buildConfigField`, which pastes its argument into generated Java
+ * source verbatim - a quote or a backslash in there is a compile error.
+ *
+ * KNOWN COST, accepted deliberately: this value is computed at Gradle
+ * CONFIGURATION time, so it changes on every invocation and
+ * `generateBuildConfig` is therefore never UP-TO-DATE. That costs one small
+ * Java/Kotlin recompile per build. The alternative - a stamp that only
+ * changes sometimes - cannot satisfy "two builds must be distinguishable",
+ * which is the whole requirement. The expensive part of this build is the
+ * NDK/CMake step, which BuildConfig does not touch.
+ */
+def buildStampSprint = (findProperty('peardropSprint') ?: 'FIX-2026-09')
+    .toString().replaceAll('[^A-Za-z0-9._-]', '')
+def buildStampTime = new Date().format('yyyyMMdd-HHmmss')
+def buildStampNonce = String.format('%06x', (int) (Math.random() * 0x1000000))
+def buildStamp = "${buildStampSprint}.${buildStampTime}.${buildStampNonce}"
+logger.lifecycle("PearDrop build stamp: ${buildStamp}")
+
+/**
  * The preferred build flavor of JavaScriptCore (JSC)
  *
  * For example, to use the international variant, you can use:
@@ -161,16 +207,26 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.peardrop.mobile'
+    namespace 'com.anjouinc.peardrop'
     defaultConfig {
-        applicationId 'com.peardrop.mobile'
+        applicationId 'com.anjouinc.peardrop'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "0.1.0"
+        // these two are PREBUILD OUTPUT. `app.json` is the source of
+        // truth - `expo.version` -> versionName, `expo.android.versionCode` ->
+        // versionCode - and `expo prebuild` regenerates these lines from it.
+        // Bumping them here and not there is reverted by the next prebuild
+        // without a word. Keep them literal and identical to what prebuild
+        // would emit, so a regeneration is a no-op on this pair.
+        versionCode 2
+        versionName "0.2.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         buildConfigField "boolean", "DEV_INSTRUMENTATION", "${devInstrumentation}"
+        // identifier 2. Read back through BuildInfoModule.kt ->
+        // src/lib/devGate.ts -> the Settings version row and the export
+        // header. Generated above; see the comment there for why no git.
+        buildConfigField "String", "BUILD_STAMP", "\"${buildStamp}\""
     }
     signingConfigs {
         debug {

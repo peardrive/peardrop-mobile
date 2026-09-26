@@ -33,14 +33,19 @@ const PRESETS: Record<StatusVariant, Preset> = {
     tone: "warning",
     icon: "wifi-outline",
     title: "No connection",
-    body: "PearDrop needs a network to find peers. Check your Wi-Fi or mobile data.",
+    // There is no connectivity detection here, so this copy cannot claim a
+    // network is missing or send the user to a Wi-Fi setting. Say what
+    // happened, never why.
+    body: "PearDrop couldn't reach any peers. Both phones need to be awake with PearDrop open — try again in a moment.",
     actionSpecs: [{ label: "Retry", behavior: "back" }],
   },
   "peer-not-found": {
     tone: "warning",
     icon: "search-outline",
     title: "Peer not found",
-    body: "The sender may be offline or the link has expired. Ask them to share a new link.",
+    // Two claims the app cannot make: there is no offline detection, and a
+    // share link never expires while the sender still hosts it.
+    body: "PearDrop couldn't reach the sender. Their phone needs to be awake with PearDrop open — ask them to try again.",
     actionSpecs: [{ label: "Go back", behavior: "back" }],
   },
   "file-unavailable": {

@@ -9,21 +9,12 @@ import {
 } from "./foregroundService";
 
 /**
- * Sprint 7D's foreground-service harness rows — what is left of them after
- * 8A promoted the service itself into shipping code.
- *
- * The bridge, the drain and the `believedRunning` bookkeeping all moved to
- * `foregroundService.ts`. This file deliberately keeps NO native access of
- * its own: two modules holding independent beliefs about whether the service
- * is running is precisely how a start and its stop drift apart.
- *
- * What remains here is the one thing the harness needs and the product does
- * not — a way to start the service from the background transition
- * WITHOUT consulting the activity predicate, so the mechanism can be tested
- * on a borrowed device that has no transfer in flight.
- *
- * Debug builds only. In release the arm cannot be engaged, so the only thing
- * that starts the service is `applyServiceForBackground` in backend.ts.
+ * Harness rows for the foreground service. The bridge, the drain and the
+ * running-state bookkeeping live in `foregroundService.ts`; this file keeps
+ * no native access of its own, because two modules holding independent
+ * beliefs about whether the service is running is how a start and its stop
+ * drift apart. It exists only to start the service from the background
+ * transition without consulting the activity predicate. Debug builds only.
  */
 
 const TAG = "rn.probe.oem";
@@ -35,18 +26,10 @@ export { isForegroundServiceAvailable, startForegroundService, stopForegroundSer
 // ---------------------------------------------------------------------
 
 /**
- * Android 12+ forbids starting a foreground service from the background, and
- * this project targets SDK 36. Whether a start from the `background`
- * AppState transition lands inside a grace window or throws
- * ForegroundServiceStartNotAllowedException outright is exactly the sort of
- * thing this arc has been wrong about when assuming rather than measuring.
- *
- * Session-only state: the operator taps the row and backgrounds immediately,
- * so nothing needs to survive a restart.
- *
- * Note this arm fires ALONGSIDE the shipping lifecycle, not instead of it.
- * If a transfer happens to be active, both will call start; the second call
- * is harmless, since `startForegroundService` on a running service just
+ * Android 12+ forbids starting a foreground service from the background, so
+ * whether a start from the `background` AppState transition lands inside a
+ * grace window or throws has to be measured. The arm fires alongside the
+ * shipping lifecycle: a second `startForegroundService` on a running service
  * re-enters `onStartCommand` and re-posts the same notification.
  */
 let armed = false;
@@ -64,10 +47,8 @@ export function isBackgroundStartArmed(): boolean {
 }
 
 export function setBackgroundStartArmed(next: boolean): void {
-  // Guarded inside the module, not only at the call site. Metro does not
-  // tree-shake, so this file ships in release builds; making the entry point
-  // inert here means no release build can register the harness listener even
-  // if some future caller forgets the gate.
+  // Guarded inside the module, not only at the call site: Metro does not
+  // tree-shake, so this file ships in release builds.
   if (!IS_DEBUG_BUILD) return;
   if (armed === next) return;
   armed = next;

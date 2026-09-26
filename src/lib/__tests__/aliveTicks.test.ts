@@ -1,11 +1,9 @@
-// Guard on the engine liveness reading.
-//
-// `aliveTicks` means "the engine's ticker is running". The freeze detector
-// read it as "the OS let us run". Those diverge whenever the engine itself is
-// dead: engineStatus() reports the counter unconditionally, so a failed
-// engineInit pins it at 0 while status calls keep succeeding, and every
-// background window past the 60 s floor evaluates as 100% frozen — the app
-// reporting an OS freeze for its own boot failure.
+// Guard on the engine liveness reading. `aliveTicks` means "the engine's
+// ticker is running", not "the OS let us run". Those diverge whenever the
+// engine itself is dead: engineStatus() reports the counter unconditionally,
+// so a failed engineInit pins it at 0 while status calls keep succeeding, and
+// every background window past the 60 s floor evaluates as 100% frozen — an
+// OS freeze reported for the app's own boot failure.
 
 import { parseAliveReading } from "../aliveTicks";
 import { evaluateFreeze } from "../freezeDetect";
@@ -16,8 +14,8 @@ const TICK_MS = 30_000;
 
 /**
  * The whole chain as BackendProvider runs it: a null reading means
- * `checkForFreeze` returns before `evaluateFreeze` is ever reached, so there
- * is no verdict at all — which is a different outcome from "not frozen".
+ * `checkForFreeze` returns before `evaluateFreeze` is reached, so there is no
+ * verdict at all — a different outcome from "not frozen".
  */
 function verdictFor(
   status: unknown,
@@ -37,8 +35,8 @@ describe("parseAliveReading — started must be true", () => {
   test("started:false yields no reading, and therefore no freeze verdict", () => {
     const dead = { started: false, aliveTicks: 0, aliveTickMs: TICK_MS };
     expect(parseAliveReading(dead)).toBeNull();
-    // The counter is pinned at 0 across a ten-minute window — the exact shape
-    // that used to be reported as `frozen 100%`.
+    // The counter is pinned at 0 across a ten-minute window — the shape that
+    // would otherwise be reported as `frozen 100%`.
     expect(verdictFor(dead, 0)).toBeNull();
   });
 
@@ -100,13 +98,11 @@ describe("parseAliveReading — a live engine is unaffected", () => {
   });
 
   test("a NaN counter yields no reading, and therefore no verdict", () => {
-    // evaluateFreeze does NOT catch this. Its only test on the tick counts is
+    // evaluateFreeze does not catch this. Its only test on the tick counts is
     // `observedTicks < 0`, and `NaN < 0` is false, so a NaN counter reaches
     // `frozenFraction = 1 - NaN/20 = NaN`, fails `NaN >= 0.5`, and comes back
-    // as `ran-normally` — a clean-run verdict invented from a malformed
-    // reply. Verified by running it: reason was "ran-normally", not
-    // "invalid-input". Rejecting it at the boundary is what makes the
-    // outcome honest.
+    // as `ran-normally` — a clean-run verdict invented from a malformed reply.
+    // Rejecting it at the boundary is what makes the outcome honest.
     const nan = { started: true, aliveTicks: Number.NaN, aliveTickMs: TICK_MS };
     expect(parseAliveReading(nan)).toBeNull();
     expect(verdictFor(nan, 0)).toBeNull();

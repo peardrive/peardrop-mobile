@@ -41,9 +41,8 @@ import {
 } from "../state/grantedFoldersStorage";
 import FolderAccessModal from "./FolderAccessModal";
 
-// fuller lists. These bound the *data* we hold; `PAGE_SIZE`
-// bounds what's mounted at once so a big Downloads folder doesn't mount
-// hundreds of Image views on first render.
+// These bound the data held in memory; `PAGE_SIZE` bounds what is mounted at
+// once, so a big Downloads folder does not mount hundreds of Image views.
 const RECENT_SHARES_LIMIT = 60;
 const DOWNLOADS_LIMIT = 500;
 const PAGE_SIZE = 40;
@@ -56,24 +55,21 @@ export type FilePickerSheetProps = {
   onCancel: () => void;
   /** Confirmed multi-selection, in list order. */
   onConfirm: (entries: BrowseEntry[]) => void;
-  /** one-tap re-share of a previously shared file. */
+  /** One-tap re-share of a file from share history. */
   onReshare: (entry: BrowseEntry) => void;
   /** Escape hatch to the OS document picker ("Internal Storage"). */
   onBrowseOther: () => void;
-  /** Shortcut into the existing 5D photo path. */
+  /** Shortcut into the photo path. */
   onPickPhotos: () => void;
   /** True while the parent materializes + hands off to the share flow. */
   busy?: boolean;
 };
 
 /**
- * PearDrop's own file-selection screen (Sprint 5E, polished in 5F).
- *
- * The point of it is still the top-left back button: it's ours, so cancel
- * behaves. 5F moves the layout toward Telegram's shape — storage shortcut
- * rows up top, "Recent shares" below them, then the granted Downloads
- * folder — without widening file access one inch. Internal Storage is a
- * styled entry point to the OS picker, NOT an in-app browser.
+ * PearDrop's own file-selection screen. The top-left back button is the point
+ * of it: the app owns it, so cancel behaves. Internal Storage is a styled
+ * entry point to the OS picker, not an in-app browser, so nothing here
+ * widens file access.
  */
 export default function FilePickerSheet({
   visible,
@@ -109,9 +105,8 @@ export default function FilePickerSheet({
   const filesPage = useMemo(() => pageEntries(files, shown), [files, shown]);
   const showFolderLabels = shouldShowFolderLabels(folders.length);
 
-  // Only the folder rows are checkbox-selectable; recent shares are
-  // one-tap re-share. Keeping the summary scoped to the same list the
-  // checkboxes come from means the count can't drift from the UI.
+  // Only the folder rows are checkbox-selectable; recent shares are one-tap
+  // re-share. Scoping the summary to that list keeps the count from drifting.
   const summary = useMemo(
     () => selectionSummary(files, selected),
     [files, selected],
@@ -119,9 +114,8 @@ export default function FilePickerSheet({
 
   /**
    * List every granted folder and merge the results into one date-ordered
-   * list. A folder that no longer resolves — revoked in system settings,
-   * SD card pulled — is dropped from our list and the others still load.
-   * One dead folder must not blank the whole section.
+   * list. A folder that no longer resolves is dropped and the others still
+   * load: one dead folder must not blank the whole section.
    */
   const loadFolders = useCallback(async (uris: string[]) => {
     if (!uris.length) {
@@ -254,10 +248,9 @@ export default function FilePickerSheet({
           contentContainerStyle={styles.scrollInner}
           showsVerticalScrollIndicator={false}
         >
-          {/* addition 1: storage shortcuts. "Internal Storage"
-              is a styled entry point to the OS document picker we already
-              fall back to — there is no in-app folder browsing behind it
-              and it asks for nothing new. */}
+          {/* "Internal Storage" is a styled entry point to the OS document
+              picker: no in-app folder browsing behind it, and it asks for
+              no new permission. */}
           <ShortcutRow
             icon="phone-portrait-outline"
             title="Internal Storage"
@@ -275,7 +268,7 @@ export default function FilePickerSheet({
             theme={theme}
           />
 
-          {/* addition 2: recent shares, one tap to send again. */}
+          {/* Recent shares, one tap to send again. */}
           {recentShares.length > 0 && (
             <>
               <Text style={styles.sectionLabel}>RECENT SHARES</Text>
@@ -293,10 +286,8 @@ export default function FilePickerSheet({
             </>
           )}
 
-          {/* One merged, date-ordered list across every granted folder —
-              the user thinks in files, not folders, and the folder is a
-              label on the row. Managing which folders feed it lives in
-              the Folders modal rather than cluttering this header. */}
+          {/* One merged, date-ordered list across every granted folder: the
+              user thinks in files, and the folder is a label on the row. */}
           <View style={styles.downloadsHeader}>
             <Text style={styles.sectionLabel}>RECENT FILES</Text>
             {folders.length > 0 && !filesLoading && (
@@ -417,10 +408,9 @@ export default function FilePickerSheet({
 }
 
 /**
- * Title-only shortcut row. The descriptive subtitle was dropped — the
- * titles carry their own meaning and the stacked hints made the top of
- * the screen read as dense. `a11yHint` keeps the explanation for
- * TalkBack, where there's no visual context to lean on.
+ * Title-only shortcut row: the titles carry their own meaning and stacked
+ * subtitles make the top of the screen read as dense. `a11yHint` keeps the
+ * explanation for TalkBack, where there is no visual context to lean on.
  */
 function ShortcutRow({
   icon,
@@ -455,13 +445,10 @@ function ShortcutRow({
 }
 
 /**
- * addition 4: image thumbnail or type icon.
- *
- * The platform `Image` fetches asynchronously off the JS thread, so
- * mounting one never blocks the row — the icon renders immediately and is
- * swapped when (if) the bitmap arrives. A load failure falls back to the
- * same icon rather than leaving a hole; cache-evicted recents hit this
- * path routinely.
+ * Image thumbnail or type icon. The platform `Image` fetches off the JS
+ * thread, so the icon renders immediately and is swapped if the bitmap
+ * arrives. A load failure falls back to the icon rather than leaving a
+ * hole; cache-evicted recents hit that path routinely.
  */
 function Thumb({
   name,

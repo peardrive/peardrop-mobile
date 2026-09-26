@@ -17,12 +17,24 @@ export type KebabActionItem = {
   accessibilityLabel?: string;
   /** Optional: mark the row as toggled-on (icon takes `theme.primary`). */
   activeTint?: boolean;
+  /**
+   * The row is shown and cannot be pressed. The received row's Share control
+   * is present and disabled on an incomplete copy rather than hidden: a
+   * hidden control teaches nothing, a disabled one with `sublabel` says why.
+   * `onPress` stays required so no caller can express "no action at all".
+   */
+  disabled?: boolean;
+  /**
+   * Muted second line under `label`. The disabled row's reason; safe to set on
+   * an enabled row too, though nothing does today.
+   */
+  sublabel?: string | null;
 };
 
 /**
- * v5: identity header at the top of the kebab sheet — matches the design
- * deck's "who is this action list about" cue. Thumbnail rendering mirrors
- * ShareRow so the item reads identically wherever it appears.
+ * Identity header at the top of the kebab sheet: which row the action list
+ * is about. Thumbnail rendering mirrors ShareRow so the item reads
+ * identically wherever it appears.
  */
 export type KebabActionHeader = {
   /** Fallback glyph shown when no `previewUri`. */
@@ -53,9 +65,9 @@ export type KebabActionSheetProps = {
 };
 
 /**
- * Data-driven action list rendered inside the shared BottomSheet. Base
- * sheet chrome (scrim, safe-area padding, opaque bg) comes from
- * BottomSheet so translucent-theme bleedthrough can't recur here.
+ * Data-driven action list rendered inside the shared BottomSheet, which
+ * supplies the scrim, safe-area padding and opaque background so
+ * translucent-theme bleedthrough cannot reach this sheet.
  */
 export default function KebabActionSheet({
   visible,
@@ -106,26 +118,41 @@ export default function KebabActionSheet({
       {title ? <Text style={styles.title}>{title}</Text> : null}
       {items.map((item, i) => {
         const isDanger = item.tone === "danger";
-        const iconColor = isDanger
-          ? theme.danger
-          : item.activeTint
-            ? theme.primary
-            : theme.text;
+        const isDisabled = !!item.disabled;
+        const iconColor = isDisabled
+          ? theme.muted
+          : isDanger
+            ? theme.danger
+            : item.activeTint
+              ? theme.primary
+              : theme.text;
         return (
           <React.Fragment key={item.key ?? item.label}>
             {i > 0 ? <View style={styles.divider} /> : null}
             <Pressable
               style={styles.row}
-              onPress={item.onPress}
+              onPress={isDisabled ? undefined : item.onPress}
+              disabled={isDisabled}
               accessibilityRole="button"
+              accessibilityState={{ disabled: isDisabled }}
               accessibilityLabel={item.accessibilityLabel ?? item.label}
+              accessibilityHint={item.sublabel ?? undefined}
             >
               <Ionicons name={item.icon} size={22} color={iconColor} />
-              <Text
-                style={[styles.rowText, isDanger && styles.rowTextDanger]}
-              >
-                {item.label}
-              </Text>
+              <View style={styles.rowMain}>
+                <Text
+                  style={[
+                    styles.rowText,
+                    isDanger && !isDisabled && styles.rowTextDanger,
+                    isDisabled && styles.rowTextDisabled,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+                {item.sublabel ? (
+                  <Text style={styles.rowSublabel}>{item.sublabel}</Text>
+                ) : null}
+              </View>
             </Pressable>
           </React.Fragment>
         );
@@ -190,6 +217,7 @@ function createStyles(theme: AppTheme) {
       height: StyleSheet.hairlineWidth,
       backgroundColor: theme.border,
     },
+    rowMain: { flex: 1, minWidth: 0 },
     rowText: {
       color: theme.text,
       fontSize: 15,
@@ -197,6 +225,15 @@ function createStyles(theme: AppTheme) {
     },
     rowTextDanger: {
       color: theme.danger,
+    },
+    rowTextDisabled: {
+      color: theme.muted,
+    },
+    rowSublabel: {
+      color: theme.muted,
+      fontSize: 12,
+      marginTop: 2,
+      fontWeight: "500",
     },
   });
 }

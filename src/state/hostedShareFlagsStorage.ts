@@ -1,15 +1,11 @@
 import RNFS from "react-native-fs";
+import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 
 /**
- * per-hosted-share organizational flags. Hosted drives live in
- * the engine manifest (off-limits for direct mutation from RN), so flags
- * like "pinned" and "favorite" need an RN-side annotation table keyed by
- * the engine's driveId. Cleared by the consumer on delete via
- * `clearHostedShareFlags(driveId)`.
- *
- * Received shares carry their own flags on the `ReceivedShare` record —
- * that storage was already RN-side and could absorb the fields directly.
- * This file exists only for the hosted side.
+ * Per-hosted-share organizational flags. Hosted drives live in the engine
+ * manifest, which RN must not mutate directly, so flags like pinned and
+ * favorite need an RN-side annotation table keyed by driveId. Received
+ * shares carry their own flags on their own record; this is the hosted side.
  */
 
 export type HostedShareFlags = {
@@ -51,20 +47,17 @@ function sanitize(raw: unknown): HostedShareFlags[] {
   return out;
 }
 
+/** see `src/lib/atomicFile.ts`. */
 async function readFromDisk(): Promise<HostedShareFlags[]> {
-  try {
-    const exists = await RNFS.exists(STORAGE_FILE);
-    if (!exists) return [];
-    const raw = await RNFS.readFile(STORAGE_FILE, "utf8");
-    return sanitize(JSON.parse(raw));
-  } catch {
-    return [];
-  }
+  const result = await readJsonFile(STORAGE_FILE);
+  if (result.status === "ok") return sanitize(result.value);
+  return [];
 }
 
+/** Temp file plus rename, never a bare write. */
 async function writeToDisk(flags: HostedShareFlags[]): Promise<void> {
   try {
-    await RNFS.writeFile(STORAGE_FILE, JSON.stringify(flags, null, 2), "utf8");
+    await writeJsonAtomic(STORAGE_FILE, flags);
   } catch {
     // best-effort
   }
@@ -110,9 +103,8 @@ async function upsertFlags(
   ) {
     return list;
   }
-  // Drop the entry entirely when every flag has reverted to its default
-  // — keeps the JSON file small and avoids accumulating dead records
-  // over time.
+  // Drop the entry entirely when every flag is back to its default, so the
+  // file does not accumulate dead records.
   const isEmpty =
     !next.isPinned && !next.isFavorite && !next.customName;
   let updated: HostedShareFlags[];

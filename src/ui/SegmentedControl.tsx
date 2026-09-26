@@ -17,9 +17,9 @@ export type SegmentedControlProps<Value extends string> = {
 };
 
 /**
- * Data-driven pill-track segmented control. Track/thumb reuse
- * `surfaceSubtle` and `cardStrong` from the theme (no new tokens) so it
- * survives all 11 themes automatically.
+ * Data-driven pill-track segmented control. Track and thumb reuse the
+ * existing `surfaceSubtle` and `cardStrong` tokens, so every theme works
+ * without adding any.
  */
 export default function SegmentedControl<Value extends string>({
   options,

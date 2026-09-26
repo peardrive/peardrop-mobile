@@ -1,4 +1,4 @@
-package com.peardrop.mobile
+package com.anjouinc.peardrop
 
 import android.app.Application
 import android.content.res.Configuration
@@ -32,6 +32,10 @@ class MainApplication : Application(), ReactApplication {
               // where module and manifest entry were armed together by one
               // property, is replaced by both being unconditional.
               add(TransferServicePackage())
+              // MediaStore "Save to Downloads". Unconditional, and
+              // with no manifest half to keep in step — the module needs no
+              // permission, no <service> and no <queries> entry.
+              add(SaveToDownloadsPackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"

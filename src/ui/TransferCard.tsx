@@ -17,23 +17,18 @@ export type TransferCardProps = {
   onCancel?: () => void;
   onClear?: () => void;
   /**
-   * Show a small × affordance in the top-right that calls `onClear`. Intended
-   * for contexts where the card is a transient strip (Receive) rather than
-   * a persistent bundle card (Share). No-op if `onClear` is missing.
+   * Show a small × in the top-right that calls `onClear`, for contexts where
+   * the card is a transient strip rather than a persistent bundle card.
+   * No-op when `onClear` is missing.
    */
   showDismiss?: boolean;
 };
 
 /**
- * TransferCard v2. A single card that adapts its wording and single primary
- * action to the transfer's state:
- *
- *   - Active      → "Cancel" (danger)
- *   - Completed   → "Clear"
- *   - Disconnected→ "Clear" (peers dropped and we can't recover)
- *
- * A secondary "Details" affordance expands bytes / drive id / peer info.
- * Speed and ETA are shown inline while the transfer is active.
+ * One card that adapts its wording and its single primary action to the
+ * transfer's state: cancel while it is running, clear once it is over.
+ * A "Details" affordance expands bytes, drive id and peer info, and speed
+ * and ETA show inline while the transfer is active.
  */
 export function TransferCard({
   transfer,
@@ -52,30 +47,30 @@ export function TransferCard({
   const isActive = !transfer.completed && transfer.peersConnected > 0;
   const isStalled = !transfer.completed && transfer.peersConnected === 0 && (transfer.percent ?? 0) < 100;
 
-  // Clamp to 99 until backend says done. See HomeScreen for the same logic
-  // applied to the legacy inline card; we keep it here so any consumer gets
-  // the fix for free.
-  const rawPct = clampPercent(transfer.percent);
-  const pct = transfer.completed ? 100 : Math.min(rawPct, 99);
+  // Checked ahead of `completed` everywhere below: a cancel sets `completed`
+  // too, and every completed branch reads as success.
+  const isCancelled = transfer.cancelled;
 
-  // Once the raw percent is pinned at 99 (upload path clamps there until an
-  // explicit upload-complete event arrives), surface that to the user so
-  // they don't think the transfer is frozen.
+  // Clamp to 99 until the backend says done. A cancelled transfer keeps the
+  // percent it reached: snapping to 100 would claim the bytes arrived.
+  const rawPct = clampPercent(transfer.percent);
+  const pct = isCancelled ? rawPct : transfer.completed ? 100 : Math.min(rawPct, 99);
+
+  // The upload path pins the raw percent at 99 until an explicit completion
+  // event arrives; say so, or the transfer looks frozen.
   const isFinalizing = !transfer.completed && !isStalled && rawPct >= 99;
 
-  // hosted percent is unreliable. The engine's tracker reads
-  // `socket.bytesWritten` on Hyperswarm UDX sockets — which doesn't expose
-  // bytes the same way Node net.Socket does, so the tracker often reads 0
-  // forever and the percent never advances. For hosted transfers, suppress
-  // the percent display entirely; show a coarse-grained state that's
-  // honest about what we can see (peer connected vs. data flowing) plus a
-  // small spinner during active sending. Received transfers keep the
-  // percent display because engineDownload tallies real bytesDownloaded.
+  // The hosted percent is unreliable: UDX sockets do not expose written
+  // bytes the way the tracker expects, so it often reads 0 forever. Hosted
+  // transfers therefore show a coarse state and a spinner instead of a
+  // number; received transfers keep the percent, which counts real bytes.
   const useCoarseHostedDisplay = isHosted && !transfer.completed;
   const hostedActiveCoarse =
     useCoarseHostedDisplay && transfer.peersConnected > 0;
 
-  const status = transfer.completed
+  const status = isCancelled
+    ? "Cancelled"
+    : transfer.completed
     ? isHosted
       ? "Sent"
       : "Got it"
@@ -84,10 +79,8 @@ export function TransferCard({
         ? "Waiting for the other pear…"
         : "Finding the other side…"
       : isHosted
-        ? // Hosted active: split on whether any progress event has arrived.
-          // "Connected, sending…" before the engine's tracker has emitted
-          // anything; "Sending…" once data has demonstrably been flowing.
-          // Both states get a spinner instead of a percent number.
+        ? // Hosted active: split on whether any progress event has arrived,
+          // so the wording never claims data is flowing before it is.
           transfer.progressEverReceived
           ? "Sending…"
           : "Connected, sending…"
@@ -99,8 +92,8 @@ export function TransferCard({
   const primaryHandler = transfer.completed || isStalled ? onClear : onCancel;
   const primaryIsDanger = !transfer.completed && !isStalled;
 
-  // Hide the speed/ETA on hosted because we don't actually know the rate
-  // (same root cause as the broken percent — the byte counter lies).
+  // No speed or ETA on hosted: the byte counter that would feed them is the
+  // same unreliable source as the hosted percent.
   const showRate = isActive && !transfer.completed && speedBps > 0 && !isHosted;
 
   return (
@@ -110,14 +103,17 @@ export function TransferCard({
           <Text style={styles.title}>{status}</Text>
           <Text style={styles.sub}>
             {(() => {
-              // Dev mode: show raw peer counts. Off: surface user-friendly
-              // states ("Connected" / "Looking…" / "Not connected") that
-              // don't expose protocol vocabulary.
+              // Dev mode shows raw peer counts; otherwise the states avoid
+              // protocol vocabulary.
               if (devMode) {
                 if (transfer.peersConnected === 0) return "No one connected";
                 if (transfer.peersConnected === 1) return "With one pear";
                 return `With ${transfer.peersConnected} pears`;
               }
+              // Before `peersConnected`: a cancelled transfer has zero peers
+              // by construction, and "Not connected" names a failure that
+              // did not happen.
+              if (isCancelled) return "Stopped by you";
               if (transfer.peersConnected > 0) return "Connected";
               if (!transfer.completed && !isStalled) return "Looking…";
               return "Not connected";
@@ -126,9 +122,9 @@ export function TransferCard({
             {showRate && etaSec != null ? ` · ${formatEta(etaSec)} left` : ""}
           </Text>
         </View>
-        {/* spinner instead of percent for hosted active states.
-         * Percent stays for received (where it's accurate) and for any
-         * completed/stalled state on either side. */}
+        {/* Spinner instead of percent for hosted active states. Percent
+         * stays for received, where it is accurate, and for completed or
+         * stalled states on either side. */}
         {hostedActiveCoarse ? (
           <ActivityIndicator color={theme.primary} style={styles.hostedSpinner} />
         ) : useCoarseHostedDisplay ? null : (
@@ -147,10 +143,9 @@ export function TransferCard({
         ) : null}
       </View>
 
-      {/* hide the progress bar for hosted active states — the
-       * underlying percent is the lying-zero from socket.bytesWritten, so
-       * a static empty bar is misleading. Bar still shows for received
-       * transfers (real bytes) and for completed states on either side. */}
+      {/* No progress bar for hosted active states: the underlying percent
+       * reads zero, and a static empty bar is misleading. The bar stays for
+       * received transfers and for completed states on either side. */}
       {!hostedActiveCoarse && !useCoarseHostedDisplay ? (
         <View
           style={styles.track}

@@ -25,19 +25,10 @@ const RING_PEAK_SCALE = 2.8;
 const CYCLE_MS = 2000;
 
 /**
- * tiered status overlay anchored to a file icon's corner.
- *
- *  - inactive             → renders nothing
- *  - active-idle          → static green dot
- *  - active-broadcasting  → static green dot + two concentric rings pulsing
- *                            outward (phase-offset by half a cycle so the
- *                            visual wave is continuous)
- *
- * Honors the OS reduce-motion setting — in that case `active-broadcasting`
- * collapses to the same visual as `active-idle` (no rings).
- *
- * Animation: native-driver `transform: scale` + `opacity` only, so the JS
- * thread stays clear even with many rows active at once.
+ * Tiered status overlay anchored to a file icon's corner: nothing, a static
+ * dot, or a dot plus two phase-offset pulsing rings. Under the OS
+ * reduce-motion setting `active-broadcasting` collapses to `active-idle`.
+ * Native-driver `opacity` only, so many active rows leave the JS thread clear.
  */
 export default function ActiveIndicator({
   state,
@@ -75,10 +66,8 @@ export default function ActiveIndicator({
       ring2.setValue(0);
       return;
     }
-    // Phase-offset the two rings so one is always visible while the other
-    // resets. The delay on ring2 is one-shot (only the first cycle); after
-    // that, Animated.loop keeps both in lockstep against their own period
-    // but they remain offset because the first cycle established that.
+    // Phase-offset the rings so one is always visible while the other resets.
+    // The delay applies only to the first cycle; the loop preserves it after.
     const makeRing = (val: Animated.Value): Animated.CompositeAnimation =>
       Animated.loop(
         Animated.timing(val, {

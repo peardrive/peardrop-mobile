@@ -57,9 +57,9 @@ type ShareBundle = {
   files: SelectedFile[];
   shareLink: string;
   driveId?: string;
-  /** True for bundles loaded from persistence after an app restart. The
-   * engine no longer announces these on the swarm — they're history records.
-   * Live bundles created in this session have `dormant: false`. */
+  /** True for bundles loaded from persistence after a restart: the engine
+   * does not announce these, so they are history records. Bundles created
+   * in this session have `dormant: false`. */
   dormant?: boolean;
   createdAt?: number;
 };
@@ -139,23 +139,20 @@ function createStyles(theme: AppTheme) {
     statusLine: { color: theme.muted, marginBottom: 10, fontSize: 12 },
     middleSection: { marginTop: 2, minHeight: 120 },
     sectionLabel: { color: theme.muted, fontSize: 12, fontWeight: "600", marginBottom: 8, letterSpacing: 0.4 },
-    // shape for the SwipeableRow wrapper around a standalone
-    // bundle card — full rounded corners so the swipe-reveal red backing
-    // matches the bundle card's rounding.
+    // Shape for the swipe wrapper around a standalone bundle card: full
+    // rounding, so the reveal backing matches the card behind it.
     bundleSwipeWrap: {
       borderRadius: 16,
     },
-    // when paired with a transfer card below,
-    // round only the top corners so the swipe-reveal backing matches
-    // the bundle card's flattened bottom edge.
+    // Paired with a transfer card below, so only the top corners round and
+    // the reveal backing matches the card's flattened bottom edge.
     bundleSwipeWrapPaired: {
       borderTopLeftRadius: 16,
       borderTopRightRadius: 16,
     },
-    // minimal launcher card. Tap opens the QR/action
-    // modal; swipe-to-delete (Phase O) still handles stop/remove. Dormant
-    // and failed states are now signaled through opacity + a small icon
-    // rather than prose.
+    // Minimal launcher card: tap opens the action modal and swipe handles
+    // stop or remove. Dormant and failed states are signalled with opacity
+    // and an icon rather than prose.
     bundleCard: {
       backgroundColor: theme.cardStrong,
       borderWidth: 1,
@@ -181,18 +178,15 @@ function createStyles(theme: AppTheme) {
       marginTop: 4,
     },
     bundleStateIcon: { marginRight: 2 },
-    // renamed semantically from a hex verify-tail
-    // to a filename summary. Same visual treatment (muted, small) but
-    // without the tabular-nums variant — filenames aren't digit grids.
+    // A filename summary rather than a hex tail, so no tabular-nums here:
+    // filenames are not digit grids.
     bundleVerify: {
       color: theme.muted,
       fontSize: 12,
       flexShrink: 1,
     },
-    // peer-connected indicator. A small filled
-    // circle in the bundleSubRow next to the verify tail. Pulses opacity
-    // while at least one peer is connected; vanishes when none. Color is
-    // theme.primary to read as "active" without being alarming.
+    // Peer-connected indicator: pulses while at least one peer is attached
+    // and vanishes when none is, in the brand color rather than a warning.
     peerDot: {
       width: 8,
       height: 8,
@@ -215,11 +209,9 @@ function createStyles(theme: AppTheme) {
       alignItems: "center",
       justifyContent: "center",
     },
-    // visual pairing of bundle + transfer. When a
-    // hosted bundle has an active transfer card, render the transfer
-    // directly beneath it with flattened touching edges so they read as
-    // one stacked unit. The SwipeableRow still wraps the bundle card
-    // alone — swipe gestures don't extend over the transfer card.
+    // A bundle with an active transfer renders the transfer directly
+    // beneath it with flattened touching edges, so they read as one unit.
+    // The swipe wrapper still covers the bundle card alone.
     bundlePairWrap: {
       marginBottom: 14,
     },
@@ -229,10 +221,8 @@ function createStyles(theme: AppTheme) {
       borderBottomWidth: 0,
     },
     pairedTransferWrap: {
-      // The transfer card itself owns borderRadius via TransferCard; we
-      // need to flatten only the top corners so the join with the bundle
-      // card above is seamless. Easiest path: clip via a wrapper that
-      // overrides border-radius on its single child.
+      // TransferCard owns its own radius, so this wrapper clips to flatten
+      // the top corners and make the join with the card above seamless.
       marginHorizontal: 0,
       borderBottomLeftRadius: 16,
       borderBottomRightRadius: 16,
@@ -284,6 +274,7 @@ export default function HomeScreen() {
     sharePaths,
     transfers,
     cancelTransfer,
+    cancelInFlight,
     clearTransfer,
     activeDriveIds,
     failedHydrationIds,
@@ -310,22 +301,18 @@ export default function HomeScreen() {
     // Show only transfers originating from drives we host. Anything that
     // came in via a share link belongs on the Receive tab.
     const hosted = transfers.filter((t) => t.origin === "hosted");
-    // in user mode, hide hosted transfers that are still in their
-    // seeded state (no peer has ever connected, no progress, not completed).
-    // The bundle card by itself communicates "share is live, waiting for
-    // someone to grab it" — surfacing a separate "Waiting for the other
-    // phone…" strip below it just adds engineering-feeling chatter. Dev
-    // mode keeps the full visibility.
+    // Outside dev mode, hide hosted transfers still in their seeded state:
+    // the bundle card already says the share is live and waiting, so a
+    // second strip below it only adds chatter.
     const filtered = devMode
       ? hosted
       : hosted.filter((t) => t.completed || t.peersConnected > 0);
     return filtered.slice(0, 8);
   }, [transfers, devMode]);
 
-  // Phase W.1: trigger the one-shot swipe-hint peek on the topmost bundle
-  // card the first time the list has items. Marks the flag seen IMMEDIATELY
-  // (before the 500 ms delay) so a sibling list (Receive) checking in the
-  // same window doesn't also fire — the cue is shared across both lists.
+  // Fire the one-shot swipe hint on the topmost card once the list has
+  // items. The flag is marked seen immediately, before the delay, so a
+  // sibling list checking in the same window does not also fire.
   useEffect(() => {
     if (peekTopmost) return;
     if (bundles.length === 0) return;
@@ -345,13 +332,9 @@ export default function HomeScreen() {
 
   const onPeekDone = useCallback(() => setPeekTopmost(false), []);
 
-  // pulsing dot animation for the "peer connected"
-  // indicator on bundle cards. One shared Animated.Value loops opacity
-  // 0.35 ↔ 1.0 over 1200 ms; every visible indicator uses it, so the
-  // pulse is in sync across cards. Native driver: yes (opacity only).
-  // The loop runs only while at least one bundle has connected peers,
-  // both to be lighter on the JS thread and so the dot isn't pulsing
-  // invisibly in the background.
+  // One shared animated value drives every peer-connected dot, so the pulse
+  // stays in sync across cards. The loop runs only while some bundle has a
+  // peer, to keep the JS thread clear and avoid pulsing invisibly.
   const peerPulse = useRef(new Animated.Value(1)).current;
   const anyPeerConnected = useMemo(
     () =>
@@ -394,13 +377,10 @@ export default function HomeScreen() {
     return m;
   }, [transfers]);
 
-  // first time the user opens a picker and backs
-  // out without selecting anything, show a one-time educational toast.
-  // Some Android pickers (Google Drive especially) don't expose an
-  // obvious back button — users got stuck repeatedly. We can't add UI to
-  // the OS picker itself, but we can teach the gesture once on return.
-  // Flag persisted in AsyncStorage so it never fires again after the
-  // first appearance.
+  // A one-time hint the first time a picker is dismissed empty. Some
+  // Android pickers expose no obvious back button, and the app cannot add
+  // UI to the OS picker, so the gesture is taught once on return. The flag
+  // is persisted, so it never fires again.
   const maybeShowPickerBackHint = useCallback(() => {
     void getPickerBackHintSeen().then((seen) => {
       if (seen) return;
@@ -409,10 +389,9 @@ export default function HomeScreen() {
     });
   }, [showToast]);
 
-  // Phase T.3: hydrate persisted bundles on mount. Anything we load was
-  // created in a previous app session and is dormant — the engine isn't
-  // announcing it. Live bundles created this session are appended above
-  // and have `dormant: false`.
+  // Hydrate persisted bundles on mount. Anything loaded here comes from an
+  // earlier session and is dormant, because the engine is not announcing
+  // it; bundles created this session carry `dormant: false`.
   useEffect(() => {
     let mounted = true;
     void loadPersistedBundles().then((persisted: PersistedBundle[]) => {
@@ -425,9 +404,8 @@ export default function HomeScreen() {
         dormant: true,
         createdAt: b.createdAt,
       }));
-      // Merge with whatever's already in state (live bundles created this
-      // session). De-dup on driveId so a re-share of the same drive within
-      // a session doesn't double up.
+      // Merge with the live bundles already in state, de-duping on driveId
+      // so re-sharing the same drive in one session does not double up.
       setBundles((prev) => {
         const liveIds = new Set(prev.map((b) => b.driveId).filter(Boolean));
         const dormantOnly = hydrated.filter((h) => !liveIds.has(h.driveId));
@@ -439,20 +417,11 @@ export default function HomeScreen() {
     };
   }, []);
 
-  // Auto-clear the sender's progress card 12 s after a hosted transfer
-  // completes AND the last peer disconnects (peersConnected === 0). The
-  // bundle card itself (with the share link) stays — we're only removing
-  // the transfer-progress strip. If a new peer connects before the timer
-  // fires we leave the card alone; the next completion cycle schedules
-  // its own clear.
-  //
-  // adjustment: was 4 s. Real-world transfers complete in well under
-  // a second (Hyperdrive replication is fast for small drives), and the
-  // engine's 1 Hz socket.bytesWritten sampler doesn't track Hyperdrive bytes
-  // accurately, so the card flashes "Sending" → "Sent" too quickly to
-  // perceive. 12 s leaves a clear window for the user to see the "Sent"
-  // badge before the strip clears. Bundle persistence (Phase T) will keep
-  // the share itself visible regardless.
+  // Auto-clear the sender's progress strip once a hosted transfer completes
+  // and the last peer disconnects. Only the strip goes; the bundle card and
+  // its link stay. A new peer connecting before the timer fires cancels it,
+  // and the next completion schedules its own. The delay is long enough to
+  // see the completed badge, since replication of a small drive is quick.
   const TRANSFER_AUTO_CLEAR_MS = 12000;
   const scheduledClearRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   useEffect(() => {
@@ -468,8 +437,7 @@ export default function HomeScreen() {
       }, TRANSFER_AUTO_CLEAR_MS);
       scheduled.set(driveId, timer);
     }
-    // Drop timers for drives that are no longer visible (manually cleared,
-    // new session) or that have new peers connecting again.
+    // Drop timers for drives no longer visible, or that have peers again.
     const liveCompletedIds = new Set(
       visibleTransfers.filter((t) => t.completed && t.peersConnected === 0).map((t) => t.driveId)
     );
@@ -504,19 +472,17 @@ export default function HomeScreen() {
         return;
       }
       if (res.canceled) {
-        // silent on cancel, except for the first-ever cancel
-        // where we surface a one-time hint about returning from pickers.
+        // Silent on cancel, except for the first one, which earns the
+        // one-time hint about returning from a picker.
         maybeShowPickerBackHint();
         return;
       }
 
       const out = await sharePaths(paths);
       if (!out.ok || !out.shareLink) {
-        // out.error was the raw backend message (e.g., "Cannot read
-        // file (...): EACCES"). Sprint 3S: out.error is now a structured
-        // {category, cause, message, detail?} object; errorMessage extracts
-        // the display string. Dev mode surfaces the raw engine message;
-        // production shows the friendly fallback.
+        // `out.error` is a structured object and `errorMessage` extracts the
+        // display string. Dev mode surfaces the raw engine message; a
+        // release build shows the friendly fallback.
         const rawMessage = errorMessage(out.error);
         showToast(
           devMode && rawMessage
@@ -537,8 +503,8 @@ export default function HomeScreen() {
         createdAt: now,
       };
       setBundles((prev) => [bundle, ...prev.filter((b) => b.driveId !== out.driveId)]);
-      // Persist so the bundle survives app restarts (Phase T.1). Persistence
-      // is best-effort; failure here doesn't block the share flow.
+      // Persist so the bundle survives a restart. Best-effort: a failure
+      // here does not block the share flow.
       if (out.driveId) {
         void persistBundle({
           driveId: out.driveId,
@@ -553,8 +519,8 @@ export default function HomeScreen() {
     } catch (e: unknown) {
       haptics.error();
       const raw = String((e as Error)?.message || e);
-      // Raw exception text reads developer-y; only surface it when dev mode
-      // is on. Normal users get a friendly fallback that suggests recovery.
+      // Raw exception text only in dev mode; everyone else gets a fallback
+      // that suggests a way forward.
       showToast(
         devMode ? raw : "Something went sideways — give it another go?",
         "error"
@@ -638,8 +604,8 @@ export default function HomeScreen() {
     } catch (e: unknown) {
       haptics.error();
       const raw = String((e as Error)?.message || e);
-      // Surface raw folder errors while the feature is stabilizing — the
-      // stage prefix (pick:/enumerate:) identifies where it failed.
+      // Surface raw folder errors: the stage prefix identifies where it
+      // failed.
       showToast(`Folder error: ${raw}`, "error");
     } finally {
       setFolderBusy(false);
@@ -649,20 +615,11 @@ export default function HomeScreen() {
   async function onPickPhotos() {
     setPhotoBusy(true);
     try {
-      // use expo-image-picker for true multi-select on
-      // Android (Storage Access Framework via DocumentPicker treats most
-      // single-tap photo selections as "pick and exit," which doesn't match
-      // user expectations). expo-image-picker on Android 13+ launches the
-      // system PhotoPicker (permissionless, checkbox multi-select with a
-      // Done button); Android ≤12 falls back to MediaStore which needs
-      // READ_EXTERNAL_STORAGE — declared capped to API 32 in AndroidManifest.
-      //
-      // fix: on older Android, launchImageLibraryAsync can throw
-      // outright (permission denied, vendor-customized gallery missing, OEM
-      // ROM quirk). Wrap it in try/catch so we fall back to DocumentPicker
-      // with `type: "image/*"` rather than dead-ending the user. The
-      // DocumentPicker path is the same one onPickAndShare uses, so it's
-      // proven to work across every Android version we ship to.
+      // The image picker gives true multi-select, where the document picker
+      // treats a single tap as pick-and-exit. On newer Android it launches
+      // the permissionless system photo picker; on older versions it can
+      // throw outright, so the try/catch falls back to the document picker
+      // rather than dead-ending the user.
       let files: SelectedFile[] = [];
       let userCanceled = false;
       try {
@@ -694,9 +651,8 @@ export default function HomeScreen() {
             }));
         }
       } catch {
-        // PhotoPicker / MediaStore path failed entirely. Fall through to
-        // DocumentPicker as a robust fallback. The user gets the SAF picker
-        // (worse multi-select UX) instead of an error dead-end.
+        // The photo-picker path failed outright, so fall through to the
+        // document picker: worse multi-select, but not a dead end.
         const fallback = await DocumentPicker.getDocumentAsync({
           type: "image/*",
           copyToCacheDirectory: true,
@@ -710,8 +666,8 @@ export default function HomeScreen() {
       }
 
       if (userCanceled) {
-        // silent on cancel, except for the first-ever cancel
-        // where we surface a one-time hint about returning from pickers.
+        // Silent on cancel, except for the first one, which earns the
+        // one-time hint about returning from a picker.
         maybeShowPickerBackHint();
         return;
       }
@@ -755,8 +711,8 @@ export default function HomeScreen() {
     } catch (e: unknown) {
       haptics.error();
       const raw = String((e as Error)?.message || e);
-      // Raw exception text reads developer-y; only surface it when dev mode
-      // is on. Normal users get a friendly fallback that suggests recovery.
+      // Raw exception text only in dev mode; everyone else gets a fallback
+      // that suggests a way forward.
       showToast(
         devMode ? raw : "Something went sideways — give it another go?",
         "error"
@@ -773,20 +729,15 @@ export default function HomeScreen() {
   }
 
   function onClearBundle(id: string) {
-    // Find the bundle so we can stop and purge the corresponding drive
-    // AND remove from persistence. Without the cancelTransfer the drive
-    // keeps running and announcing in the swarm even after the card
-    // disappears. Used by both the "Stop sharing" / "Clear" header button
-    // and the swipe-delete affordance.
-    //
-    // "live" is now derived from activeDriveIds — a
-    // bundle marked `dormant: true` at load time may have since been
-    // rehydrated by the engine and is therefore live. We always call
-    // cancelTransfer(purge: true) when there's a driveId: the engine's
-    // engineStopDrive is a no-op on unknown driveIds, so the call is safe
-    // for never-hydrated drives too, AND it acts as a manifest cleanup
-    // hook (marks the manifest entry as purged so it won't be rehydrated
-    // again on the next boot).
+    // Stop and purge the drive as well as removing it from persistence:
+    // without the cancel, the drive keeps running and announcing after the
+    // card disappears. Liveness comes from the active-drive set, since a
+    // bundle loaded as dormant may since have been rehydrated. Purging
+    // doubles as manifest cleanup, marking the entry so the next boot does
+    // not rehydrate it. The engine answers a failure for an unknown drive
+    // rather than ignoring the call; the result is simply discarded here.
+    // Deleting a bundle is the destructive path and stays on
+    // `cancelTransfer`; the in-flight Cancel uses `cancelInFlight`.
     const bundle = bundles.find((b) => b.id === id);
     const driveId = bundle?.driveId;
     const wasLive = !!driveId && activeDriveIds.has(driveId);
@@ -819,19 +770,18 @@ export default function HomeScreen() {
           transfer={t}
           expanded={expanded}
           onToggleExpanded={() => toggleExpand(t.driveId)}
-          onCancel={() => void cancelTransfer(t.driveId)}
+          // Not `cancelTransfer`, whose default purges: cancelling a send
+          // means stop sending, not destroy the share.
+          onCancel={() => void cancelInFlight(t.driveId)}
           onClear={() => clearTransfer(t.driveId)}
         />
       </View>
     );
   }
 
-  // split visibleTransfers into (a) transfers
-  // that pair with a known bundle and (b) orphans (transfer exists but
-  // no bundle on screen — e.g. a transfer that landed before its bundle
-  // hydrated, or one for a bundle the user already cleared). The
-  // bundle-loop renders (a) inline beneath each bundle; orphans render
-  // in a small footer with a heading so they're not invisible.
+  // Split the visible transfers into those that pair with a bundle on
+  // screen and those that do not. Paired ones render beneath their bundle;
+  // orphans render in a footer, so they are never invisible.
   const bundleDriveIds = useMemo(
     () => new Set(bundles.map((b) => b.driveId).filter(Boolean)),
     [bundles],
@@ -854,12 +804,10 @@ export default function HomeScreen() {
           <Text style={styles.sub}>Send, track, receive — one home for it all.</Text>
 
           {/*
-           * backend lifecycle status ("booting" / "listening" /
-           * "ready" / "error" / "boot error") is engineering vocabulary —
-           * useful while debugging, meaningless to a non-technical user.
-           * Gated behind dev mode. The `ready` boolean still drives the
-           * disabled state of the SEND buttons so the UX still respects
-           * boot state without leaking the strings.
+           * Backend lifecycle status is engineering vocabulary, so it is
+           * gated behind dev mode. The `ready` boolean still drives the
+           * disabled state of the send buttons, so boot state is respected
+           * without the strings leaking.
            */}
           {devMode && (
             <Text style={styles.statusLine}>
@@ -922,19 +870,16 @@ export default function HomeScreen() {
 
             {bundles.map((bundle, bundleIdx) => {
               const totalBytes = bundle.files.reduce((sum, f) => sum + (f.size ?? 0), 0);
-              // Live = engine has this drive in activeDrives (fresh share OR
-              // rehydrated). Failed = engine tried + couldn't rebuild it.
-              // Dormant = persisted but not yet (re)live this session.
+              // Live means the engine holds this drive; failed means it
+              // tried and could not rebuild it; dormant means persisted but
+              // not live in this session.
               const isLive =
                 !!bundle.driveId && activeDriveIds.has(bundle.driveId);
               const isFailed =
                 !!bundle.driveId && failedHydrationIds.has(bundle.driveId);
               const isDormant = !!bundle.driveId && !isLive && !isFailed;
-              // human-readable filename summary
-              // replaces the old `…7f43c` hex tail. Single file → name
-              // (truncated middle). Multi → first name + "+ N more".
-              // Fallback to "shared files" if the bundle has no file
-              // metadata (extremely rare; pre-Phase-T legacy bundle).
+              // A filename summary rather than a hex tail, falling back to a
+              // generic label when the bundle carries no file metadata.
               const FILENAME_BUDGET = 28;
               const firstFileName = bundle.files[0]?.name?.trim() || "";
               const filenameSummary =
@@ -949,7 +894,6 @@ export default function HomeScreen() {
                 bundle.files.length === 1
                   ? "1 file"
                   : `${bundle.files.length} files`;
-              // peer-connected indicator state for this bundle.
               const bundleTransfer = bundle.driveId
                 ? transferByDriveId.get(bundle.driveId)
                 : undefined;
@@ -967,10 +911,9 @@ export default function HomeScreen() {
                   ? `, ${peerCount === 1 ? "one pear connected" : `${peerCount} pears connected`}`
                   : ""
               }`;
-              // does this bundle have an active
-              // transfer to pair with? If so, the bundle card flattens
-              // its bottom edge and we render the transfer card flush
-              // beneath it as one stacked unit.
+              // With an active transfer to pair with, the bundle card
+              // flattens its bottom edge and the transfer renders flush
+              // beneath it as one unit.
               const pairedTransfer = bundleTransfer && visibleTransfers.includes(bundleTransfer)
                 ? bundleTransfer
                 : undefined;
@@ -981,11 +924,8 @@ export default function HomeScreen() {
                   deleteLabel={isLive ? "Stop" : "Delete"}
                   accessibilityLabel={a11yLabel}
                   frontBackground={theme.bg}
-                  // The outer bundlePairWrap owns the inter-pair spacing
-                  // now; the SwipeableRow no longer needs its own
-                  // bottom margin. Border-radius depends on whether a
-                  // transfer card is paired below — flatten bottom
-                  // corners in the paired case.
+                  // The outer wrapper owns the spacing between pairs. The
+                  // radius depends on whether a transfer card sits below.
                   containerStyle={
                     pairedTransfer ? styles.bundleSwipeWrapPaired : styles.bundleSwipeWrap
                   }
@@ -1072,10 +1012,9 @@ export default function HomeScreen() {
               );
             })}
 
-            {/* orphan transfers — transfers with no
-             * matching bundle on screen. Rare (transient hydration race,
-             * or bundle cleared while a transfer is mid-flight). Rendered
-             * separately so they're not invisible. */}
+            {/* Transfers with no matching bundle on screen, from a
+             * hydration race or a bundle cleared mid-flight. Rendered
+             * separately so they are not invisible. */}
             {orphanTransfers.length > 0 && (
               <View style={{ marginTop: bundles.length ? 6 : 0 }}>
                 <Text style={[styles.sectionLabel, { marginTop: 8 }]}>SENDING NOW</Text>
@@ -1083,11 +1022,8 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* the picker buttons at the top already
-             * communicate "this is where shares come from"; an extra
-             * instructional empty-state was prose-as-decoration. Render
-             * nothing when the list is empty; the page is intentionally
-             * sparse. */}
+            {/* Nothing renders when the list is empty: the picker buttons
+             * at the top already say where shares come from. */}
 
           </View>
         </ScrollView>

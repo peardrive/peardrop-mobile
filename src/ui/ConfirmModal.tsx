@@ -16,9 +16,8 @@ export type ConfirmModalProps = {
 };
 
 /**
- * Themed confirmation prompt. Replaces native `Alert.alert` so destructive
- * actions match the rest of the app's typography, theme colors, and modal
- * style instead of falling back to the OS chrome.
+ * Themed confirmation prompt, so destructive actions match the app's
+ * typography, theme colors and modal style rather than the OS chrome.
  */
 export default function ConfirmModal({
   visible,

@@ -1,7 +1,9 @@
 import {
+  APK_MIME,
   fileExt,
   baseName,
   fileIcon,
+  fileIconName,
   previewModeFor,
   mimeFromName,
   truncateMiddle,
@@ -97,5 +99,60 @@ describe("mimeFromName", () => {
     expect(mimeFromName("doc.pdf")).toBe("application/pdf");
     expect(mimeFromName("notes.md")).toBe("text/plain");
     expect(mimeFromName("x.xyz")).toBe("*/*");
+  });
+
+  it("names the Android package archive type for .apk", () => {
+    // Behavioural, not decorative: an ACTION_VIEW carrying "*/*" resolves to
+    // no handler. The package-archive type is what lets the system installer
+    // offer itself as a target.
+    expect(mimeFromName("app-release.apk")).toBe(APK_MIME);
+    expect(mimeFromName("APP-RELEASE.APK")).toBe(APK_MIME);
+    expect(APK_MIME).toBe("application/vnd.android.package-archive");
+  });
+
+  it("no longer falls through to */* for apk or zip", () => {
+    expect(mimeFromName("a.apk")).not.toBe("*/*");
+    expect(mimeFromName("a.zip")).toBe("application/zip");
+  });
+
+  it("recognizes 3gp/3g2 camera output as video", () => {
+    // reachable now that the photos picker returns videos, and
+    // `extensionForAsset` can emit 3gp for video/3gpp.
+    expect(mimeFromName("clip.3gp")).toBe("video/*");
+    expect(mimeFromName("clip.3g2")).toBe("video/*");
+  });
+});
+
+describe("previewModeFor — video containers", () => {
+  it("treats 3gp/3g2 as previewable video, not unsupported", () => {
+    expect(previewModeFor("clip.3gp")).toBe("video");
+    expect(previewModeFor("clip.3g2")).toBe("video");
+  });
+
+  it("leaves an apk unsupported — there is nothing to preview in-app", () => {
+    expect(previewModeFor("app.apk")).toBe("unsupported");
+  });
+});
+
+describe("fileIconName", () => {
+  // `.apk` is still in EXEC_EXTS, and must still win the Android
+  // glyph — the ordering of the two checks is the whole fix.
+  it("gives an apk the Android glyph, not the generic cog", () => {
+    expect(fileIconName("app.apk")).toBe("logo-android");
+    expect(fileIconName("APP.APK")).toBe("logo-android");
+  });
+
+  it("leaves the other executables on the cog", () => {
+    expect(fileIconName("setup.exe")).toBe("cog-outline");
+    expect(fileIconName("thing.deb")).toBe("cog-outline");
+    expect(fileIconName("disk.dmg")).toBe("cog-outline");
+  });
+
+  it("still routes the ordinary categories", () => {
+    expect(fileIconName("a.jpg")).toBe("image-outline");
+    expect(fileIconName("a.mp4")).toBe("videocam-outline");
+    expect(fileIconName("a.zip")).toBe("archive-outline");
+    expect(fileIconName("a.pdf")).toBe("document-outline");
+    expect(fileIconName("noext")).toBe("document-outline");
   });
 });

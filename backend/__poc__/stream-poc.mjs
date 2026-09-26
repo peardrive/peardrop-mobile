@@ -1,18 +1,11 @@
-// proof-of-concept: round-trip a 5 MB file through Hyperdrive
-// using streaming on both ends, verifying byte-for-byte fidelity.
+// Proof-of-concept: round-trip a 5 MB file through Hyperdrive using streaming
+// on both ends, verifying byte-for-byte fidelity.
 //
-// Runs under Node (bare-fs needs the Bare global and can't run here). The
-// substrate this proves out is the **pipe contract** between Hyperdrive's
-// streams and a Node-style fs stream — Hyperdrive uses streamx directly,
-// bare-fs uses streamx via bare-stream. Both Node and bare-fs stream
-// surfaces expose the same Readable/Writable conventions (pipe, 'data',
-// 'end', 'error', 'close'/'finish', backpressure via .write() return) so
-// what works here under Node should map cleanly to bare-fs under Bare.
-//
-// What this DOESN'T prove: bare-fs's stream impl specifically. We accept
-// that residual risk on the basis that bare-fs uses the same streamx
-// underlying class as Hyperdrive, and the non-streaming bare-fs methods
-// already work in the engine.
+// Runs under Node, because bare-fs needs the Bare global. What it proves is
+// the pipe contract between Hyperdrive's streams and a Node-style fs stream:
+// both surfaces expose the same Readable/Writable conventions, so what works
+// here should map to bare-fs under Bare. It does not prove bare-fs's own
+// stream implementation.
 //
 // Run: node backend/__poc__/stream-poc.mjs
 
@@ -33,10 +26,9 @@ function md5(path) {
 }
 
 async function pipeAwaitClose(src, dst) {
-  // Match the production pattern proposed for the engine — pipe, then
-  // wait for the destination's 'close'. Hyperdrive's createWriteStream
-  // sequences the in-drive `db.put` inside its `final` callback, which
-  // means 'close' fires only after the manifest entry is committed.
+  // Pipe, then wait for the destination's 'close'. Hyperdrive's
+  // createWriteStream sequences the in-drive `db.put` inside its `final`
+  // callback, so 'close' fires only after the manifest entry is committed.
   return new Promise((resolve, reject) => {
     let settled = false;
     const done = (err) => {
@@ -115,9 +107,8 @@ async function main() {
     console.log("[poc] error propagated as:", propagated.code || propagated.message);
 
     // ---- Backpressure sanity: write 5 MB in chunks via write() return value ----
-    // This isn't a full backpressure test (Node's pipe handles it for us
-    // above) — it just confirms the Writable.write() return value is the
-    // streamx contract (boolean) so manual pumping would work too.
+    // Not a full backpressure test: it confirms the Writable.write() return
+    // value is the streamx boolean contract, so manual pumping would work.
     console.log("[poc] backpressure smoke check…");
     const ws = drive.createWriteStream("/bp.bin");
     const chunk = Buffer.alloc(64 * 1024, 0x7f);

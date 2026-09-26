@@ -1,16 +1,11 @@
 import RNFS from "react-native-fs";
 
 /**
- * Persistent record of every share bundle the user has created. Mirrors
- * the listener pattern from `receivedFilesStorage.ts`: a JSON file in
- * Documents, an in-memory cache, and a Set<Listener> hook surface so
- * HomeScreen can subscribe for live updates.
- *
- * After an app restart the engine no longer announces these drives on
- * the swarm, so persisted bundles are "dormant" — useful as history /
- * link records, but the share link won't resolve until the user re-shares.
- * HomeScreen renders dormant entries with reduced opacity and a clarifying
- * caption (see Phase T.3).
+ * Persistent record of every share bundle the user has created: a JSON file
+ * in Documents, an in-memory cache and a listener set, so the list can
+ * subscribe for live updates. After a restart the engine no longer announces
+ * these drives, so persisted bundles are dormant — a link record whose share
+ * link does not resolve until the user re-shares.
  */
 
 export type PersistedBundleFile = {

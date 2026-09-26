@@ -70,6 +70,30 @@ export const HOLD_SERVICE_FOR_IDLE_HOST = false;
  */
 export const IDLE_HOST_GRACE_MS = 10 * 60 * 1000;
 
+/**
+ * the pad on the WAKE, not on the window.
+ *
+ * `IDLE_HOST_GRACE_MS` above is unchanged and this does not extend it. It is the
+ * margin that was already in the tree, as a bare `+ 250` on the RN `setTimeout`
+ * that used to end this window, kept for the same reason it was written: a wake
+ * that lands exactly on the boundary finds `now - lastPeerLeftAt < GRACE` true by
+ * a millisecond and releases nothing, and the next re-evaluation is a whole
+ * ticker cadence away.
+ *
+ * What changed is who waits it out. The worklet expires the window now
+ * (`backend/hyperdrive-engine.mjs`, `sweepIdleHostGrace`), because RN's timers do
+ * not run in the state this window exists to cover. RN sends
+ * `IDLE_HOST_GRACE_MS + IDLE_HOST_GRACE_WAKE_PAD_MS` down on `RPC_LISTEN`, and
+ * the pad covers the one-way IPC skew between the engine stamping its own
+ * `lastPeerLeftAt` and RN stamping its copy on the `peer-disconnected` it
+ * produced. The engine's stamp is always the earlier of the two, so the pad is
+ * spent in the right direction.
+ *
+ * Both numbers live here, in the file that owns the arithmetic, so neither realm
+ * can hold a copy that drifts.
+ */
+export const IDLE_HOST_GRACE_WAKE_PAD_MS = 250;
+
 // ---------------------------------------------------------------------
 // the forced-active override (test instrument)
 // ---------------------------------------------------------------------
@@ -137,10 +161,34 @@ export type ActivityOrigin = "hosted" | "received" | "unknown";
 export type TransferActivityInput = {
   origin: ActivityOrigin;
   completed: boolean;
+  /**
+   * The RN stall watchdog's verdict.
+   *
+   * **no longer read on the download branch.** Kept on
+   * the type because `TransferSummary` still carries it and the UI still
+   * renders it; see `classifyTransfer` for why the predicate stopped
+   * consulting it.
+   */
   stalled: boolean;
   peersConnected: number;
   /** When the peer count last fell to zero. Null if it never has. */
   lastPeerLeftAt: number | null;
+  /**
+   * Whether any progress event has ever been seen for this transfer.
+   *
+   * **no longer read by `classifyTransfer`**,
+   * for the same reason `stalled` above is not — it is a statement about what
+   * RN has been told so far, not about whether the transfer is over. It is
+   * `false` for the whole pre-first-block phase of every download, so reading
+   * it released exactly the downloads that most needed holding. See the
+   * download branch for the full account.
+   *
+   * Kept on the type because `TransferSummary` carries it
+   * (`src/state/types.ts`), `transferStall.ts` still reads it, and the
+   * received-row status text still renders from it. Optional so a fixture may
+   * omit it; nothing here distinguishes `false` from absent any more.
+   */
+  progressEverReceived?: boolean;
 };
 
 /** Why a transfer counts as active. Null means it does not. */
@@ -153,6 +201,68 @@ export type ActivityReason =
   | "idle-host-grace"
   /** Hosting an idle share, only when HOLD_SERVICE_FOR_IDLE_HOST is true. */
   | "idle-host";
+
+/**
+ * the WRITE side of `lastPeerLeftAt`.
+ *
+ * `classifyTransfer` below is the only reader of that field; until this sprint
+ * the three writers were three separate inline ternaries in
+ * `src/state/backend.ts` — the `peer-connected`, `peer-disconnected` and
+ * `download-peer-disconnected` handlers. That file imports react-native, so
+ * jest cannot reach any of them, and the rule this module exists to enforce
+ * (`transferActivity.ts:2-7`: one question, one place, or the halves drift)
+ * was being enforced for the read and not for the write.
+ *
+ * It had already drifted. **`peer-connected` wrote nothing at all**, so a
+ * departure stamp outlived the departure: a sender that dropped and re-attached
+ * left a `lastPeerLeftAt` sitting in the record, ageing, describing a peer who
+ * had come back. The predicate survives that only because `peersConnected > 0`
+ * is checked first; anything that consults the stamp while a peer is attached
+ * reads a lie, and the grace arithmetic in `msUntilActivityCouldChange` is
+ * exactly such a consumer.
+ *
+ * So: a peer is attached ⇒ there is no pending departure ⇒ the stamp is null.
+ * Otherwise the falling-edge rule the disconnect handlers already had (Sprint
+ * 8A): stamp only when the count reaches zero from above, never on two-to-one,
+ * or peer churn would extend the window indefinitely.
+ *
+ * This is not a new rule — it is the rule the OTHER realm has been following
+ * all along. `backend/hyperdrive-engine.mjs:1035-1040` clears its own
+ * `tracker.lastPeerLeftAt` on the rising edge, with the same reasoning in the
+ * comment above it ("a peer is attached, so there is no idle period to
+ * expire"). The two realms keep independent copies of this timestamp, and only
+ * RN's was stale. What follows is the engine's rule, written down where RN's
+ * predicate can be tested against it.
+ *
+ * `prevPeerIdCount` is carried separately from `prevPeersConnected` because the
+ * `download-peer-disconnected` handler tested both — the two are kept in sync by
+ * every writer, and passing both keeps this a faithful extraction rather than a
+ * tightening smuggled in beside one.
+ */
+export function nextLastPeerLeftAt(args: {
+  /** `peersConnected` BEFORE this event. */
+  prevPeersConnected: number;
+  /** `peerIds.length` BEFORE this event. */
+  prevPeerIdCount: number;
+  /** `peersConnected` AFTER this event. */
+  nextPeersConnected: number;
+  /** The stamp currently on the record. */
+  prevLastPeerLeftAt: number | null;
+  /** Now, in ms — the stamp to write on a falling edge. */
+  at: number;
+}): number | null {
+  // A peer is attached right now. Whatever departure this stamp described is
+  // over, and leaving it set records a peer who came back as one who left.
+  if (args.nextPeersConnected > 0) return null;
+
+  // The falling edge: zero, reached from above.
+  if (args.prevPeersConnected > 0 || args.prevPeerIdCount > 0) return args.at;
+
+  // Still zero, and was zero. Nothing left, so nothing to stamp — and an
+  // existing stamp must not be refreshed, or a second event about the same
+  // departure would restart the window.
+  return args.prevLastPeerLeftAt;
+}
 
 export function classifyTransfer(
   t: TransferActivityInput,
@@ -170,11 +280,53 @@ export function classifyTransfer(
   }
 
   if (t.origin === "received") {
-    // A completed download is done. A stalled one has had no events for
-    // 30 s and its sender has usually gone; holding a foreground service
-    // for it is the idle-host cost with none of the upside.
-    if (!t.completed && !t.stalled) return "download";
-    return null;
+    /**
+     * The download branch runs on evidence about the transfer, never on RN's
+     * own state. `stalled` is the RN watchdog's verdict, taken well inside the
+     * engine's per-file wait, and releasing the service is what lets the OS
+     * freeze the process that was about to receive the rest; `stalled` also
+     * never clears for a download that received no progress event, so that
+     * shape had no reachable release at all. What replaces them is what the
+     * upload branch already runs on: an engine-observed peer, and an
+     * engine-observed departure.
+     */
+
+    // Terminal here, unlike on a hosted drive: nothing re-opens a finished
+    // download. (The hosted inversion is the tripwire above, and is why this
+    // check may not be hoisted out of the branch.)
+    if (t.completed) return null;
+
+    // POSITIVE evidence, checked first and symmetric with `upload`: a sender
+    // is attached to this drive right now.
+    if (t.peersConnected > 0) return "download";
+
+    // No sender attached. The engine has to have SAID so — an unstamped
+    // `lastPeerLeftAt` means no departure was ever observed, which is the
+    // seconds-old pre-connect window of a grab that has just started. There
+    // is no evidence of an ending, so hold: a wrong release here is the
+    // eight-sprint regression, a wrong hold costs one background window that
+    // the next event re-evaluates.
+    if (t.lastPeerLeftAt === null) return "download";
+
+    const sinceLeft = now - t.lastPeerLeftAt;
+    // A stamp in the future is a clock that moved, not a transfer that ended.
+    // Fail towards holding — the hosted branch fails the other way because
+    // its wrong answer costs a permanent notification, this one costs a
+    // killed download.
+    if (sinceLeft < 0) return "download";
+
+    /**
+     * There is deliberately no shortcut on `progressEverReceived`. It is
+     * `false` for the entire pre-first-block phase of every download, so
+     * releasing the service on it would release on the state every download
+     * starts in, and a process with no foreground service need not be let
+     * back to receive the rest. A departure is evidence and still releases,
+     * but on the one clock, never instantly.
+     */
+
+    // The sender is gone: the same reconnect allowance the hosted side gets,
+    // on the same clock, then release.
+    return sinceLeft < IDLE_HOST_GRACE_MS ? "download" : null;
   }
 
   if (t.origin === "hosted") {
@@ -225,6 +377,41 @@ export function isTransferActive(
 }
 
 /**
+ * What the foreground service should do right now. A transfer that starts
+ * while the app is already backgrounded must acquire the service too, so the
+ * start and the stop are two halves of one pair read from one function: the
+ * two halves drifting apart is how a service is held forever.
+ *
+ * The caller re-runs this on every `transfers` change, and transfer changes
+ * are engine events, which are alive while backgrounded where timer-driven
+ * code is not. So the start needs no clock and no wake-up. This answers only
+ * for the instant it is called.
+ */
+export type ServiceTransition = "start" | "stop" | "none";
+
+export function decideServiceTransition(args: {
+  /** Is the app in the foreground right now? */
+  appActive: boolean;
+  /** Did this background window already start the service? */
+  serviceStartedForWindow: boolean;
+  transfers: readonly TransferActivityInput[];
+  now: number;
+}): ServiceTransition {
+  // Foreground needs no service, but the release is NOT this function's to
+  // order: the resume handler already stops it unconditionally, on purpose,
+  // because the OS may have stopped it behind our back and "we think it is
+  // not running" is not a reason to skip the call. Returning "stop" here
+  // would duplicate that and make a foreground transfer change emit a stop
+  // per event.
+  if (args.appActive) return "none";
+
+  const active = isTransferActive(args.transfers, args.now);
+  if (active && !args.serviceStartedForWindow) return "start";
+  if (!active && args.serviceStartedForWindow) return "stop";
+  return "none";
+}
+
+/**
  * How long until this list's answer could change on its own, in ms.
  *
  * Only the idle-host grace window expires without an event; every other
@@ -234,6 +421,10 @@ export function isTransferActive(
  *
  * Exists so the service-release logic does not have to re-derive the grace
  * arithmetic and drift from `classifyTransfer`.
+ *
+ * This arms nothing. Nothing in RN schedules the window: the worklet emits
+ * `host-idle-grace-elapsed` and RN re-runs the predicate on that event. This
+ * is a description a log line can carry, not a schedule.
  */
 export function msUntilActivityCouldChange(
   list: readonly TransferActivityInput[],

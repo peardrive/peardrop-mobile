@@ -45,7 +45,9 @@ npm test        # jest
 npm run lint    # eslint
 ```
 
-The suite covers the pure logic layer only — path safety, the transfer reducer, link parsing, formatting, the resolve guard, picker-result handling, and mirrored tripwires for the engine's stream and manifest contracts. React Native components are not rendered in tests, and the engine's real behaviour on a device (swarm discovery, replication, transfer completion) is not covered. Verify those on hardware.
+The suite covers the pure logic layer only — path safety, the transfer reducer, link parsing, formatting, the resolve guard, picker-result handling, notification and receive-state policy. A few suites assert against hand-written copies of engine behaviour rather than the engine itself, so they prove the copy and not the original. React Native components are not rendered in tests, and the engine's real behaviour on a device (swarm discovery, replication, transfer completion) is not covered. Verify those on hardware.
+
+`npm test` does not typecheck — `jest.config.js` runs with `strict: false` while `tsconfig.json` is strict. Run `npx tsc --noEmit` separately.
 
 ## Layout
 

@@ -1,24 +1,16 @@
-// automated tripwire for the atomic manifest write pattern.
-// The engine + manifest-recovery both call `atomicWriteJson(path, data)`
-// from backend/atomic-save.mjs, which uses bare-fs. Jest can't load
-// bare-fs (needs the Bare global), so this test mirrors the same logic
-// against node:fs.promises. If the logic here regresses, the same
-// regression is in bare-fs's usage of the same primitives.
-//
-// The four scenarios (per the sprint prompt):
-//   1. Save-and-load round-trip.
-//   2. Concurrent-save serialization (10 parallel calls, final content
-//      matches last, no leftover .tmp).
-//   3. Interrupted writeFile leaves prior state; .tmp is cleaned up.
-//   4. Interrupted rename leaves prior state; .tmp is cleaned up.
+// Tripwire for the atomic manifest write pattern. The engine and
+// manifest-recovery both call `atomicWriteJson(path, data)` from
+// backend/atomic-save.mjs, which uses bare-fs. Jest cannot load bare-fs (it
+// needs the Bare global), so this mirrors the same logic against
+// node:fs.promises: a round-trip, concurrent-save serialization, an
+// interrupted writeFile and an interrupted rename.
 
 import { promises as fs, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Mirror of atomicWriteJson from backend/atomic-save.mjs. If this diverges
-// from the .mjs, the tests below catch nothing useful — so any change to
-// backend/atomic-save.mjs must be mirrored here.
+// Mirror of atomicWriteJson from backend/atomic-save.mjs. Any change to that
+// file must be mirrored here, or the tests below catch nothing useful.
 async function atomicWriteJson(
   fsLike: {
     writeFile: (
@@ -126,9 +118,8 @@ describe("atomicWriteJson (Sprint 3P tripwire)", () => {
     const raw = await fs.readFile(target, "utf8");
     expect(JSON.parse(raw)).toEqual(prior);
 
-    // No .tmp accumulated (unlink was best-effort on the failure path;
-    // since writeFile never created the tmp file in this scenario, the
-    // unlink call ENOENTs which the helper swallows).
+    // No .tmp accumulated: writeFile never created it here, so the
+    // best-effort unlink ENOENTs and the helper swallows that.
     await expect(fs.access(`${target}.tmp`)).rejects.toThrow();
   });
 
@@ -165,9 +156,8 @@ describe("atomicWriteJson (Sprint 3P tripwire)", () => {
   });
 
   test("scenario 2b — chain isolates errors: a failed save doesn't poison later saves", async () => {
-    // The engine's chain uses .catch(() => {}) before .then() so that a
-    // rejection in one save doesn't propagate into the next. Verify the
-    // pattern behaves.
+    // The engine's chain uses .catch(() => {}) before .then() so a rejection
+    // in one save does not propagate into the next.
     let failOnce = true;
     const flakyFs = {
       writeFile: async (p: string, d: string, e: BufferEncoding) => {

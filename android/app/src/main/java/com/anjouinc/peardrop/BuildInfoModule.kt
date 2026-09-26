@@ -1,4 +1,4 @@
-package com.peardrop.mobile
+package com.anjouinc.peardrop
 
 import android.content.pm.ApplicationInfo
 import android.os.Build
@@ -69,6 +69,23 @@ class BuildInfoModule(reactContext: ReactApplicationContext) :
    *
    * Nothing above this line changed. `isDebugBuild` in particular is
    * load-bearing for every dev gate in the app and is untouched.
+   *
+   * ## D-45: `buildStamp`
+   *
+   * `versionName` and `versionCode` say which DROP this is. They cannot say
+   * which BUILD within the drop, and every build this project had produced
+   * called itself `0.1.0 (1)` - so no tester result could be attached to a
+   * build and no fix could be proved to have shipped.
+   *
+   * `BuildConfig.BUILD_STAMP` is generated at Gradle configuration time in
+   * `android/app/build.gradle` (timestamp + sprint label + random nonce) and
+   * changes on every build. It is NOT derived from git: there is no `.git` in
+   * the development tree and git is forbidden in all three trees.
+   *
+   * It is exposed here, beside `versionName`, for the same reason those are:
+   * it describes what actually shipped and cannot drift from the APK.
+   * Consumer: src/lib/devGate.ts, then the Settings version row (ungated, so
+   * a release tester can read it out) and the export log header.
    */
   override fun getConstants(): Map<String, Any> {
     val debuggable =
@@ -80,6 +97,8 @@ class BuildInfoModule(reactContext: ReactApplicationContext) :
       "buildType" to BuildConfig.BUILD_TYPE,
       "versionName" to BuildConfig.VERSION_NAME,
       "versionCode" to BuildConfig.VERSION_CODE,
+      // identifier 2 - distinguishes two builds of the same versionCode.
+      "buildStamp" to BuildConfig.BUILD_STAMP,
       // not available via Platform.constants. Nullable in theory
       // on a badly-built ROM, hence the fallbacks: an empty readout line is
       // harder to interpret than an explicit "unknown".

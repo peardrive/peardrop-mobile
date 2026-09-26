@@ -1,8 +1,9 @@
-package com.peardrop.mobile
+package com.anjouinc.peardrop
 
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -60,6 +61,18 @@ class TransferService : Service() {
     const val NOTIFICATION_ID = 4711
     private const val TAG = "PeardropFgs"
 
+    /** request code for the Cancel action's PendingIntent. */
+    private const val CANCEL_REQUEST_CODE = 4712
+
+    /**
+     * request code for the body tap's PendingIntent.
+     *
+     * Must differ from CANCEL_REQUEST_CODE: an equal code with equal flags
+     * makes the two PendingIntents the same object, and the body tap would
+     * fire Cancel.
+     */
+    private const val CONTENT_REQUEST_CODE = 4713
+
     /**
      * What the service observed about itself, waiting to be drained into the
      * app's debug log.
@@ -106,6 +119,47 @@ class TransferService : Service() {
     @Volatile private var currentPercent: Int = -1
 
     /**
+     * the Cancel action's label, and the plumbing behind it.
+     *
+     * `ACTION_CANCEL` arrives back at `onStartCommand` via a
+     * `PendingIntent.getService` on the notification button. A service
+     * PendingIntent rather than a `BroadcastReceiver` because the `<service>`
+     * element already exists (8A hand-edit #4) and a receiver would need a
+     * new manifest entry on a file whose hand-edits do not survive
+     * `expo prebuild`. It buys nothing here.
+     *
+     * The label states scope — "Cancel" for one active transfer, "Cancel all"
+     * for several — because there is only ever ONE notification and it
+     * carries no driveId, so the button necessarily stops everything.
+     */
+    const val ACTION_CANCEL = "com.anjouinc.peardrop.action.CANCEL_TRANSFERS"
+
+    /** The JS-side event name. Must match `EVENT_CANCEL_ALL` in foregroundService.ts. */
+    const val EVENT_CANCEL_ALL = "PeardropCancelAllTransfers"
+
+    @Volatile private var currentCancelLabel: String = "Cancel"
+
+    /**
+     * Set when a cancel was requested but could not be delivered to JS.
+     *
+     * The emit needs a live `ReactContext`. The foreground service exists
+     * precisely to keep the process (and therefore the JS thread) alive, so
+     * the expected case is that one is available — but "expected" is not
+     * "guaranteed", and a cancel the user tapped that silently evaporates is
+     * the worst outcome available here.
+     *
+     * So a failed emit is recorded instead, and `drainPendingCancel` lets the
+     * JS side pick it up on its next foreground transition. Same shape as
+     * `outcomes`/`drainOutcomes` below, and for the same reason: a pull is
+     * the only delivery that does not depend on the other realm being ready
+     * at the moment of the push.
+     */
+    private val pendingCancel = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Take the pending-cancel flag, clearing it. */
+    fun drainPendingCancel(): Boolean = pendingCancel.getAndSet(false)
+
+    /**
      * Rebuild the ongoing notification from the current title/text/percent.
      *
      * Shared by `onStartCommand` (which passes it to `startForeground`) and
@@ -125,6 +179,55 @@ class TransferService : Service() {
       } else {
         builder.setProgress(0, 0, true)
       }
+
+      // tapping the body opens the app; without this Cancel is the only
+      // working target, i.e. a destructive action as the sole affordance.
+      //
+      // getActivity, not getService: a service PendingIntent would deliver to
+      // onStartCommand and open no UI. The launcher intent resumes the
+      // existing task rather than stacking a second MainActivity.
+      //
+      // No setAutoCancel: the notification belongs to a running foreground
+      // service, and dismissing it on tap would detach the user from it.
+      val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+      if (launchIntent != null) {
+        builder.setContentIntent(
+          PendingIntent.getActivity(
+            context,
+            CONTENT_REQUEST_CODE,
+            launchIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+          )
+        )
+      }
+
+      // the Cancel action.
+      //
+      // FLAG_IMMUTABLE is mandatory from API 31 and this app targets 36; a
+      // mutable PendingIntent would throw at creation. It is also correct on
+      // the merits — nothing downstream needs to fill in extras, so handing
+      // out a fillable intent would be pure attack surface.
+      //
+      // FLAG_UPDATE_CURRENT so repeated posts reuse one PendingIntent rather
+      // than accumulating; the intent never varies, so there is nothing to
+      // update, but it keeps the system from holding stale copies.
+      val cancelIntent = Intent(context, TransferService::class.java).apply {
+        action = ACTION_CANCEL
+      }
+      val cancelPending = PendingIntent.getService(
+        context,
+        CANCEL_REQUEST_CODE,
+        cancelIntent,
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+      )
+      builder.addAction(
+        Notification.Action.Builder(
+          null as android.graphics.drawable.Icon?,
+          currentCancelLabel,
+          cancelPending
+        ).build()
+      )
+
       return builder.build()
     }
 
@@ -133,10 +236,19 @@ class TransferService : Service() {
      * Android drops a `notify` for an id no foreground service owns, so this
      * cannot resurrect a stopped service.
      */
-    fun updateNotification(context: Context, title: String, text: String, percent: Int) {
+    fun updateNotification(
+      context: Context,
+      title: String,
+      text: String,
+      percent: Int,
+      cancelLabel: String
+    ) {
       currentTitle = title
       currentText = text
       currentPercent = percent
+      // blank would render an unlabelled button, which is worse
+      // than a slightly stale one.
+      if (cancelLabel.isNotBlank()) currentCancelLabel = cancelLabel
       val manager = context.getSystemService(NotificationManager::class.java) ?: return
       ensureChannel(context)
       manager.notify(NOTIFICATION_ID, buildNotification(context))
@@ -169,7 +281,69 @@ class TransferService : Service() {
 
   override fun onBind(intent: Intent?): IBinder? = null
 
+  /**
+   * hand the cancel to the JS realm.
+   *
+   * This is the FIRST native→JS push in this app — every other bridge call
+   * here is JS-initiated, and `drainServiceLog` is pull-based precisely
+   * because push did not exist.
+   *
+   * `ReactApplication.reactHost` rather than `reactNativeHost`: the app runs
+   * `newArchEnabled=true` (android/gradle.properties:38) on RN 0.81.6, where
+   * `reactNativeHost` is deprecated for exactly this and `ReactHost` is the
+   * bridgeless accessor. `ReactHost.currentReactContext` is nullable by
+   * declaration, and `ReactContext.emitDeviceEvent` is RN's own public
+   * helper over `getJSModule(RCTDeviceEventEmitter)`.
+   *
+   * **This is an event, not a timer.** Delivery rides the bridge's call
+   * queue, so it does not depend on the Choreographer-driven `setInterval`
+   * that this project has measured as dead in the background. That is the
+   * whole reason this design can work with the screen locked — but it has
+   * not been observed on a device yet, and it is tagged INFERRED until it is.
+   *
+   * Returns false when no context was available, so the caller can fall back
+   * to the pending flag rather than dropping the user's tap.
+   */
+  private fun emitCancelToJs(): Boolean {
+    return try {
+      val host = (application as? com.facebook.react.ReactApplication)?.reactHost
+      val reactContext = host?.currentReactContext
+      if (reactContext == null) {
+        record("cancel: no ReactContext — queued for drain")
+        false
+      } else {
+        reactContext.emitDeviceEvent(EVENT_CANCEL_ALL)
+        record("cancel: emitted $EVENT_CANCEL_ALL to JS")
+        true
+      }
+    } catch (e: Exception) {
+      record("cancel: emit THREW ${e.javaClass.simpleName}: ${e.message ?: ""}")
+      false
+    }
+  }
+
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // the notification's Cancel button arrives here.
+    //
+    // Handled BEFORE `startForeground`, and returns early. Re-promoting on a
+    // cancel would be wrong in both directions: the service is already
+    // foreground (the notification the user just tapped is proof), and
+    // re-posting would redraw a progress bar for a transfer that is being
+    // stopped.
+    //
+    // The service does NOT stop itself here. Releasing it is the JS side's
+    // job, through the single `isTransferActive` predicate that already owns
+    // the lifecycle — a second stop path is how the two halves of a
+    // start/stop pair drift apart. The cancel reaches the engine, the engine
+    // emits `transfer-cancelled`, the predicate goes false, and the existing
+    // release effect stops the service and takes the notification with it.
+    if (intent?.action == ACTION_CANCEL) {
+      Log.i(TAG, "cancel action received startId=$startId")
+      record("cancel: action received startId=$startId")
+      if (!emitCancelToJs()) pendingCancel.set(true)
+      return START_NOT_STICKY
+    }
+
     ensureChannel(this)
 
     // real progress, not a static string. Built from whatever the

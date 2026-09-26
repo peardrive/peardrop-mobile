@@ -4,23 +4,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
 
 /**
- * which delay the simulated-completion test uses.
- *
- * 6I hard-coded 15 s, and 6I's device run passed the battery-restriction
- * scenario for the wrong reason: every background window it produced was
- * 14-57 s, while 6H measured the OS freeze arriving around 80 s. A
- * completion scheduled at 15 s always fires before the phone gets round to
- * freezing the process, so that scenario could not fail. Closing the hole
- * needs two to three minutes, and rebuilding to change a constant is the
- * kind of friction that gets tests skipped — so it becomes a setting.
- *
- * Same shape as debugLogStorage.ts / suspendProbeStorage.ts on purpose:
- * in-memory cache + Set<Listener> + a hook. One idiom for "persistent
- * value the whole app watches", not three.
- *
- * Persisted because the test protocol force-stops the app between runs;
- * a session-only value would silently revert to 15 s and quietly
- * reintroduce the bug this module exists to fix.
+ * Which delay the simulated-completion test uses. A setting rather than a
+ * constant because a completion scheduled inside the first minute always
+ * fires before the OS gets round to freezing the process, so the
+ * battery-restriction scenario cannot fail; proving it needs a window of
+ * minutes. Persisted because the test protocol force-stops the app between
+ * runs, and a session-only value would silently revert to the short delay.
  */
 
 const STORAGE_KEY = "peardrop.simulate-delay-ms";
@@ -113,11 +102,9 @@ export function subscribeSimulateDelay(listener: Listener): () => void {
 }
 
 /**
- * React hook: `{ delayMs, setDelayMs }`.
- *
- * The debug-build check must live INSIDE the effect, not around the hook call:
- * rules of hooks force this hook to run in every build, so guarding outside
- * would still register a listener and hydrate AsyncStorage in release.
+ * The debug-build check must live inside the effect, not around the hook call:
+ * the rules of hooks force this hook to run in every build, so guarding outside
+ * would still add a listener and hydrate storage in a release build.
  */
 export function useSimulateDelay(): {
   delayMs: SimulateDelayMs;

@@ -107,11 +107,8 @@ function createStyles(theme: AppTheme, width: number) {
       flex: 1,
       backgroundColor: theme.bg,
     },
-    // Slide content is centered vertically on the page. Reserving
-    // `minHeight` on title + body (below) keeps the group's overall
-    // height constant across all three slides, so centering lands the
-    // icon/title/body at the same y-coordinate on each page — no
-    // top-anchor padding needed.
+    // Slide content is centered vertically. The `minHeight` reserved on title
+    // and body keeps every slide the same height, so nothing shifts per page.
     slide: {
       width,
       flex: 1,
