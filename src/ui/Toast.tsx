@@ -12,10 +12,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
-import { useMainDockBottomInset } from "../navigation/dockLayout";
 
-// The type and the copy table live in `src/lib/` so the strings stay
-// testable; they are re-exported here so import sites can stay unchanged.
+// The type and the copy table live in
+// `src/lib/` so jest can reach the strings; re-exported here so every existing
+// import site is unchanged. See `src/lib/toastCopy.ts` for why.
 import type { ToastKind } from "../lib/toastKind";
 
 export type { ToastKind } from "../lib/toastKind";
@@ -39,21 +39,23 @@ const ToastContext = createContext<ToastApi | null>(null);
 const DEFAULT_DURATION = 2600;
 
 /**
- * Single-toast provider: one live toast at a time, so consecutive calls
- * replace rather than stack. The left accent stripe is severity-driven.
- * Kind and copy come from callers; this component owns styling only.
+ * Single-toast provider. Only one live toast at a time — consecutive calls
+ * replace rather than stack. v5 restyle: optional bold `title` above the
+ * message, and a left-side accent stripe whose color is severity-driven
+ * (theme.danger for error, theme.primary for success, theme.secondary for
+ * warning, theme.muted for info). Kind + copy come from callers; this
+ * component owns styling only.
  */
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const { theme } = useAppTheme();
   const insets = useSafeAreaInsets();
-  const dockBottom = useMainDockBottomInset();
   const [visible, setVisible] = useState(false);
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState<string | undefined>(undefined);
   const [kind, setKind] = useState<ToastKind>("info");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(10)).current;
+  const translateY = useRef(new Animated.Value(-10)).current;
 
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
@@ -66,7 +68,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     clearTimer();
     Animated.parallel([
       Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: true }),
-      Animated.timing(translateY, { toValue: 10, duration: 180, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: -10, duration: 180, useNativeDriver: true }),
     ]).start(() => setVisible(false));
   }, [clearTimer, opacity, translateY]);
 
@@ -79,7 +81,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       setKind(opts?.kind ?? "info");
       setVisible(true);
       opacity.setValue(0);
-      translateY.setValue(10);
+      translateY.setValue(-10);
       Animated.parallel([
         Animated.timing(opacity, { toValue: 1, duration: 180, useNativeDriver: true }),
         Animated.timing(translateY, { toValue: 0, duration: 200, useNativeDriver: true }),
@@ -115,15 +117,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           ? theme.secondary
           : theme.muted;
 
-  const RECEIVE_INPUT_CLEARANCE = 24;
-  const offsetBottom =
-    Math.max(dockBottom, insets.bottom + 12) + 12 + RECEIVE_INPUT_CLEARANCE;
-
   return (
     <ToastContext.Provider value={api}>
       {children}
       {visible && (
-        <View pointerEvents="box-none" style={[styles.root, { bottom: offsetBottom }]}>
+        <View pointerEvents="box-none" style={[styles.root, { top: insets.top + 12 }]}>
           <Animated.View
             style={[styles.toast, { opacity, transform: [{ translateY }] }]}
             accessibilityLiveRegion="polite"
@@ -169,8 +167,10 @@ export function useToast(): ToastApi {
 }
 
 /*
- * Toast copy never falls back to raw engine text: `userFacingError` in
- * `src/lib/errorMessage.ts` returns the caller's own fallback instead.
+ * The variant copy lives in `src/lib/toastCopy.ts` and is re-exported at the
+ * top of this file. Anything not in that list does not fall back to raw
+ * engine text: `userFacingError` in `src/lib/errorMessage.ts` returns the
+ * caller's own fallback and never the engine's message.
  */
 
 function createStyles(theme: AppTheme) {

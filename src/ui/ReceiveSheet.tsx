@@ -18,23 +18,42 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { useAppTheme } from "../state/ThemeContext";
 import { haptics } from "../lib/haptics";
 import { resolveHintFor } from "../lib/resolveHint";
-// The scan payload is classified before anything is claimed about it, and
-// the copy lives with the classifier so it stays testable outside a `.tsx`.
+// The scan payload is classified before anything is claimed about it.
+// Copy lives there, not here.
 import { classifyScan, type ScanOutcome } from "../lib/scanOutcome";
+// the inline notice carries a tone — "wait" renders muted
+// with an info icon, "error" stays theme.danger.
+import type { LinkNotice } from "../lib/resolveNotice";
 import type { AppTheme } from "./themes";
 
 /**
- * How often the elapsed-resolve clock is re-read. The hint thresholds are
- * whole seconds: a coarser tick lands a hint visibly late, and a finer one
- * re-renders a sheet that owns a camera preview for nothing.
+ * how often the elapsed-resolve clock is
+ * re-read.
+ *
+ * 1 s, because the hint thresholds (`RESOLVE_HINT_FIRST_MS` = 5 s,
+ * `RESOLVE_HINT_SECOND_MS` = 15 s) are whole seconds: a coarser tick would let
+ * a hint land visibly late, and a finer one re-renders this sheet — which owns
+ * a camera preview — for nothing. Nothing reads the elapsed value except
+ * `resolveHintFor`, so the tick only ever needs to be fine enough to cross a
+ * threshold promptly.
  */
 const RESOLVE_TICK_MS = 1_000;
 
 /**
- * Must stay at module scope, not in the render body. `createAnimatedComponent`
- * returns a new component type per call and React reconciles by type
- * identity, so building it per render tears down and re-creates the camera —
- * a black, flickering preview. Re-rendering this sheet is frequent.
+ * Module scope, NOT the render body.
+ *
+ * `createAnimatedComponent` returns a new component *type* on every call, and
+ * React reconciles by type identity — a changed type unmounts the whole
+ * subtree and mounts a fresh one. This wraps `CameraView`, so building it
+ * per-render tore down and re-created the camera on every render of this
+ * sheet. That is the black / flickering preview: a camera that is destroyed
+ * and re-initialised repeatedly has nothing to show in between.
+ *
+ * Re-rendering this sheet is ordinary and frequent — it is a child of
+ * MainScreen, which subscribes to `transfers`, and any engine event stream
+ * drives it. The fix is to make re-render cheap rather than to chase the
+ * things that cause one. `TopTabs.tsx:45-46` is the same call in the correct
+ * place, hoisted to module scope for the same reason.
  */
 const AnimatedView = Animated.createAnimatedComponent(View);
 
@@ -48,11 +67,11 @@ export type ReceiveSheetProps = {
   resolving: boolean;
   /** Cancel any in-flight resolve. */
   onAbortResolving: () => void;
-  /** Fired when the embedded camera decodes a QR. The parent hands off to
-   *  the link-flow resolve pipeline. */
+  /** Fired when the embedded camera decodes a QR — parent hands off to
+   *  the existing link-flow resolveFromScan pipeline. */
   onScan: (data: string) => void;
-  /** Inline error message if the link couldn't resolve. */
-  linkError?: string | null;
+  /** Inline notice if the link couldn't resolve — tone-tagged. */
+  linkError?: LinkNotice | null;
   /** Retry a failed link resolve. */
   onRetry?: () => void;
   /**
@@ -64,9 +83,11 @@ export type ReceiveSheetProps = {
 };
 
 /**
- * Receive: a centered modal card holding the camera preview in a bordered
- * square over a dim scrim, with the paste-link row beneath it. Importing a
- * QR code from an image file is deliberately not offered here.
+ * v5 Receive: centered modal card with the camera preview in a bordered
+ * square. Presented via a middle-of-screen dialog over a dim scrim (per
+ * design). Paste-link row lives beneath the square with a green "Paste"
+ * button that pulls from clipboard. The polish-round removal of
+ * "Import Qrcode Image" is preserved — this modal does not surface it.
  */
 export default function ReceiveSheet({
   visible,
@@ -87,8 +108,8 @@ export default function ReceiveSheet({
   const scannedRef = useRef(false);
   const flash = useRef(new Animated.Value(0)).current;
   const [scanFlash, setScanFlash] = useState(false);
-  // The last rejected scan, rendered in place of the "Got it — opening…"
-  // badge. Cleared by the next accepted scan.
+  // The last rejected scan, rendered in place
+  // of the "Got it — opening…" badge. Cleared by the next accepted scan.
   const [scanError, setScanError] = useState<
     Extract<ScanOutcome, { kind: "rejected" }> | null
   >(null);
@@ -108,11 +129,26 @@ export default function ReceiveSheet({
   }, [visible, focusPaste]);
 
   /**
-   * The elapsed-resolve clock. Wall-clock delta, not a tick count: a count of
-   * intervals under-reports whenever the JS thread is starved, and RN timers
-   * stop entirely in the background, so the hint would appear late or never
-   * exactly when the wait is longest. The cleanup clears the interval on both
-   * transitions that matter, `resolving` going false and this sheet unmounting.
+   * the elapsed-resolve clock.
+   *
+   * **Built here from scratch, not moved.** Nothing in the live receive path
+   * tracked elapsed time: this sheet's only other state is `scanFlash` and its
+   * only other timer is the 250 ms paste-focus `setTimeout` above, and
+   * `resolveGuard`'s 30 s timer is a *rejection* timer that nothing observes.
+   * The one "Still looking…" affordance that ever existed is in
+   * `src/screens/ReceiveScreen.tsx`, which is dead code (no import anywhere in
+   * `src` or `app`) **and whose copy fails the deny-list that
+   * `src/lib/__tests__/resolveHint.test.ts` enforces** — so it could not be
+   * revived even if the file were live.
+   *
+   * Wall-clock delta, not a tick count. A count of intervals under-reports
+   * whenever the JS thread is starved — and on this project's own measurements
+   * RN timers stop entirely when the app is backgrounded — which would make the
+   * hint appear late or not at all precisely when the wait is longest.
+   * `Date.now()` cannot be starved.
+   *
+   * The cleanup clears the interval on BOTH transitions that matter: `resolving`
+   * going false, and this sheet unmounting.
    */
   const [resolveElapsedMs, setResolveElapsedMs] = useState(0);
   useEffect(() => {
@@ -128,19 +164,33 @@ export default function ReceiveSheet({
     return () => clearInterval(id);
   }, [resolving]);
 
-  // `null` until the first threshold, so the spinner stands alone at first.
-  // The copy and thresholds live in `src/lib/resolveHint.ts` to stay testable.
+  // `null` until the first threshold, which is what keeps the spinner alone for
+  // the first few seconds. The copy and the thresholds live in
+  // `src/lib/resolveHint.ts` — a .tsx cannot be imported by jest in this
+  // project, so keeping them out of here is what makes the copy deny-list
+  // testable.
   const resolveHint = resolving ? resolveHintFor(resolveElapsedMs) : null;
 
   const canScan = permission?.granted === true;
   const canRequest = permission?.canAskAgain !== false;
 
   /**
-   * The payload is classified before anything is claimed, through the same
-   * parser the deep-link path uses rather than a second taxonomy. A rejected
-   * scan does not latch `scannedRef`: the camera is still pointed at
-   * something, so the next code is read. That is the one way this differs
-   * from the deep-link path, which arrives exactly once.
+   * The payload is classified before anything is claimed about it. Flashing
+   * the frame, firing the **success** haptic, and rendering "Got it —
+   * opening…" for every QR code regardless of content would hand the payload
+   * to a caller that can do nothing with an unusable one — nothing happens,
+   * but the user has been told it worked — and would latch `scannedRef`
+   * before that is known, leaving the scanner dead, under a success message,
+   * until the sheet is closed and reopened.
+   *
+   * The decision and the copy live in `src/lib/scanOutcome.ts` (this file is
+   * `.tsx` and unreachable from the suite); it reuses the deep-link path's
+   * parser and its one-message-per-rejection rule rather than inventing a
+   * second taxonomy.
+   *
+   * A rejected scan does **not** latch: the camera is still pointed at
+   * something, so the next code is read. That is the one way the scan path
+   * differs from the deep-link path, which arrives exactly once.
    */
   const onBarcode = (data: string) => {
     if (!data || scannedRef.current) return;
@@ -282,9 +332,10 @@ export default function ReceiveSheet({
                       </Text>
                     </View>
                   ) : scanError ? (
-                    /* The badge never claims success for a code that was not
-                       a PearDrop link. It stays until the next code is read;
-                       the scanner is deliberately not latched on rejection. */
+                    /* The badge does not claim success for a code that is
+                       not a PearDrop link. It stays until the next code is
+                       read — the scanner is deliberately NOT latched on a
+                       rejection. */
                     <View style={styles.camScanBadge} pointerEvents="none">
                       <Text style={styles.camScanBadgeText}>
                         {scanError.title}
@@ -355,10 +406,14 @@ export default function ReceiveSheet({
             </View>
 
             {/*
-              Sits directly under the paste row that holds the spinner, so the
-              words and the spinner read as one state. Polite live region
-              because it appears mid-wait with no user action: a screen reader
-              must announce it without stealing focus from the input.
+              Directly under the paste row that
+              holds the spinner, so the words and the spinner read as one state.
+              `accessibilityLiveRegion="polite"` because this appears mid-wait
+              with no user action: a screen reader must announce it without
+              stealing focus from the input the user may still be editing.
+              Renders nothing at all until the first threshold — the spinner
+              alone is the correct affordance for a resolve that is about to
+              succeed.
             */}
             {resolveHint ? (
               <Text
@@ -371,8 +426,23 @@ export default function ReceiveSheet({
 
             {linkError ? (
               <View style={styles.errorRow}>
-                <Text style={styles.errorText} numberOfLines={2}>
-                  {linkError}
+                {/* A "wait" notice is a normal wait, not a
+                    failure — muted text + info icon, same rationale as the
+                    resolveHint style below. "error" stays red. */}
+                {linkError.tone === "wait" ? (
+                  <Ionicons
+                    name="information-circle-outline"
+                    size={16}
+                    color={theme.muted}
+                  />
+                ) : null}
+                <Text
+                  style={
+                    linkError.tone === "wait" ? styles.waitText : styles.errorText
+                  }
+                  numberOfLines={2}
+                >
+                  {linkError.text}
                 </Text>
                 {onRetry && linkDraft.trim().length > 0 ? (
                   <Pressable
@@ -473,8 +543,8 @@ function createStyles(theme: AppTheme) {
       fontSize: 12,
       textAlign: "center",
     },
-    // Second line of a rejected-scan badge. Same pill, so the badge does not
-    // jump position between outcomes.
+    // The second line of a rejected-scan
+    // badge. Same pill, so the badge does not jump position between outcomes.
     camScanBadgeSub: {
       color: theme.onPrimary,
       fontWeight: "500",
@@ -549,8 +619,10 @@ function createStyles(theme: AppTheme) {
       fontWeight: "700",
       fontSize: 13,
     },
-    // `theme.muted`, not `theme.danger`: a resolve still running has not
-    // failed, and error colouring would tell the user to give up too early.
+    // `theme.muted`, not `theme.danger`: a
+    // resolve that is still running has not failed, and colouring the hint like
+    // the error row would tell the user to give up on a share that is about to
+    // work. That is the same mistake the copy deny-list exists to prevent.
     resolveHint: {
       color: theme.muted,
       fontSize: 13,
@@ -566,6 +638,15 @@ function createStyles(theme: AppTheme) {
     errorText: {
       flex: 1,
       color: theme.danger,
+      fontSize: 13,
+      lineHeight: 18,
+    },
+    // the "wait"-tone notice. `theme.muted`, not
+    // `theme.danger`, for the same reason as `resolveHint` above — a sender
+    // that has not answered yet has not failed.
+    waitText: {
+      flex: 1,
+      color: theme.muted,
       fontSize: 13,
       lineHeight: 18,
     },
