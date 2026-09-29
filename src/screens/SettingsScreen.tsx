@@ -692,11 +692,6 @@ export default function SettingsScreen() {
     if (navigation.canGoBack()) navigation.goBack();
   }, [navigation]);
 
-  const notYet = useCallback(
-    (label: string) => () => showToast(`${label} isn't available yet.`),
-    [showToast],
-  );
-
   const styles = useMemo(() => createStyles(theme), [theme]);
   const activeThemeLabel = themes[themeId].label;
 
@@ -742,7 +737,7 @@ export default function SettingsScreen() {
           icon="language-outline"
           label="Language"
           value="English"
-          onPress={notYet("Language")}
+          onPress={() => navigation.navigate("Language")}
           first
         />
         <SettingsRow

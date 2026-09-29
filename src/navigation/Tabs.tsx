@@ -10,6 +10,7 @@ import SettingsScreen from "../screens/SettingsScreen";
 import SplashScreenRoute from "../screens/SplashScreenRoute";
 import OnboardingScreen from "../screens/OnboardingScreen";
 import StatusRoute from "../screens/StatusRoute";
+import LanguageScreen from "../screens/LanguageScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -31,6 +32,8 @@ export default function RootNav() {
       />
       <Stack.Screen name="Main" component={MainScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
+      {/* Inherits the shared screenOptions and draws its own header, like every other screen. */}
+      <Stack.Screen name="Language" component={LanguageScreen} />
       <Stack.Screen name="Status" component={StatusRoute} />
     </Stack.Navigator>
   );

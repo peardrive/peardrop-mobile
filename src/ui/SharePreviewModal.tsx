@@ -284,7 +284,7 @@ export default function SharePreviewModal() {
   };
 
   return (
-    <Modal visible={previewVisible} transparent animationType="slide" onRequestClose={closePreview}>
+    <Modal visible={previewVisible} transparent animationType="fade" onRequestClose={closePreview}>
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={closePreview} />
         <View style={styles.sheet}>
