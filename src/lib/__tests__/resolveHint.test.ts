@@ -3,6 +3,7 @@ import {
   RESOLVE_HINT_SECOND_MS,
   resolveHintFor,
   RESOLVE_HINTS,
+  RESOLVE_LOOKING_LABEL,
 } from "../resolveHint";
 
 /**
@@ -50,12 +51,29 @@ describe("resolveHintFor", () => {
   });
 });
 
+describe("the looking panel's own copy", () => {
+  it("has a caption for t=0, because the panel replaced the camera", () => {
+    // resolveHintFor stays null below 5 s — the spinner was enough when there
+    // was a camera behind it. An empty panel is not.
+    expect(resolveHintFor(0)).toBeNull();
+    expect(RESOLVE_HINTS.initial.length).toBeGreaterThan(5);
+    expect(RESOLVE_HINTS.initial).not.toBe(RESOLVE_HINTS.first);
+  });
+
+  it("has a label that reads as a label, not as a sentence", () => {
+    expect(RESOLVE_LOOKING_LABEL.length).toBeGreaterThan(5);
+    // A screen reader says the ellipsis out loud; the visible caption may have
+    // one, the label must not.
+    expect(RESOLVE_LOOKING_LABEL).not.toMatch(/[.…]$/);
+  });
+});
+
 describe("the hint copy obeys the §B prohibitions", () => {
-  const every = Object.values(RESOLVE_HINTS);
+  const every = [...Object.values(RESOLVE_HINTS), RESOLVE_LOOKING_LABEL];
 
   it("has copy to check", () => {
     // Positive control: an empty set would make both assertions below vacuous.
-    expect(every.length).toBeGreaterThan(1);
+    expect(every.length).toBeGreaterThan(3);
     for (const s of every) expect(typeof s === "string" && s.length > 0).toBe(true);
   });
 

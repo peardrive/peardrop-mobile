@@ -54,7 +54,7 @@ class BuildInfoModule(reactContext: ReactApplicationContext) :
    * silently drop the gate signal and disable every dev-only surface in the
    * sideload APK. Consumer: src/lib/devGate.ts.
    *
-   * ## Sprint 7D: three Build fields, and only three
+   * ## Three Build fields, and only three
    *
    * React Native's own PlatformConstants already exposes MANUFACTURER, BRAND,
    * MODEL, RELEASE and SDK_INT as `Platform.constants`. `DEVICE`, `PRODUCT`
@@ -70,7 +70,7 @@ class BuildInfoModule(reactContext: ReactApplicationContext) :
    * Nothing above this line changed. `isDebugBuild` in particular is
    * load-bearing for every dev gate in the app and is untouched.
    *
-   * ## D-45: `buildStamp`
+   * ## `buildStamp`
    *
    * `versionName` and `versionCode` say which DROP this is. They cannot say
    * which BUILD within the drop, and every build this project had produced

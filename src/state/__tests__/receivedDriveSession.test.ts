@@ -178,7 +178,7 @@ describe("a later upsert must not erase the stored driveId", () => {
   });
 });
 
-describe("the download folder is persisted (D-43)", () => {
+describe("the download folder is persisted", () => {
   it("rememberDriveSession stores both facts and they survive a reload", async () => {
     const a = freshStore();
     await a.upsertShare(record("ab12"));

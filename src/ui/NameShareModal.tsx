@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
+import { ToastOutlet } from "./Toast";
 
 export type NameShareModalProps = {
   visible: boolean;
@@ -202,6 +203,7 @@ export default function NameShareModal({
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -210,7 +212,7 @@ function createStyles(theme: AppTheme, topInset: number) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
+      backgroundColor: theme.scrim,
       alignItems: "center",
       justifyContent: "center",
       paddingHorizontal: theme.pad,

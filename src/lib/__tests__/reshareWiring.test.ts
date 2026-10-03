@@ -172,7 +172,7 @@ describe("SURFACE 2 — Stop sharing a received copy", () => {
     const r = region(
       mainSrc,
       "  const onReshare = useCallback(",
-      "\n  // Sprint 3M: unified pin / favorite toggles.",
+      "\n  // Unified pin / favorite toggles.",
       60,
     );
     expect(r).not.toContain("const togglePinned");

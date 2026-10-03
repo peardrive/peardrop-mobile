@@ -40,6 +40,7 @@ import {
   removeGrantedFolder,
 } from "../state/grantedFoldersStorage";
 import FolderAccessModal from "./FolderAccessModal";
+import { ToastOutlet } from "./Toast";
 
 // These bound the data held in memory; `PAGE_SIZE` bounds what is mounted at
 // once, so a big Downloads folder does not mount hundreds of Image views.
@@ -55,7 +56,7 @@ export type FilePickerSheetProps = {
   onCancel: () => void;
   /** Confirmed multi-selection, in list order. */
   onConfirm: (entries: BrowseEntry[]) => void;
-  /** One-tap re-share of a file from share history. */
+  /** One-tap re-share of a previously shared file. */
   onReshare: (entry: BrowseEntry) => void;
   /** Escape hatch to the OS document picker ("Internal Storage"). */
   onBrowseOther: () => void;
@@ -66,10 +67,13 @@ export type FilePickerSheetProps = {
 };
 
 /**
- * PearDrop's own file-selection screen. The top-left back button is the point
- * of it: the app owns it, so cancel behaves. Internal Storage is a styled
- * entry point to the OS picker, not an in-app browser, so nothing here
- * widens file access.
+ * PearDrop's own file-selection screen.
+ *
+ * The point of it is still the top-left back button: it's ours, so cancel
+ * behaves. The layout follows Telegram's shape — storage shortcut
+ * rows up top, "Recent shares" below them, then the granted Downloads
+ * folder — without widening file access one inch. Internal Storage is a
+ * styled entry point to the OS picker, NOT an in-app browser.
  */
 export default function FilePickerSheet({
   visible,
@@ -105,8 +109,9 @@ export default function FilePickerSheet({
   const filesPage = useMemo(() => pageEntries(files, shown), [files, shown]);
   const showFolderLabels = shouldShowFolderLabels(folders.length);
 
-  // Only the folder rows are checkbox-selectable; recent shares are one-tap
-  // re-share. Scoping the summary to that list keeps the count from drifting.
+  // Only the folder rows are checkbox-selectable; recent shares are
+  // one-tap re-share. Keeping the summary scoped to the same list the
+  // checkboxes come from means the count can't drift from the UI.
   const summary = useMemo(
     () => selectionSummary(files, selected),
     [files, selected],
@@ -286,8 +291,10 @@ export default function FilePickerSheet({
             </>
           )}
 
-          {/* One merged, date-ordered list across every granted folder: the
-              user thinks in files, and the folder is a label on the row. */}
+          {/* One merged, date-ordered list across every granted folder —
+              the user thinks in files, not folders, and the folder is a
+              label on the row. Managing which folders feed it lives in
+              the Folders modal rather than cluttering this header. */}
           <View style={styles.downloadsHeader}>
             <Text style={styles.sectionLabel}>RECENT FILES</Text>
             {folders.length > 0 && !filesLoading && (
@@ -403,6 +410,12 @@ export default function FilePickerSheet({
           onRemove={(uri) => void onRemoveFolder(uri)}
         />
       </View>
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }

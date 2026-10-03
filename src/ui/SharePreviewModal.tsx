@@ -13,18 +13,33 @@ import { useAppTheme } from "../state/ThemeContext";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
 import { useBackend } from "../state/backend";
 import type { AppTheme } from "./themes";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { formatBytes } from "../lib/format";
-import { baseName, fileIcon } from "../lib/files";
+import { baseName, fileIconName } from "../lib/files";
+import {
+  pickerLookupStatus,
+  type PickerLookupState,
+} from "../lib/pickerLookupStatus";
+import { pickerGrabGate } from "../lib/pickerGrabGate";
+import {
+  previewHint,
+  previewPrimaryLabel,
+  previewSubtitle,
+} from "../lib/sharePreviewCopy";
+import { haptics } from "../lib/haptics";
+import { indicatorColor } from "../lib/indicatorColor";
+import { RESOLVE_LOOKING_LABEL } from "../lib/resolveHint";
+import PearSonarLite from "./PearSonarLite";
+import { ToastOutlet } from "./Toast";
 
-function createStyles(theme: AppTheme) {
+function createStyles(theme: AppTheme, bottomInset: number) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      // 50% black scrim, paired with the opaque sheet (theme.bg, see below).
-      // A tinted theme.card sheet renders at 5–8% alpha in 8 of 10 themes
-      // (only paper and cream are #ffffff opaque), which would let
-      // underlying screen text bleed through the modal.
-      backgroundColor: "rgba(0,0,0,0.5)",
+      // A dialog window OCCLUDES an activity-window toast, it does not dim it,
+      // so dropping the wash never made one tappable. Restored at the house
+      // 0.5; T1 is what actually fixes the toast.
+      backgroundColor: theme.scrim,
       justifyContent: "flex-end",
       padding: 16,
     },
@@ -40,15 +55,55 @@ function createStyles(theme: AppTheme) {
       // which destroyed opacity. Solid theme.bg is the simplest fix.
       backgroundColor: theme.bg,
       padding: 16,
+      // The only bottom-anchored surface in the tree that ignored this. The
+      // primary button's edge sat 16 dp off the physical bottom, inside the
+      // Android gesture inset. Same recipe as BottomSheet.tsx.
+      paddingBottom: bottomInset + 16,
+      shadowColor: "#000",
+      shadowOpacity: 0.18,
+      shadowOffset: { width: 0, height: 4 },
+      shadowRadius: 10,
+      elevation: 4,
     },
-    title: { color: theme.text, fontWeight: "700", fontSize: 18, marginBottom: 4 },
-    meta: { color: theme.muted, fontSize: 13, marginBottom: 12 },
+    // House header, copied from ShareQrModal.tsx:622-645: spacer + centred
+    // truncating title + closeCircle. Replaces a lone text "Close" row, which
+    // was the only text close among nine sheets and ~20x30 dp of target.
+    titleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      marginBottom: 8,
+    },
+    // Mirrors the close circle so the title stays optically centred.
+    titleSlot: { width: 28, height: 28 },
+    title: {
+      flex: 1,
+      textAlign: "center",
+      color: theme.text,
+      fontWeight: "700",
+      fontSize: 18,
+    },
+    closeCircle: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.tabBadgeBg,
+    },
+    meta: {
+      color: theme.muted,
+      fontSize: 13,
+      textAlign: "center",
+      marginBottom: 12,
+    },
     topRow: {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      marginBottom: 10,
+      marginBottom: 8,
     },
+    hintText: { color: theme.muted, fontSize: 13, flexShrink: 1 },
     selectAll: { color: theme.primary, fontWeight: "600", fontSize: 13 },
     fileRow: {
       flexDirection: "row",
@@ -91,7 +146,9 @@ function createStyles(theme: AppTheme) {
       backgroundColor: theme.primary,
       borderColor: theme.primary,
     },
-    icon: { width: 28, textAlign: "center", fontSize: 18 },
+    // A 28-wide centring View, so the row gap stays at 10 now that the glyph
+    // is an Ionicon rather than an emoji in a Text.
+    iconSlot: { width: 28, alignItems: "center", justifyContent: "center" },
     fileMain: { flex: 1, minWidth: 0 },
     fileName: { color: theme.text, fontSize: 14, fontWeight: "500" },
     fileMeta: { color: theme.muted, fontSize: 12, marginTop: 2 },
@@ -104,15 +161,22 @@ function createStyles(theme: AppTheme) {
       alignItems: "center",
     },
     primaryText: { color: theme.onPrimary, fontWeight: "700", fontSize: 15 },
-    closeBtn: {
-      alignSelf: "flex-end",
-      paddingVertical: 8,
-      paddingHorizontal: 4,
-      marginBottom: 8,
-    },
-    closeText: { color: theme.muted, fontWeight: "600", fontSize: 14 },
     disabled: { opacity: 0.55 },
-    errBanner: { color: theme.danger, fontSize: 13, marginBottom: 10, lineHeight: 18 },
+    errBanner: { color: theme.danger, fontSize: 13, marginBottom: 12, lineHeight: 18 },
+    // The one status line. The sonar mounts inside it while looking, so the
+    // row has no fixed height and must not clip.
+    lookupRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      marginBottom: 12,
+    },
+    lookupText: {
+      flex: 1,
+      color: theme.muted,
+      fontSize: 12,
+      lineHeight: 16,
+    },
     // the "wait"-tone notice banner. Muted, with an info
     // icon — a resolve still waiting on the sender has not failed, so it must
     // not render in the red errBanner style.
@@ -120,7 +184,7 @@ function createStyles(theme: AppTheme) {
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
-      marginBottom: 10,
+      marginBottom: 12,
     },
     waitBannerText: {
       flex: 1,
@@ -141,7 +205,7 @@ function createStyles(theme: AppTheme) {
       borderWidth: 1,
       borderColor: theme.primaryMuted,
       backgroundColor: theme.surfaceSubtle,
-      marginBottom: 10,
+      marginBottom: 12,
     },
     offlineBannerText: {
       flex: 1,
@@ -149,12 +213,21 @@ function createStyles(theme: AppTheme) {
       fontSize: 12,
       lineHeight: 16,
     },
+    // flexShrink matters: the sheet caps at 88% of the screen while this caps
+    // at 360 dp, and RN's default flexShrink of 0 meant that on a short
+    // viewport or at a large font scale the list refused to give way and
+    // pushed the only button past the sheet's bottom edge.
+    list: { maxHeight: 360, flexShrink: 1 },
   });
 }
 
 export default function SharePreviewModal() {
   const { theme } = useAppTheme();
-  const styles = useMemo(() => createStyles(theme), [theme]);
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(
+    () => createStyles(theme, insets.bottom),
+    [theme, insets.bottom],
+  );
   const {
     previewVisible,
     closePreview,
@@ -166,6 +239,8 @@ export default function SharePreviewModal() {
     alreadyDownloadedNames,
     sessionDriveId,
     pendingPreselection,
+    relookupPreview,
+    resolving,
   } = useShareLinkFlow();
   const { transfers } = useBackend();
 
@@ -196,6 +271,42 @@ export default function SharePreviewModal() {
     modalOpenedAtRef.current = null;
     return undefined;
   }, [previewVisible]);
+  // The picker resolves underneath itself, so say so. Reuses the tick above
+  // rather than adding a second timer.
+  const lookup = useMemo(
+    () =>
+      pickerLookupStatus({
+        resolving,
+        sessionDriveId,
+        noticeTone: linkError?.tone ?? null,
+        elapsedMs: modalOpenedAtRef.current ? tickNow - modalOpenedAtRef.current : 0,
+      }),
+    [resolving, sessionDriveId, linkError, tickNow],
+  );
+  /**
+   * One buzz, on the edge into `found`.
+   *
+   * `lookup` is recomputed by the 1 Hz tick above, so anything that fires in
+   * render or off the whole object would buzz every second — hence the
+   * dependency on `lookup.state` (a string) rather than `lookup`, plus the
+   * explicit edge check.
+   *
+   * `null` seeds from the FIRST computed state rather than from "looking":
+   * on the paste/scan path `sessionDriveId` is already set in the commit that
+   * opens this modal, so the first render is `found`. A hardcoded seed would
+   * add a second buzz to every paste, on top of the provider's own.
+   */
+  const prevLookupRef = useRef<PickerLookupState | null>(null);
+  useEffect(() => {
+    if (!previewVisible) {
+      prevLookupRef.current = null;
+      return;
+    }
+    const prev = prevLookupRef.current;
+    prevLookupRef.current = lookup.state;
+    if (prev === null) return;
+    if (prev !== "found" && lookup.state === "found") haptics.success();
+  }, [previewVisible, lookup.state]);
   const sessionTransfer = useMemo(
     () =>
       sessionDriveId
@@ -271,14 +382,26 @@ export default function SharePreviewModal() {
     else setSelected(new Set(allKeys));
   }
 
-  const primaryLabel = someSelected
-    ? `Grab ${selectedKeys.length} (${formatBytes(selectedBytes)})`
-    : "Grab everything";
+  // "Grab everything" for a one-file share came from a label that never
+  // branched on the count. Both the label and the subtitle are functions now.
+  const gate = pickerGrabGate({
+    lookupState: lookup.state,
+    downloadAllBusy,
+    grabLabel: previewPrimaryLabel({
+      fileCount: files.length,
+      selectedCount: selectedKeys.length,
+      selectedBytes,
+    }),
+  });
+  const hint = previewHint(files.length, gate.grabAllowed);
 
   // the in-modal Grab blink is gone — the "Got it" badge already
   // tells the user which files are downloaded. The acknowledging blink now
   // lives on the main list's bundle row (auto-expanded if needed).
   const onPressGrab = () => {
+    // Belt and braces. The button is already disabled unless the gate allows
+    // it; a handler that silently returns is the defect this item removed.
+    if (!gate.grabAllowed) return;
     if (someSelected) void downloadSelectedFromPreview(selectedKeys);
     else void downloadAllFromPreview();
   };
@@ -288,28 +411,79 @@ export default function SharePreviewModal() {
       <View style={styles.backdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={closePreview} />
         <View style={styles.sheet}>
-          <Pressable style={styles.closeBtn} onPress={closePreview}>
-            <Text style={styles.closeText}>Close</Text>
-          </Pressable>
-          <Text style={styles.title}>{openResult?.shareName || "Share"}</Text>
-          <Text style={styles.meta}>
-            {files.length} {files.length === 1 ? "file" : "files"} in here
-          </Text>
-          <View style={styles.topRow}>
-            <Text style={styles.meta}>
-              {someSelected
-                ? `${selectedKeys.length} picked`
-                : "Tap any file to grab just that one"}
+          <View style={styles.titleRow}>
+            <View style={styles.titleSlot} />
+            {/* Middle ellipsis keeps the extension visible, which a tail cut
+                does not: "Q3-report-fin….pdf" beats "Q3-report-fina…". */}
+            <Text style={styles.title} numberOfLines={1} ellipsizeMode="middle">
+              {openResult?.shareName || "Share"}
             </Text>
-            {files.length > 1 && (
-              <Pressable onPress={toggleAll} accessibilityRole="button" accessibilityLabel="Toggle select all">
-                <Text style={styles.selectAll}>{allSelected ? "Clear all" : "Pick all"}</Text>
-              </Pressable>
-            )}
+            <Pressable
+              onPress={closePreview}
+              style={styles.closeCircle}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Close"
+            >
+              <Ionicons name="close" size={16} color={theme.muted} />
+            </Pressable>
           </View>
-          {/* Tone-tagged notice — "wait" muted + info icon,
-              "error" uses the red errBanner. */}
+          <Text style={styles.meta}>
+            {previewSubtitle(files.length, openResult?.totalBytes)}
+          </Text>
+          {/* The status row moved ABOVE the pick controls: it is the thing the
+              user is waiting on, and the controls below it depend on it.
+              Polite — it changes on a timer with no user action. */}
+          <View style={styles.lookupRow} accessibilityLiveRegion="polite">
+            {lookup.state === "looking" ? (
+              /* Gated on `looking`, and ReceiveSheet's own arm is gated on
+                 `visible && resolving`, so only one sonar is ever mounted. */
+              <PearSonarLite
+                size={30}
+                color={indicatorColor(theme)}
+                label={RESOLVE_LOOKING_LABEL}
+              />
+            ) : (
+              <Ionicons
+                name={
+                  lookup.state === "found"
+                    ? "checkmark-circle-outline"
+                    : "search-outline"
+                }
+                size={14}
+                color={lookup.state === "found" ? theme.primaryMuted : theme.muted}
+              />
+            )}
+            <Text
+              style={[
+                styles.lookupText,
+                lookup.state === "found" && { color: theme.primaryMuted },
+              ]}
+            >
+              {lookup.text}
+            </Text>
+          </View>
+          {/* One status line, not two. `no-manifest` is now carried by the row
+              above, so its banner would repeat it verbatim.
+
+              Suppressed by TRIGGER, not by tone. Four triggers share the
+              `wait` tone and three reach `linkError`; dropping the whole
+              `wait` arm would leave `still-resolving` and `already-held` with
+              no arm at all, and the `else` arm would then render both of
+              them red — the exact defect this banner removed.
+
+              Known gap, PRE-EXISTING and deliberately not fixed here:
+              `already-held` keeps this arm but is wiped about one frame after
+              it appears on the paste/scan path. `applyDedupClassification`
+              sets the notice and calls `clearOnSuccess()` in the same batch;
+              the emptied draft re-runs the debounce effect, whose
+              `!linkDraft.trim()` branch calls `setLinkError(null)`. So the
+              acknowledgement survives only on the reopen-picker path, where
+              the draft is already empty. The fix is in that shared effect, not
+              here — out of this round's scope. Do not read this arm as proof
+              the message is visible. */}
           {!!linkError &&
+            linkError.trigger !== "no-manifest" &&
             (linkError.tone === "wait" ? (
               <View style={styles.waitBanner}>
                 <Ionicons
@@ -351,7 +525,25 @@ export default function SharePreviewModal() {
               </Text>
             </View>
           )}
-          <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+          {/* Only for 2+ files: with one file the checkbox, the hint and
+              "Pick all" are three controls answering a one-answer question. */}
+          {files.length > 1 && (
+            <View style={styles.topRow}>
+              <Text style={styles.hintText}>
+                {someSelected ? `${selectedKeys.length} picked` : (hint ?? "")}
+              </Text>
+              <Pressable
+                onPress={toggleAll}
+                accessibilityRole="button"
+                accessibilityLabel="Toggle select all"
+              >
+                <Text style={styles.selectAll}>
+                  {allSelected ? "Clear all" : "Pick all"}
+                </Text>
+              </Pressable>
+            </View>
+          )}
+          <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
             {files.map((f, index) => {
               const name = baseName(f.displayName || f.name);
               const checked = selected.has(f.name);
@@ -376,9 +568,22 @@ export default function SharePreviewModal() {
                   <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
                     {checked ? <Ionicons name="checkmark" size={14} color={theme.onPrimary} /> : null}
                   </View>
-                  <Text style={styles.icon}>{fileIcon(name)}</Text>
+                  <View style={styles.iconSlot}>
+                    {/* fileIcon's own header says to prefer fileIconName for
+                        new rendering. f.name, not the display name, matching
+                        the main list. */}
+                    <Ionicons
+                      name={fileIconName(f.name)}
+                      size={26}
+                      color={theme.text}
+                    />
+                  </View>
                   <View style={styles.fileMain}>
-                    <Text style={styles.fileName} numberOfLines={2}>
+                    <Text
+                      style={styles.fileName}
+                      numberOfLines={1}
+                      ellipsizeMode="middle"
+                    >
                       {name}
                     </Text>
                     <Text style={styles.fileMeta}>{formatBytes(f.size)}</Text>
@@ -397,23 +602,42 @@ export default function SharePreviewModal() {
               );
             })}
           </ScrollView>
+          {/* One slot. "Look again" REPLACES Grab rather than joining it, so
+              nothing shifts when the lookup settles. */}
           <View style={styles.actions}>
-            <Pressable
-              style={[styles.primaryBtn, downloadAllBusy && styles.disabled]}
-              onPress={onPressGrab}
-              disabled={downloadAllBusy}
-              accessibilityRole="button"
-              accessibilityLabel={primaryLabel}
-            >
-              {downloadAllBusy ? (
-                <ActivityIndicator color={theme.onPrimary} />
-              ) : (
-                <Text style={styles.primaryText}>{primaryLabel}</Text>
-              )}
-            </Pressable>
+            {gate.kind === "lookAgain" ? (
+              <Pressable
+                style={styles.primaryBtn}
+                onPress={() => void relookupPreview()}
+                accessibilityRole="button"
+                accessibilityLabel={gate.label}
+              >
+                <Text style={styles.primaryText}>{gate.label}</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                style={[styles.primaryBtn, !gate.enabled && styles.disabled]}
+                onPress={onPressGrab}
+                disabled={!gate.enabled}
+                accessibilityRole="button"
+                accessibilityLabel={gate.label}
+              >
+                {gate.busy ? (
+                  <ActivityIndicator color={theme.onPrimary} />
+                ) : (
+                  <Text style={styles.primaryText}>{gate.label}</Text>
+                )}
+              </Pressable>
+            )}
           </View>
         </View>
       </View>
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {previewVisible && <ToastOutlet />}
     </Modal>
   );
 }

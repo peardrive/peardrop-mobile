@@ -1,5 +1,5 @@
 import type { OpenLinkResult } from "./types";
-import { errorMessage } from "../lib/errorMessage";
+import { errorMessage, userFacingError } from "../lib/errorMessage";
 
 export type ResolveGenRef = { current: number };
 
@@ -106,7 +106,7 @@ export async function runGuardedResolve(
         deps.onTimeout();
       } else {
         log("warn", `resolve gen=${myGen} error after ${Date.now() - startedAt}ms: ${msg}`);
-        deps.onFailure(msg);
+        deps.onFailure(userFacingError(e, "Could not open link."));
       }
     }
   } finally {

@@ -218,8 +218,8 @@ android {
         // Bumping them here and not there is reverted by the next prebuild
         // without a word. Keep them literal and identical to what prebuild
         // would emit, so a regeneration is a no-op on this pair.
-        versionCode 2
-        versionName "0.2.0"
+        versionCode 4
+        versionName "0.2.2"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         buildConfigField "boolean", "DEV_INSTRUMENTATION", "${devInstrumentation}"

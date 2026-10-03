@@ -3,7 +3,7 @@
  *
  * ## Why this exists
  *
- * Before this sprint the resolve gave up after ~3.3 s because it waited on a
+ * The old resolve gave up after ~3.3 s because it waited on a
  * **connection** condition (`swarm.flush()`, which resolves with zero peers)
  * rather than on data. With the wait keyed on the manifest actually arriving, an
  * honest resolve can legitimately take tens of seconds on a mobile network — so
@@ -69,10 +69,12 @@ export const RESOLVE_HINT_SECOND_MS = 15_000;
  * which is the property that keeps the rules from rotting.
  */
 export const RESOLVE_HINTS = {
+  initial: "Looking for the other pear…",
   first: "Still looking for the other pear…",
   second:
     "Still looking. Keep this open — the first connection can take a little longer.",
 } as const;
+export const RESOLVE_LOOKING_LABEL = "Looking for the sender";
 
 /**
  * The hint for a given elapsed time, or `null` for "show the spinner alone".

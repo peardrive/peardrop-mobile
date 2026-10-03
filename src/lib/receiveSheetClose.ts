@@ -16,9 +16,11 @@ export type ReceiveSheetCloseDeps = {
   hide: () => void;
   /** `ShareLinkFlowContext.abortResolving` — cancels the resolve and its timer. */
   abortResolving: () => void;
+  clearDraft: () => void;
 };
 
 export function closeReceiveSheet(deps: ReceiveSheetCloseDeps): void {
   deps.abortResolving();
+  deps.clearDraft();
   deps.hide();
 }

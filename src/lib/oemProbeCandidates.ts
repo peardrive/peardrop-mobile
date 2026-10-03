@@ -279,7 +279,7 @@ export const OEM_PROBE_CANDIDATES: readonly ProbeCandidate[] = [
     source: "prompt",
     libraryTested: true,
     note:
-      "The 7D prompt's only Asus candidate; appears nowhere in AutoStarter, " +
+      "The original prompt's only Asus candidate; appears nowhere in AutoStarter, " +
       "which uses the two above. Ordered last for Asus on that basis.",
   },
 
@@ -410,7 +410,7 @@ export const OEM_PROBE_CANDIDATES: readonly ProbeCandidate[] = [
     via: "intent",
     source: "library",
     libraryTested: false,
-    note: "AutoStarter's second OnePlus attempt, by action. Absent from the 7D prompt's table.",
+    note: "AutoStarter's second OnePlus attempt, by action. Absent from the original prompt's table.",
   },
 
   // ---------------------------------------------------------------
@@ -426,7 +426,7 @@ export const OEM_PROBE_CANDIDATES: readonly ProbeCandidate[] = [
     source: "prompt",
     libraryTested: false,
     note:
-      "The 7D prompt's table lists this in its Activity column; it is an " +
+      "The original prompt's table lists this in its Activity column; it is an " +
       "ACTION, not a class name. Intended package com.meizu.safe cannot be " +
       "pinned — action-only, see ProbeCandidate. Community-sourced only.",
   },

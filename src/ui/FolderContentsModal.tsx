@@ -20,6 +20,7 @@ import type { AppTheme } from "./themes";
 import { type IconName } from "../lib/files";
 import { type FolderRowControl } from "../lib/folderRowControl";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
+import { ToastOutlet } from "./Toast";
 
 export type FolderContentsTone = "warning" | "primary" | "danger" | "muted";
 
@@ -274,6 +275,7 @@ export default function FolderContentsModal({
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -386,7 +388,7 @@ function createStyles(theme: AppTheme, bottomClearance: number) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
+      backgroundColor: theme.scrim,
       alignItems: "center",
       justifyContent: "center",
       paddingHorizontal: theme.pad,

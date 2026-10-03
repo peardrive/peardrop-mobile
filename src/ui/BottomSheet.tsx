@@ -12,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
+import { ToastOutlet } from "./Toast";
 
 export type BottomSheetProps = {
   visible: boolean;
@@ -113,6 +114,7 @@ export default function BottomSheet({
         </View>
       </Pressable>
       </KeyboardAvoidingView>
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -122,7 +124,7 @@ function createStyles(theme: AppTheme) {
     backdrop: {
       flex: 1,
       // Full-screen scrim — tapping anywhere outside the sheet dismisses.
-      backgroundColor: "rgba(0,0,0,0.5)",
+      backgroundColor: theme.scrim,
       justifyContent: "flex-end",
     },
     sheet: {

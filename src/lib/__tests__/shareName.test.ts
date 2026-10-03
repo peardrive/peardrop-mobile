@@ -20,7 +20,7 @@ import {
 } from "../shareName";
 
 describe("splitExtension", () => {
-  // The exact table from the sprint brief, including the row it knowingly
+  // The exact table from the design brief, including the row it knowingly
   // gets "wrong".
   it.each([
     ["alex.jpeg", "alex", ".jpeg"],
@@ -207,7 +207,7 @@ describe("checkShareName", () => {
 });
 
 describe("canConfirmShareName", () => {
-  // The sprint is explicit: an empty field disables the button and does NOT
+  // Explicit: an empty field disables the button and does NOT
   // silently substitute a default. The user cleared it on purpose.
   it("is false for an empty or whitespace-only field", () => {
     expect(canConfirmShareName("")).toBe(false);
@@ -234,7 +234,7 @@ describe("prefillForSingleFile", () => {
     });
   });
 
-  // The case that caused this sprint. The photo picker hands over UUID cache
+  // The photo picker hands over UUID cache
   // filenames — that is why "Shared photo" exists at all — so those files now
   // reach a naming box and would otherwise suggest the UUID as the name.
   it("prefills the human label for a UUID-named photo, keeping the real extension", () => {

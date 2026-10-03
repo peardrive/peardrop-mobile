@@ -104,8 +104,9 @@ import {
   holdingsBytesLabel,
   holdingsCountLabel,
 } from "../lib/receivedHoldings";
-// `onTapRow`'s row-tap outcomes are named and tested in this
-// module, kept out of ad-hoc branches in the component itself.
+// `onTapRow` has shipped the same class of defect
+// three times, each time as one more ad-hoc branch. All four outcomes are named
+// and tested in this module now; a fifth belongs there, not here.
 import { rowTapRoute } from "../lib/receivedRowRoute";
 // the re-share decision and its whole
 // vocabulary live here. `active` is not `announcing`, and this file is unreachable from
@@ -165,7 +166,8 @@ import { haptics } from "../lib/haptics";
 // sheet-close + resolve-abort pairing, extracted so the
 // suite can assert the abort happens.
 import { closeReceiveSheet } from "../lib/receiveSheetClose";
-import { useToast } from "../ui/Toast";
+import { scanHandoff } from "../lib/scanHandoff";
+import { ToastOutlet, useToast } from "../ui/Toast";
 import ShareQrModal from "../ui/ShareQrModal";
 import ConfirmModal from "../ui/ConfirmModal";
 import SwipeableRow from "../ui/SwipeableRow";
@@ -541,7 +543,7 @@ function createStyles(theme: AppTheme) {
     audioScrubberFill: { height: "100%", backgroundColor: theme.primary },
     audioTimeRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
     audioTimeText: { color: theme.muted, fontSize: 11, fontVariant: ["tabular-nums"] },
-    // ZZZZZZ: fullscreen takeover styles. Pure black background,
+    // fullscreen takeover styles. Pure black background,
     // chrome floats over the media via absolute positioning.
     fsRoot: { flex: 1, backgroundColor: "#000" },
     fsMediaWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
@@ -750,6 +752,7 @@ export default function MainScreen() {
     // fires when the 30 s resolve guard gives up — close
     // the Receive sheet and let the context's info toast do the talking.
     resolveTimeoutTick,
+    previewOpenedTick,
     resolveFromScan,
     // the live resolve session is the ONLY source that knows
     // which engine driveId a share key maps to while the grab is still
@@ -924,15 +927,33 @@ export default function MainScreen() {
     setReceiveFocusPaste(true);
     setReceiveSheetVisible(true);
   }, [manualEntryTick]);
-  // after the 30 s resolve timeout the app returns to the
+  // The one close path: abort, clear the draft, hide. Every dismissal routes
+  // here so none of them can drift apart again.
+  const dismissReceiveSheet = useCallback(() => {
+    closeReceiveSheet({
+      hide: () => {
+        setReceiveSheetVisible(false);
+        setReceiveFocusPaste(false);
+      },
+      abortResolving,
+      clearDraft: () => setLinkDraft(""),
+    });
+  }, [abortResolving, setLinkDraft]);
+  // UX-2026-09 · I-2: after the 30 s resolve timeout the app returns to the
   // list — the Receive sheet closes and the muted wait message arrives as a
   // top-level info toast (raised by ShareLinkFlowContext). Same one-shot
   // tick pattern as manualEntryTick above.
   useEffect(() => {
     if (resolveTimeoutTick <= 0) return;
+    dismissReceiveSheet();
+  }, [resolveTimeoutTick, dismissReceiveSheet]);
+  // Hide only, never dismissReceiveSheet: that would abort the resolve that
+  // just succeeded, and the context already cleared the draft.
+  useEffect(() => {
+    if (previewOpenedTick <= 0) return;
     setReceiveSheetVisible(false);
     setReceiveFocusPaste(false);
-  }, [resolveTimeoutTick]);
+  }, [previewOpenedTick]);
   // Target set for the post-grab child-row blink. Populated
   // by an effect that watches `lastCompletedDownload`. If the folder
   // modal isn't already open for the completed share, the effect opens
@@ -1726,11 +1747,19 @@ export default function MainScreen() {
   /**
    * Where a tap on a row goes.
    *
-   * The decision is NOT made here. `MainScreen.tsx` is `.tsx` and unreachable
-   * from the jest suite, so a decision made inline is a decision no test can
-   * observe. All four outcomes live in
-   * `src/lib/receivedRowRoute.ts`, ordered and tested there; this reads the
-   * answer and dispatches. `describeHoldings` is passed in rather than
+   * The decision is NOT made here. This handler used to branch on `isBundle`,
+   * then on `primaryFile`, and never read `origin` at all — which is why every
+   * received share with nothing downloaded fell through to the File-info panel
+   * whose own comment admitted it: *"Re-offering the grab is a later step; nothing
+   * here pretends to do it."* `rowPrimaryFile` only returns a file when
+   * `localFiles.length === 1`, never true before a grab, so the fallback was
+   * the normal case rather than the edge one.
+   *
+   * `MainScreen.tsx` is `.tsx` and unreachable from the suite,
+   * so a decision made inline is a decision no test can observe — and this
+   * handler has shipped this class of defect three times. All four outcomes now
+   * live in `src/lib/receivedRowRoute.ts`, ordered and tested there; this reads
+   * the answer and dispatches. `describeHoldings` is passed in rather than
    * recomputed so the routing and the row's own labels cannot disagree.
    */
   const onTapRow = useCallback(
@@ -1815,10 +1844,12 @@ export default function MainScreen() {
     );
     if (!out.ok || !out.shareLink) {
       logStructuredError("rn.share", "share create failed", out.error);
-      // `userFacingError` keeps the caller's fallback for every cause but
-      // substitutes real detail where there is something true to say — a
-      // manifest-unavailable rejection must not read as "give it another
-      // go?", a retry the engine is guaranteed to refuse.
+      // This used to be `showToast(opts.errorLabel)`, which
+      // discarded `out.error` for display entirely. A manifest-unavailable
+      // rejection therefore read "give it another go?" — a retry the engine is
+      // guaranteed to refuse. `userFacingError` keeps the caller's fallback for
+      // every other cause and substitutes only where there is something
+      // true to say.
       showToast(userFacingError(out.error, opts.errorLabel), "error");
       return;
     }
@@ -2108,8 +2139,8 @@ export default function MainScreen() {
         );
         return;
       }
-      // A raw errno string prefixed with "Folder error:" tells the user
-      // nothing they can act on.
+      // "Folder error:" prefixing an errno
+      // string told the user nothing they could act on.
       logStructuredError("rn.share", "folder pick failed", e);
       showToast("Couldn't read that folder — give it another go?", "error");
     } finally {
@@ -2266,7 +2297,7 @@ export default function MainScreen() {
       setKebabSheet(null);
       const res = await deactivateDrive(drive.id);
       if (!res.ok) {
-        // Same reasoning as the activate handling above.
+        // See the activate site above.
         logStructuredError("rn.share", "stop failed", res.error);
         showToast(userFacingError(res.error, "Couldn't stop that one."), "error");
         return;
@@ -2551,13 +2582,13 @@ export default function MainScreen() {
               : null
             : { label: `${typePrefix} · ${receive.label}`, tone: receive.tone };
       } else {
-        // The hosted chain — Sharing / Completed / Active — lives in
-        // `hostedRowStatus`, with its `cancelled` branch AHEAD of `completed`.
-        // `markCancelled` sets `completed: true` on both origins, so a
-        // cancelled hosted share must be caught before the `completed` arm or
-        // it reads "Completed". That logic belongs in `hostedRowStatus` and
-        // not inline here: this file is `.tsx`, and the suite collects only
-        // `*.test.ts`.
+        // The hosted chain that used to be inline here —
+        // Sharing / Completed / Active — moved to `hostedRowStatus`, with a
+        // `cancelled` branch AHEAD of it. `markCancelled` sets
+        // `completed: true` on both origins, so a hosted share the user
+        // stopped fell to the `completed` arm and read "Completed". Fixing
+        // it in place would have been a change no test could reach: this
+        // file is `.tsx`, and the suite collects only `*.test.ts`.
         const hosted = hostedRowStatus(t, { isActive });
         status =
           hosted.state === "idle"
@@ -2810,16 +2841,21 @@ export default function MainScreen() {
         );
       };
       /**
-       * This handler is not conditioned on `statusTone`. Both of the modal's
-       * control branches call this same handler, so branching on tone here
-       * would let a destructive action (whole-share deactivation) hide behind
-       * a non-destructive label like "Open in another app".
+       * STEP 1: the handler is severed
+       * from the status tone.
+       *
+       * This used to open with `if (statusTone === "warning") onStopSharing(
+       * folderModalDrive)`. Because **both** of the modal's control branches
+       * call this one handler, removing the red ⊗ alone would have left
+       * whole-share deactivation live behind an "Open in another app" label —
+       * the same destructive action, now unlabelled. So the tone clause goes
+       * first, and it goes entirely.
        *
        * What a per-file control may do is open that one file. Nothing else.
-       * It never stops a share, and it never offers to re-share a received
-       * file. `statusTone` is not read anywhere in this row's construction,
-       * so an edit to the ladder cannot decide which rows carry a
-       * destructive action.
+       * It never stops a share, and it never offers to re-share a
+       * received file. `statusTone` is no longer read anywhere in this row's
+       * construction, so an edit to the ladder can no longer decide which
+       * rows carry a destructive action.
        */
       const control = folderRowControl({ fileName: displayName, hasLocalCopy: hasLocal });
       const onRightControlPress =
@@ -2850,11 +2886,12 @@ export default function MainScreen() {
         videoUri: childVideoUri,
         statusLabel,
         statusTone,
-        // There is no per-row stop control here. A predicate like
-        // `!isReceived && transferring` is uniformly true across every child
-        // of a hosted folder that is transferring, so it would keep the
-        // whole-share stop available on every row. The `isActiveShare` prop
-        // does not exist.
+        // STEP 2: the per-row stop control
+        // is gone. `isActiveShare` was `statusTone === "warning"`, and
+        // W0-UI-5's proposed `!isReceived && transferring` replacement is
+        // INSUFFICIENT: it is uniformly true across every child of a hosted
+        // folder that is transferring, so it would have kept the whole-share
+        // stop on all of them. The prop no longer exists.
         rightControl: control,
         dim: isMissing || !hasLocal,
         blink,
@@ -2872,8 +2909,6 @@ export default function MainScreen() {
     childBlinkTarget,
     buildFolderChildren,
     onOpenFile,
-    // `onStopSharing` is not part of this memo's body: the folder modal does
-    // not offer "Stop sharing" for a file, so the dependency isn't needed.
     previewFile,
     setLinkDraft,
     setPendingPreselection,
@@ -3058,18 +3093,7 @@ export default function MainScreen() {
        *  the top action row is gone. */}
       <ReceiveSheet
         visible={receiveSheetVisible}
-        onClose={() =>
-          // closing the sheet also aborts any in-flight
-          // resolve (and its 30 s timer). The pairing lives in
-          // src/lib/receiveSheetClose.ts so the suite can assert it.
-          closeReceiveSheet({
-            hide: () => {
-              setReceiveSheetVisible(false);
-              setReceiveFocusPaste(false);
-            },
-            abortResolving,
-          })
-        }
+        onClose={dismissReceiveSheet}
         linkDraft={linkDraft}
         onLinkDraftChange={setLinkDraft}
         resolving={resolving}
@@ -3079,9 +3103,10 @@ export default function MainScreen() {
           setLinkDraft("");
         }}
         onScan={(data) => {
-          setReceiveSheetVisible(false);
-          setReceiveFocusPaste(false);
-          void resolveFromScan(data);
+          // No hide: the sheet stays and shows the looking state, same as a
+          // pasted link. writeDraft fills the input so the × and the retry icon
+          // work; the provider's one-shot ref keeps it to one resolve.
+          if (scanHandoff().resolves) void resolveFromScan(data, { writeDraft: true });
         }}
         linkError={linkError}
         onRetry={() => void retryResolve()}
@@ -3879,6 +3904,12 @@ export default function MainScreen() {
             )}
           </View>
         )}
+        {/* It is the same worst case as FilePickerSheet:
+            `transparent={false}`, full screen, so a toast in any lower
+            window is invisible rather than merely dimmed. Two showToast
+            calls fire from inside it while it stays open (the Stop-sharing
+            arm below), and both were silently swallowed. */}
+        {!!preview && <ToastOutlet />}
       </Modal>
 
       {/* v5 folder-contents modal — replaces the prior inline expand. */}

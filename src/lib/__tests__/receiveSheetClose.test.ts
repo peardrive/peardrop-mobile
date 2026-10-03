@@ -13,16 +13,24 @@ describe("closeReceiveSheet", () => {
   it("calls abortResolving — hiding the sheet alone is not enough", () => {
     const hide = jest.fn();
     const abortResolving = jest.fn();
-    closeReceiveSheet({ hide, abortResolving });
+    const clearDraft = jest.fn();
+    closeReceiveSheet({ hide, abortResolving, clearDraft });
     expect(abortResolving).toHaveBeenCalledTimes(1);
   });
 
-  it("also hides the sheet, and aborts before hiding", () => {
+  it("clears the draft — a closed sheet must not reopen holding the old link", () => {
+    const clearDraft = jest.fn();
+    closeReceiveSheet({ hide: jest.fn(), abortResolving: jest.fn(), clearDraft });
+    expect(clearDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts before clearing, and clears before hiding", () => {
     const calls: string[] = [];
     closeReceiveSheet({
       hide: () => calls.push("hide"),
       abortResolving: () => calls.push("abort"),
+      clearDraft: () => calls.push("clear"),
     });
-    expect(calls).toEqual(["abort", "hide"]);
+    expect(calls).toEqual(["abort", "clear", "hide"]);
   });
 });

@@ -420,7 +420,7 @@ describe("isTransferActive", () => {
  *
  * These are the two halves of one pair, which is why they are one function.
  */
-describe("decideServiceTransition — D-11 F7", () => {
+describe("decideServiceTransition", () => {
   beforeEach(() => setForcedTransferActive(false, true));
 
   const live = t({ origin: "received" });

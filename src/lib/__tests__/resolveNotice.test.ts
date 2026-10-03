@@ -1,8 +1,10 @@
 import {
+  ALREADY_HELD_MESSAGE,
   linkNotice,
   linkNoticeToneFor,
   noticeForResolveFailure,
   RESOLVE_TIMEOUT_MESSAGE,
+  STILL_RESOLVING_MESSAGE,
 } from "../resolveNotice";
 import { RESOLVE_NO_MANIFEST_MESSAGE } from "../resolveDisposition";
 
@@ -48,10 +50,12 @@ describe("linkNotice — carries the text through unchanged", () => {
     expect(linkNotice("malformed", "That doesn't look like a PearDrop link.")).toEqual({
       text: "That doesn't look like a PearDrop link.",
       tone: "error",
+      trigger: "malformed",
     });
     expect(linkNotice("no-manifest", RESOLVE_NO_MANIFEST_MESSAGE)).toEqual({
       text: RESOLVE_NO_MANIFEST_MESSAGE,
       tone: "wait",
+      trigger: "no-manifest",
     });
   });
 });
@@ -61,6 +65,7 @@ describe("noticeForResolveFailure — the onFailure route", () => {
     expect(noticeForResolveFailure(RESOLVE_NO_MANIFEST_MESSAGE)).toEqual({
       text: RESOLVE_NO_MANIFEST_MESSAGE,
       tone: "wait",
+      trigger: "no-manifest",
     });
   });
 
@@ -68,8 +73,42 @@ describe("noticeForResolveFailure — the onFailure route", () => {
     expect(noticeForResolveFailure("Could not open link.")).toEqual({
       text: "Could not open link.",
       tone: "error",
+      trigger: "engine-error",
     });
     expect(noticeForResolveFailure("").tone).toBe("error");
+  });
+});
+
+describe("the in-preview notices", () => {
+  it("tones both as a wait, never an error — neither is a failure", () => {
+    expect([
+      linkNoticeToneFor("still-resolving"),
+      linkNoticeToneFor("already-held"),
+    ]).toEqual(["wait", "wait"]);
+  });
+
+  it("has copy to check", () => {
+    // an empty constant would make the bans below vacuous.
+    expect([
+      typeof STILL_RESOLVING_MESSAGE,
+      typeof ALREADY_HELD_MESSAGE,
+    ]).toEqual(["string", "string"]);
+    expect(STILL_RESOLVING_MESSAGE.length).toBeGreaterThan(10);
+    expect(ALREADY_HELD_MESSAGE.length).toBeGreaterThan(10);
+  });
+
+  it("fits the banner and obeys the §B deny-list", () => {
+    for (const s of [STILL_RESOLVING_MESSAGE, ALREADY_HELD_MESSAGE]) {
+      expect(s.length).toBeLessThanOrEqual(100);
+      expect(s).not.toMatch(/check your/i);
+      expect(s).not.toMatch(/wi-?fi/i);
+      expect(s).not.toMatch(/internet/i);
+      expect(s).not.toMatch(/mobile data/i);
+      expect(s).not.toMatch(/\bnetwork\b/i);
+      expect(s).not.toMatch(/\boffline\b/i);
+      expect(s).not.toMatch(/expir/i);
+      expect(s).not.toMatch(/timed? out/i);
+    }
   });
 });
 

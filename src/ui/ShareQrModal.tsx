@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Image,
   KeyboardAvoidingView,
@@ -19,6 +19,7 @@ import { formatAbsoluteDate, formatBytes } from "../lib/format";
 import { type IconName } from "../lib/files";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
 import ConfirmModal from "./ConfirmModal";
+import { ToastOutlet } from "./Toast";
 
 /** QR box side length. Kept equal to the placeholder tile size so the
  *  modal footprint is identical whether or not a live link is present. */
@@ -63,18 +64,38 @@ export type ShareQrModalProps = {
    *  set the modal renders at the bottom. */
   isActive?: boolean;
   /**
-   * May this modal show the QR and the Copy Link button at all? Not the same
-   * question as `isActive`: boot hydration puts every received drive in the
-   * active set with no swarm attached, so a copy this phone announces nothing
-   * about would otherwise offer a link no peer can resolve. This gates only
-   * the link surfaces; `isActive` still chooses the bottom action set.
+   * May this modal show the QR
+   * and the Copy Link button at all?
+   *
+   * **Defaults to `isActive`, which is what it always used to be, and that was
+   * wrong for received rows.** Boot hydration registers every received drive in
+   * the engine's active set with no swarm attached, so `isActive` is true for a
+   * copy this phone announces nothing about — and the modal rendered a live QR
+   * and a Copy Link for a link no peer can resolve.
+   *
+   * The caller passes `mode === "server"` for a received row and
+   * leaves this undefined for a hosted one, so hosted behaviour is byte-for-byte
+   * unchanged. It gates ONLY the link surfaces; `isActive` still chooses which
+   * action set the bottom bar shows, because that is a different question.
    */
   canOfferLink?: boolean;
   /**
-   * Which half of the app this row belongs to. The hosted copy talks about
-   * seeding and offers Start sharing, which is true only of a share you
-   * created. A received row carries a synthetic id the engine cannot
-   * activate, so it must not be told to start sharing.
+   * Which half of the app this row belongs to.
+   *
+   * "hosted" (the default) keeps every word this modal has ever said. The
+   * placeholder tile reads "Not currently sharing" and instructs the user to
+   * Start sharing, and the Share-info block reports a seeding status — all
+   * true of a share you created.
+   *
+   * "received" exists because none of that is true of a copy someone sent you,
+   * and the modal was rendering it anyway: a received row reaches here through
+   * `onTapRow`'s no-primary-file fallback, so a share with nothing downloaded
+   * got a hosted panel telling it to Start sharing. The button behind that
+   * instruction called `engineActivateDrive` with a synthetic `share:<key>` id
+   * the engine cannot resolve, and answered with "Drive not found".
+   *
+   * The copy change is the point, not decoration: the old text tells the user
+   * to do something the code cannot do.
    */
   presentation?: "hosted" | "received";
   onClose: () => void;
@@ -138,8 +159,9 @@ export default function ShareQrModal({
   const isReceivedPresentation = presentation === "received";
   const { theme } = useAppTheme();
   const insets = useSafeAreaInsets();
-  // Safe-area plus a fixed gap, so the card floats clear of the status bar
-  // and notch rather than butting up against them.
+  // Top inset: safe-area (status bar) + a fixed 24 breathing gap so the
+  // card floats clear of the top edge of the app instead of butting up
+  // against the status bar / notch.
   const topInset = insets.top + 24;
   // BottomToolbar footprint clearance so the card never overlaps the
   // floating Send / Receive / Settings toolbar.
@@ -149,9 +171,26 @@ export default function ShareQrModal({
     [theme, topInset, bottomToolbarClearance],
   );
   const [confirming, setConfirming] = useState(false);
-  // The actions row is absolutely positioned so it never eats into the
-  // scroll view's flex allocation. Measuring its height reserves exactly the
-  // padding the scroll body needs to clear the pinned buttons.
+  /**
+   * Clear the nested confirm when this sheet is closed, matching the
+   * precedent at `FilePickerSheet.tsx:169-174`.
+   *
+   * Every *user* exit from `confirming` already clears it, so this only
+   * covers a programmatic close with the confirm still up. Without it, the
+   * re-open mounts both sheets' children in ONE commit — and because React
+   * flushes a child's effects before a later sibling's, the nested
+   * ConfirmModal would register its toast outlet BEFORE this sheet's,
+   * inverting "last registered = innermost" and painting toasts in this
+   * window underneath the confirm dialog.
+   */
+  useEffect(() => {
+    if (!visible) setConfirming(false);
+  }, [visible]);
+  // Actions row is absolutely positioned so it can never eat into the
+  // ScrollView's flex allocation (the RN flex + ScrollView interaction
+  // was previously overlapping the last section). Measuring its height
+  // lets us reserve exactly the right paddingBottom on the scroll body
+  // so the tail of the content clears the pinned buttons.
   const [actionsHeight, setActionsHeight] = useState(0);
 
   const statusLabel = formatStatus(info?.status);
@@ -178,8 +217,9 @@ export default function ShareQrModal({
   const isBundle = !!header?.isBundle;
   const transferring = !!info?.transferring;
 
-  // Header status chip, surfaced only on folders: a single-file row already
-  // carries its type on the subline and its status in the Share info block.
+  // Header status chip — Active / Sharing / Not active. Only surfaced on
+  // folders (per polish: single-file rows carry their type on the subline
+  // already and the Share info section duplicates the status text).
   const chipLabel = transferring
     ? "Sharing"
     : isActive
@@ -418,11 +458,14 @@ export default function ShareQrModal({
               {!isBundle ? (
                 <View style={styles.section}>
                   <Text style={styles.sectionLabel}>Share info</Text>
-                  {/* Status and Peers are suppressed on a received row: both
-                    *  describe seeding, and a received row's synthetic id
-                    *  appears in neither the active set nor the transfer map,
-                    *  so they could only ever show fixed values dressed up as
-                    *  readings. Source stays, being true of a received copy. */}
+                  {/* Status and Peers are suppressed on a
+                    *  received row. Both describe seeding. A received synth row
+                    *  has the id `share:<shareKey>`, which is never in
+                    *  `activeDriveIds` and never a key in `transferByDriveId`,
+                    *  so Status was a hardcoded "Inactive" and Peers a
+                    *  hardcoded 0 — two fields that could not vary presented as
+                    *  if they were readings. Source stays; it is the one row
+                    *  here that says something true about a received copy. */}
                   {statusLabel && !isReceivedPresentation ? (
                     <View style={styles.infoRow}>
                       <Text style={styles.infoRowLabel}>Status</Text>
@@ -544,6 +587,12 @@ export default function ShareQrModal({
         onCancel={() => setConfirming(false)}
         onConfirm={onConfirmRemove}
       />
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -556,10 +605,12 @@ function createStyles(
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
-      // Horizontal centering only: vertical layout comes from the paddings
-      // below, and centering here collapses the card's flex growth so the
-      // pinned actions overlap the scrolling middle.
+      backgroundColor: theme.scrim,
+      // Horizontal centering only. Vertical layout is driven by the
+      // explicit paddings below + card's flex:1, so justifyContent
+      // must NOT be "center" — that collapses the card's flex growth
+      // in some RN versions and lets the pinned actions overlap the
+      // scrolling middle.
       alignItems: "center",
       paddingHorizontal: theme.pad,
       // Safe-area + breathing room above so the card never touches the
@@ -569,8 +620,10 @@ function createStyles(
       // floating BottomToolbar (Send / Receive / Settings buttons).
       paddingBottom: bottomClearance,
     },
-    // The card fills the vertical space the backdrop's paddings leave, so
-    // every state has the same modal footprint and only the middle differs.
+    // Card takes the full available vertical space (constrained by the
+    // backdrop's paddings above). That gives every state — folder/file ×
+    // active/inactive — the same modal footprint; only the middle
+    // ScrollView content differs.
     card: {
       flex: 1,
       width: "100%",
@@ -662,8 +715,10 @@ function createStyles(
       fontWeight: "700",
       letterSpacing: 0.4,
     },
-    // The scroll takes whatever the pinned regions leave. `minHeight: 0`
-    // stops it claiming a min-content height that overlaps the actions.
+    // ScrollView occupies whatever the pinned regions leave over.
+    // `minHeight: 0` is a defensive-flex-basis hint so RN never
+    // grants the scroll a min-content height that would overlap
+    // the actions below.
     scroll: { flex: 1, minHeight: 0 },
     // Trailing padding so the last section (Share info or Files)
     // isn't visually flush with the pinned actions row.

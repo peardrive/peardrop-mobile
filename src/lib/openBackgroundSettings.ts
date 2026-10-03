@@ -271,7 +271,7 @@ export function openBackgroundSettings(): Promise<string | null> {
  * below are what a Xiaomi user reaches from the fallback. Only this wrapper
  * is idle, and it is the natural API if a surface ever needs the Autostart
  * screen directly again. Deleting it would save four lines and cost the next
- * sprint the rediscovery.
+ * whoever needs it next the rediscovery.
  */
 export function openAutostartSettings(): Promise<string | null> {
   return runLadder("autostart", "rn.autostart");

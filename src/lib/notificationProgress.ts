@@ -213,7 +213,7 @@ export function describeTransferNotification(
     parts.push(`${formatBytes(sumBytes)} so far`);
   }
   // Never an empty content line: a notification with a title and a blank body
-  // is the shape of the bug this sprint is fixing.
+  // is a stale-notification bug.
   const text = parts.length > 0 ? parts.join(" · ") : "Connecting…";
 
   // scope stated in the label, from the same set as the title.

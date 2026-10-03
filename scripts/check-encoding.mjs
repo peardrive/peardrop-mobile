@@ -64,7 +64,7 @@ function locate(buf, offset) {
 }
 
 function describeControl(byte) {
-  if (byte === 0x00) return 'NUL (this is the D-48 byte: rg skips the file silently on a directory traversal)';
+  if (byte === 0x00) return 'NUL (rg skips the file silently on a directory traversal)';
   const names = {
     0x07: 'BEL',
     0x08: 'BS',

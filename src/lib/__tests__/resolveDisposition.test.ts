@@ -141,6 +141,14 @@ describe("the rejection copy obeys the same deny-list as the hint copy", () => {
     expect(RESOLVE_NO_MANIFEST_MESSAGE.length).toBeGreaterThan(20);
   });
 
+  it("fits the receive sheet without truncating (≤ 100 chars)", () => {
+    // This sentence lands in `linkError` (both the RN-side rejection and the
+    // engine's `receive.no-manifest` route). The sheet's error text wraps, but
+    // the per-constant cap keeps it short enough for every linkError surface;
+    // the global 120-char cap lives in scripts/check-copy.mjs.
+    expect(RESOLVE_NO_MANIFEST_MESSAGE.length).toBeLessThanOrEqual(100);
+  });
+
   it("never points the user at a network the app has never looked at", () => {
     // No connectivity detection exists anywhere in PearDrop, and the app
     // cannot tell "the host is offline" from "DHT discovery is still
@@ -160,8 +168,9 @@ describe("the rejection copy obeys the same deny-list as the hint copy", () => {
   });
 
   it("makes no claim about how many files the share holds", () => {
-    // The predicate does not key on file count, so the copy may not assert
-    // one: a share rejected here can hold any number of unread files.
+    // The specific regression this guards. The predicate no longer keys on
+    // file count, so the copy may not assert one — a share rejected here can
+    // hold any number of files we could not read yet.
     expect(RESOLVE_NO_MANIFEST_MESSAGE).not.toMatch(/\bno files\b/i);
     expect(RESOLVE_NO_MANIFEST_MESSAGE).not.toMatch(/any files/i);
     expect(RESOLVE_NO_MANIFEST_MESSAGE).not.toMatch(/\bempty\b/i);

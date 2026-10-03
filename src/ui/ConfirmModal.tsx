@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
+import { ToastOutlet } from "./Toast";
 
 export type ConfirmModalProps = {
   visible: boolean;
@@ -66,6 +67,12 @@ export default function ConfirmModal({
           </View>
         </Pressable>
       </Pressable>
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -74,7 +81,7 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
+      backgroundColor: theme.scrim,
       alignItems: "center",
       justifyContent: "center",
       padding: 24,

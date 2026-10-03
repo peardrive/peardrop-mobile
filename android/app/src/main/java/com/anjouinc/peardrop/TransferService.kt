@@ -42,7 +42,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *    to stop promptly throws ForegroundServiceDidNotStopInTimeException.
  * 3. A notification that shows real progress rather than a static string.
  *
- * ## Sprint 8A: this ships
+ * ## This ships
  *
  * The `<service>` element and FOREGROUND_SERVICE_DATA_SYNC moved into the
  * real `src/main/AndroidManifest.xml`, and `TransferServicePackage` is

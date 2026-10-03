@@ -50,6 +50,7 @@ import { log as debugLog, logStructuredError } from "../lib/debugLog";
 // transform). Do NOT re-inline either one here; inlining is
 // exactly what made the old `files.length` guard unassertable.
 import { classifyResolve } from "../lib/resolveOutcome";
+import { previewHandoffFor, type ResolveHandoffKind } from "../lib/previewHandoff";
 import {
   disposeResolve,
   RESOLVE_NO_MANIFEST_MESSAGE,
@@ -64,9 +65,11 @@ import {
 // "error" (real failure, red). Tone rule and timeout copy live in src/lib so
 // the suite reaches them.
 import {
+  ALREADY_HELD_MESSAGE,
   linkNotice,
   noticeForResolveFailure,
   RESOLVE_TIMEOUT_MESSAGE,
+  STILL_RESOLVING_MESSAGE,
   type LinkNotice,
 } from "../lib/resolveNotice";
 
@@ -84,6 +87,9 @@ type ShareLinkFlowApi = {
    * same pattern as `manualEntryTick`.
    */
   resolveTimeoutTick: number;
+  /** Bumped when a resolve succeeds and the picker takes over; MainScreen
+   *  hides the Receive sheet on it. Not a close — the resolve succeeded. */
+  previewOpenedTick: number;
   sessionDriveId: string | null;
   lastResolvedLink: string;
   openResult: OpenLinkResult | null;
@@ -108,9 +114,21 @@ type ShareLinkFlowApi = {
   downloadAllBusy: boolean;
   downloadAllFromPreview: () => Promise<void>;
   downloadSelectedFromPreview: (fileNames: string[]) => Promise<void>;
-  resolveFromScan: (text: string) => Promise<void>;
+  /**
+   * Resolves a scanned link immediately. `writeDraft` also puts it in the
+   * Receive input, so the × and the retry icon work — opt-in per call site,
+   * because the deep-link bridge must NOT leave a link in a sheet the user
+   * never opened.
+   */
+  resolveFromScan: (text: string, opts?: { writeDraft?: boolean }) => Promise<void>;
   /** Re-runs the resolve against whatever's currently in linkDraft. */
   retryResolve: () => Promise<void>;
+  /**
+   * Re-runs the resolve for the reopen picker, against `lastResolvedLink`.
+   * Separate from `retryResolve` because that one reads `linkDraft`, which the
+   * reopen path never sets.
+   */
+  relookupPreview: () => Promise<void>;
   abortResolving: () => void;
   /**
    * IDs of already-downloaded files matching the most recent paste/scan.
@@ -171,6 +189,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   const [resolving, setResolving] = useState(false);
   const [linkError, setLinkError] = useState<LinkNotice | null>(null);
   const [resolveTimeoutTick, setResolveTimeoutTick] = useState(0);
+  const [previewOpenedTick, setPreviewOpenedTick] = useState(0);
 
   // Wrap setLinkDraft so any input edit immediately clears the error.
   // Without this the previous error sticks until the next resolve completes,
@@ -197,7 +216,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   const [alreadyDownloadedNames, setAlreadyDownloadedNames] = useState<string[]>([]);
   // pendingPreselection survives across debounced resolve attempts
   // (so retries preserve it) but clears on explicit clear, modal close, or
-  // download completion. See ZZZZZ.1.
+  // download completion.
   const [pendingPreselection, setPendingPreselectionState] = useState<string[] | null>(null);
   const setPendingPreselection = useCallback((names: string[] | null) => {
     setPendingPreselectionState(names && names.length > 0 ? names : null);
@@ -223,6 +242,29 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
 
   const resolveGen = useRef(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The one draft value a scan wrote and has already resolved itself.
+   *
+   * A scan resolves immediately AND writes the draft, because the input, its ×
+   * and the retry icon are all keyed on `linkDraft`. Writing it re-arms the
+   * 450 ms debounce, and a second resolve is not merely redundant: it bumps
+   * the generation and calls `abortOpen()`, killing the first mid-flight so an
+   * `out.driveId` it produced never gets torn down. One-shot, compared by value.
+   */
+  const draftWrittenByScanRef = useRef<string | null>(null);
+  /**
+   * The last COMMITTED `linkDraft`, mirrored so an event handler can read it
+   * without taking it as a dependency.
+   *
+   * `resolveFromScan` needs to know whether its write will actually change the
+   * draft: writing an identical value is a no-op, no effect re-run follows, and
+   * a one-shot armed for it is never consumed — it then swallows the next
+   * genuine resolve of that same link. Taking `linkDraft` as a dep instead
+   * would re-create the callback on every keystroke.
+   */
+  const linkDraftRef = useRef("");
+  /** Synchronous re-entry latch for `relookupPreview` — see its comment. */
+  const relookupInFlightRef = useRef(false);
   const resolveTimerRef = useRef<ResolveTimerRef["current"]>(null);
 
   /**
@@ -267,11 +309,20 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     setLinkError(null);
     // Closing the preview without grabbing clears the smart-regrab hint.
     setPendingPreselectionState(null);
+    // The picker resolves underneath itself, so closing must kill it: a late
+    // success used to re-open this modal over whatever the user moved on to.
+    resolveGen.current++;
+    if (resolveTimerRef.current) {
+      clearTimeout(resolveTimerRef.current);
+      resolveTimerRef.current = null;
+    }
+    void abortOpen();
+    setResolving(false);
     // The demo drive has no engine session to release.
     if (sessionDriveId && sessionDriveId !== DEMO_DRIVE_ID) {
       void deactivateDrive(sessionDriveId).catch(() => {});
     }
-  }, [deactivateDrive, sessionDriveId]);
+  }, [abortOpen, deactivateDrive, sessionDriveId]);
 
   /**
    * Classify the dedup match between the resolved manifest and
@@ -524,6 +575,13 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setLinkDraftRaw("");
         setPendingPreselectionState(null);
       };
+      // The picker is taking over, so the Receive sheet has to go. Bumped for
+      // `full` too, which shows a toast and no preview at all.
+      const handOffToPreview = (handoffKind: ResolveHandoffKind) => {
+        const handoff = previewHandoffFor(handoffKind);
+        setPreviewVisible(handoff.opensPreview);
+        if (handoff.closesReceiveSheet) setPreviewOpenedTick((n) => n + 1);
+      };
       if (kind === "full") {
         // Every manifest file is already on disk. Skip
         // the preview entirely; the Receive screen flashes the matching
@@ -533,7 +591,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setSessionDriveId(manifest.driveId ?? null);
         setLastResolvedLink(normalizedLink);
         setOpenResult(manifest);
-        setPreviewVisible(false);
+        handOffToPreview("full");
         haptics.actionDone();
         showToast("You've already got these.");
         clearOnSuccess();
@@ -546,9 +604,11 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setSessionDriveId(manifest.driveId ?? null);
         setLastResolvedLink(normalizedLink);
         setOpenResult(manifest);
-        setPreviewVisible(true);
+        handOffToPreview("partial");
         haptics.actionDone();
-        showToast("You already have some of these.");
+        // In the preview's banner, not a toast: the preview is opening in the
+        // same commit, and a toast raised under it cannot be tapped.
+        setLinkError(linkNotice("already-held", ALREADY_HELD_MESSAGE));
         clearOnSuccess();
         return;
       }
@@ -557,7 +617,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       setSessionDriveId(manifest.driveId ?? null);
       setLastResolvedLink(normalizedLink);
       setOpenResult(manifest);
-      setPreviewVisible(true);
+      handOffToPreview("none");
       haptics.actionDone();
       clearOnSuccess();
     },
@@ -571,6 +631,20 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setLinkError(linkNotice("malformed", "That doesn't look like a PearDrop link."));
         return;
       }
+      // Report "looking" synchronously, in the caller's own commit.
+      //
+      // `runGuardedResolve` fires `onBegin` only after awaiting `abortOpen()`,
+      // a worklet RPC round trip, so `resolving` stayed false across the commit
+      // that opens the reopen picker — and `pickerLookupStatus` reads
+      // "null session, not resolving" as `notFoundYet`. The picker's first
+      // paint therefore claimed no sender had been found and offered an
+      // enabled "Look again" for a lookup that had not started.
+      //
+      // Safe against a stranded flag: the malformed return above is the only
+      // exit that precedes this line, the demo branch clears it explicitly,
+      // and the guarded path clears it in `onFinally` (or a superseding
+      // resolve clears it instead).
+      setResolving(true);
       // Find candidate dedup matches: downloaded entries that came from
       // THIS link AND whose underlying file still exists on disk.
       // loadDownloaded() filters out missing files for us, so this list is
@@ -744,8 +818,20 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     ],
   );
 
+  // Mirrors the committed draft for `resolveFromScan`. Declared before the
+  // debounce effect so the value is already current when that effect runs.
+  useEffect(() => {
+    linkDraftRef.current = linkDraft;
+  }, [linkDraft]);
+
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    // Position is the mechanism: above the clearTimeout this leaves a stale
+    // timer armed, below the setTimeout it prevents nothing.
+    if (draftWrittenByScanRef.current === linkDraft) {
+      draftWrittenByScanRef.current = null;
+      return;
+    }
     if (!ready || !linkDraft.trim()) {
       setLinkError(null);
       return;
@@ -762,8 +848,30 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   }, [linkDraft, ready, runResolve]);
 
   const resolveFromScan = useCallback(
-    async (text: string) => {
+    async (text: string, opts?: { writeDraft?: boolean }) => {
       setQrVisible(false);
+      if (opts?.writeDraft) {
+        // One string for both, so the guard cannot miss by a normalisation
+        // difference. Ref first: it must be in place before the effect reads
+        // the new draft. Raw setter, so a pending preselection survives.
+        const shown = normalizeShareLink(text);
+        // Arm the one-shot ONLY when the write really changes the draft.
+        //
+        // Scanning the code for a link already sitting in the input (the
+        // normal case after a failed paste, since the draft is kept) is a
+        // no-op setter: React bails out, the debounce effect's deps are
+        // unchanged, it never re-runs, and the ref is never consumed. It then
+        // matches the NEXT time that value is typed or pasted and swallows a
+        // resolve the user did ask for — a silently dead paste.
+        //
+        // Skipping the write is also the right UX: the input already shows
+        // this link, and no debounce arms, so the scan's own resolve below
+        // stays the only one.
+        if (shown !== linkDraftRef.current) {
+          draftWrittenByScanRef.current = shown;
+          setLinkDraftRaw(shown);
+        }
+      }
       await runResolve(text);
     },
     [runResolve]
@@ -773,6 +881,34 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     if (!linkDraft.trim()) return;
     await runResolve(linkDraft);
   }, [linkDraft, runResolve]);
+
+  /**
+   * "Look again" from the reopen picker.
+   *
+   * `retryResolve` cannot serve this: it is keyed on `linkDraft`, and
+   * `openStoredSharePicker` never writes one — so calling it from the picker
+   * returned immediately and did nothing. `lastResolvedLink` IS set there
+   * (`setLastResolvedLink(share.shareLink)`), so that is what to re-resolve.
+   *
+   * Re-entry guard, not politeness: `closePreview` bumps `resolveGen`, and a
+   * second concurrent resolve would bump it again and abort the first
+   * mid-flight, leaking its session.
+   */
+  const relookupPreview = useCallback(async () => {
+    // A ref, not `resolving`. The state flag is set a commit later than the
+    // tap, so two taps inside one abort-RPC round trip both passed it; the
+    // second bumped the generation and the first was then discarded before
+    // `onSuccess`, stranding a drive the engine had already registered. A ref
+    // is written synchronously, so the second tap cannot get past it.
+    if (relookupInFlightRef.current) return;
+    if (!lastResolvedLink) return;
+    relookupInFlightRef.current = true;
+    try {
+      await runResolve(lastResolvedLink);
+    } finally {
+      relookupInFlightRef.current = false;
+    }
+  }, [lastResolvedLink, runResolve]);
 
   const abortResolving = useCallback(() => {
     resolveGen.current++;
@@ -807,9 +943,16 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         // a wait-tone notice keeps its info kind here too —
         // "still looking" reported through an error toast would be the same
         // red-for-normal-wait defect this item removed.
-        showToast(linkError?.text || "Still finding the sender — give it a moment.", {
-          kind: linkError && linkError.tone === "error" ? "error" : "info",
-        });
+        // The preview is open, so this goes in its banner. A toast here was
+        // the only feedback for the tap and it rendered behind the modal.
+        //
+        // UNREACHABLE BACKSTOP. `pickerGrabGate` disables Grab unless the
+        // lookup reached `found`, so no user tap arrives here any more. Kept
+        // because a guard that only holds while its one caller remembers it is
+        // not a guard. The `if (!linkError)` that used to wrap this is GONE:
+        // in the common not-found case a wait notice was already set, so the
+        // tap produced no banner, no toast and no state change at all.
+        setLinkError(linkNotice("still-resolving", STILL_RESOLVING_MESSAGE));
         return;
       }
       setDownloadAllBusy(true);
@@ -1144,9 +1287,8 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       devMode,
       openResult,
       alreadyDownloadedNames,
-      // read by the no-session guard, which reports the resolve's own
-      // failure rather than inventing a second message for the same event.
-      linkError,
+      // `linkError` was here solely for the no-session guard's `if (!linkError)`.
+      // That read is gone, so the dep is too.
     ],
   );
 
@@ -1209,6 +1351,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       resolving,
       linkError,
       resolveTimeoutTick,
+      previewOpenedTick,
       sessionDriveId,
       lastResolvedLink,
       openResult,
@@ -1224,6 +1367,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       downloadSelectedFromPreview,
       resolveFromScan,
       retryResolve,
+      relookupPreview,
       abortResolving,
       highlightedDownloadedIds,
       clearHighlights,
@@ -1239,6 +1383,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       resolving,
       linkError,
       resolveTimeoutTick,
+      previewOpenedTick,
       sessionDriveId,
       lastResolvedLink,
       openResult,
@@ -1253,6 +1398,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       downloadSelectedFromPreview,
       resolveFromScan,
       retryResolve,
+      relookupPreview,
       abortResolving,
       highlightedDownloadedIds,
       clearHighlights,

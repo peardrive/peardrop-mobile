@@ -35,6 +35,8 @@ export type AppTheme = {
   warning: string;
   /** v5: two-stop gradient for the Grab CTA — [primary, primaryMuted] per theme. */
   grabGradient: readonly [string, string];
+  /** Modal backdrop wash. 0.5 in all 11 themes; every live modal uses it. */
+  scrim: string;
   radius: number;
   pad: number;
 };
@@ -61,6 +63,7 @@ const voidTheme: AppTheme = {
   tabBadgeBg: "rgba(255,255,255,0.1)",
   warning: "#f59e0b",
   grabGradient: ["#a8cf3a", "#75bf52"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -87,6 +90,7 @@ const pearTheme: AppTheme = {
   tabBadgeBg: "rgba(26, 36, 16, 0.08)",
   warning: "#b45309",
   grabGradient: ["#a8cf3a", "#4d7c0f"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -113,6 +117,7 @@ const oceanTheme: AppTheme = {
   tabBadgeBg: "rgba(56, 189, 248, 0.2)",
   warning: "#fbbf24",
   grabGradient: ["#22d3ee", "#06b6d4"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -132,8 +137,9 @@ const paperTheme: AppTheme = {
   // zinc-600 (#52525b) pushes small-text contrast above WCAG AA (~7:1).
   muted: "#52525b",
   primary: "#84cc16",
-  // A deeper green for accent text over white cards, used by border and
-  // checkbox secondary states, so the contrast holds.
+  // Contrast audit: WCAG prefers deeper greens for accent text over white
+  // cards; primaryMuted moved to #4d7c0f (lime-700) for border/checkbox
+  // secondary states.
   primaryMuted: "#4d7c0f",
   secondary: "#0891b2",
   secondaryDark: "#0e7490",
@@ -145,6 +151,7 @@ const paperTheme: AppTheme = {
   tabBadgeBg: "rgba(24, 24, 27, 0.08)",
   warning: "#b45309",
   grabGradient: ["#84cc16", "#4d7c0f"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -171,6 +178,7 @@ const emberTheme: AppTheme = {
   tabBadgeBg: "rgba(251, 191, 36, 0.12)",
   warning: "#fcd34d",
   grabGradient: ["#f59e0b", "#d97706"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -197,6 +205,7 @@ const forestTheme: AppTheme = {
   tabBadgeBg: "rgba(167, 243, 208, 0.12)",
   warning: "#fbbf24",
   grabGradient: ["#34d399", "#10b981"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -223,6 +232,7 @@ const lavenderTheme: AppTheme = {
   tabBadgeBg: "rgba(196, 181, 253, 0.12)",
   warning: "#fbbf24",
   grabGradient: ["#a78bfa", "#8b5cf6"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -249,6 +259,7 @@ const roseTheme: AppTheme = {
   tabBadgeBg: "rgba(251, 207, 232, 0.12)",
   warning: "#fbbf24",
   grabGradient: ["#f472b6", "#ec4899"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -275,6 +286,7 @@ const slateTheme: AppTheme = {
   tabBadgeBg: "rgba(148, 163, 184, 0.15)",
   warning: "#fbbf24",
   grabGradient: ["#94a3b8", "#64748b"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -304,6 +316,7 @@ const creamTheme: AppTheme = {
   tabBadgeBg: "rgba(68, 52, 44, 0.09)",
   warning: "#b45309",
   grabGradient: ["#c2410c", "#7c2d12"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -330,6 +343,7 @@ const synthTheme: AppTheme = {
   tabBadgeBg: "rgba(34, 211, 238, 0.12)",
   warning: "#fbbf24",
   grabGradient: ["#ec4899", "#db2777"] as const,
+  scrim: "rgba(0,0,0,0.5)",
   radius: 16,
   pad: 16,
 };
@@ -365,8 +379,10 @@ export const THEME_ORDER: ThemeId[] = [
 ];
 
 /**
- * IDs of the themes with light backgrounds, which need dark status-bar icons
- * for contrast. Add a new light theme here when it is introduced: a theme
- * missing from this list gets light icons on a light bar.
+ * IDs of the themes whose backgrounds are light (i.e., need dark status-bar
+ * icons for contrast). Consumed by ThemedRoot in app/index.tsx
+ * to pick the right `StatusBar barStyle`. Add new light themes here when
+ * they're introduced; defaulting to "dark text on light bg" is a one-line
+ * change away from defaulting to "light text on dark bg" otherwise.
  */
 export const LIGHT_THEME_IDS: ThemeId[] = ["pear", "paper", "cream"];

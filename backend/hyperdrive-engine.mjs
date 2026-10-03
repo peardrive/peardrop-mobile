@@ -480,7 +480,7 @@ function emitUploadProgressSnapshot(tracker) {
       "engine.upload",
       `snapshot suppressed drive=${tracker.driveId} — active set empty and no peer has ever ` +
         `finished (peers=${tracker.peers.size} delivered=0 totalSentBytes=${Math.round(tracker.totalSentBytes)}). ` +
-        `Emitting percent=100 here is D-09.`,
+        `Emitting percent=100 here is the bug.`,
     );
     return;
   }
@@ -1527,7 +1527,7 @@ export async function engineShareFromPaths(paths, relPaths, shareName) {
     // stream each file in sequentially. The size already came
     // from fs.stat above so the manifest entry doesn't depend on byte
     // counters flowing through the pipe. Sequential by design — parallel
-    // transfers were explicitly descoped from this sprint.
+    // transfers are out of scope for now.
     let piped = 0;
     for (const f of fileList) {
       const storagePath = f.relPath || f.name;
@@ -2790,7 +2790,7 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
         swallowed("engine.download", `share title as folder ${driveId}`, e);
       }
     }
-    // phase 2i (C-5). A repeat grab of the SAME drive goes back
+    // A repeat grab of the SAME drive goes back
     // to the folder it used last time; everything else disambiguates exactly as
     // before. See `rememberedDownloadRoot` for what is trusted (the last
     // segment, re-checked with `safePathWithin`) and what is not.
@@ -3239,7 +3239,7 @@ export function engineListDrives() {
       totalBytes: entry.totalBytes ?? 0,
       files: entry.files || [],
       localFiles: entry.localFiles || [],
-      // (phase 2i), contract C-2: *"RN reads `reshared` and
+      // *"RN reads `reshared` and
       // the completeness predicate; it does not compute the boot rule."* It
       // cannot read what is not on the wire, and this projection is the only
       // place the manifest entry reaches RN. ADDED, never renaming or dropping
@@ -3290,7 +3290,7 @@ export async function engineActivateDrive(driveId, opts) {
       `activate drive=${driveId} REFUSED the re-share reason=${serveRefused} ` +
         `localFiles=${Array.isArray(entry?.localFiles) ? entry.localFiles.length : 0}` +
         `/${Array.isArray(entry?.files) ? entry.files.length : 0} ` +
-        `— a received copy announces only when it holds every file (D-06)`,
+        `— a received copy announces only when it holds every file`,
     );
   }
 
@@ -3497,7 +3497,7 @@ export async function engineActivateDrive(driveId, opts) {
 
     setDriveState(entry, DriveState.ACTIVE, "engineActivateDrive: swarm attached");
     entry.lastActivityAt = Date.now();
-    // C-2, same single-write reasoning as the reuse path above.
+    // same single-write reasoning as the reuse path above.
     persistReshared(entry);
     try { await saveManifest(); } catch {}
 

@@ -87,7 +87,7 @@ describe("the 60-89 s band is no longer a freeze", () => {
     });
   });
 
-  test("the floor is OD-2's ten expected ticks, and it is inclusive", () => {
+  test("the floor is ten expected ticks, and it is inclusive", () => {
     expect(MIN_GRADED_EXPECTED_TICKS).toBe(10);
     // Nine ticks: 4.5 minutes at the production cadence.
     const nine = windowOf(9, 9, PROD_TICK_MS);
@@ -135,7 +135,7 @@ describe("the 60-89 s band is no longer a freeze", () => {
   });
 });
 
-describe("the budget's unit is load-bearing (D-12 defect 3)", () => {
+describe("the budget's unit is load-bearing", () => {
   /**
    * One verdict, graded twice. The only difference between the two columns is
    * the interval the 3-tick allowance is multiplied by: 2,000 ms gives a

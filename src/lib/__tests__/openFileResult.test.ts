@@ -20,7 +20,7 @@ describe("describeOpenFailure", () => {
     expect(msg).toBe("Nothing on this phone opened that file.");
   });
 
-  // The regression this sprint exists to prevent: a refused APK resolved with
+  // The regression this test prevents: a refused APK resolved with
   // resultCode 0 and the caller discarded it, so the user saw nothing at all.
   it("gives the APK its own message rather than the generic one", () => {
     const msg = describeOpenFailure({

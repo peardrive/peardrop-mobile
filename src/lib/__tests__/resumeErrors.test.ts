@@ -104,7 +104,7 @@ describe("resumeErrors pattern (Sprint 3R JJJJJJJ)", () => {
     expect(tracker.getAll()).toEqual({});
   });
 
-  test("scenario 6 — Sprint 3S: hydrate failures could carry a typed cause", () => {
+  test("scenario 6 — hydrate failures could carry a typed cause", () => {
     // The emit payload's shape is caller-controlled: the tracker enforces
     // nothing and stores whatever message it is given.
     tracker.recordFailure(

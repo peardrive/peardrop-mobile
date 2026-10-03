@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { folderDisplayName } from "../lib/fileBrowse";
+import { ToastOutlet } from "./Toast";
 
 export type FolderAccessModalProps = {
   visible: boolean;
@@ -22,9 +23,13 @@ export type FolderAccessModalProps = {
 };
 
 /**
- * Manages which folders PearDrop can read. Android holds these as persisted
- * SAF grants, so without a screen like this the list of what the user has
- * allowed is invisible and only growable.
+ * Manages which folders PearDrop can read.
+ *
+ * This is the honest surface for a permission the user granted piecemeal:
+ * everything they've allowed, in one place, each removable. Android holds
+ * these as persisted SAF grants, so without a screen like this the list
+ * is invisible and only growable — which is exactly the pattern people
+ * distrust in file-sharing apps.
  */
 export default function FolderAccessModal({
   visible,
@@ -116,15 +121,23 @@ export default function FolderAccessModal({
             <Text style={styles.addText}>Add folder</Text>
           </Pressable>
 
-          {/* Removing stops the app reading the folder, but Android keeps the
-              persisted grant until the user takes it back in system
-              settings, so the top-level copy cannot say "revoke". */}
+          {/* The subtitle already covers what Remove does. This is the
+              part it can't claim: removing stops us reading the folder,
+              but Android keeps the persisted grant until the user takes
+              it back in system settings. Saying "revoke" up top would
+              overpromise, so the precise note lives here. */}
           <Text style={styles.footnote}>
             To take the Android permission back as well, use your
             device&apos;s app settings.
           </Text>
         </Pressable>
       </Pressable>
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -133,7 +146,7 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
+      backgroundColor: theme.scrim,
       alignItems: "center",
       justifyContent: "center",
       padding: theme.pad,

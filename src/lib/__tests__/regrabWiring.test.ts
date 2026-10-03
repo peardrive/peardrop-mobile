@@ -2,22 +2,40 @@ import fs from "fs";
 import path from "path";
 
 /**
- * The call sites, pinned. `src/lib/receivedRegrab.ts`,
- * `src/lib/receivedRowRoute.ts` and `rememberDriveSession` can each be
- * written, unit-tested and called by nothing: their own suites stay green
- * whether or not the app ever reaches them. A green suite over code nothing
- * calls is not evidence, so the wiring needs its own pin somewhere jest can
- * see it.
+ * the CALL SITES for the offline re-grab picker and the driveId and download-folder contracts.
  *
- * These are source-text probes because every call site is in a `.tsx`
- * (`ShareLinkFlowContext.tsx`, `MainScreen.tsx`) or in a
- * react-native-importing `.ts` (`src/state/backend.ts`), and the suite runs
- * with `testEnvironment: "node"` and no react-native transform, so none of
- * them can be imported. The window must be bounded and the bound asserted,
- * not assumed — a silently-widened window is the defect.
+ * ## Why this file exists
  *
- * What these probes can prove: the production call exists, in the right
- * function, with the right argument. Not that it runs.
+ * `src/lib/receivedRegrab.ts`, `src/lib/receivedRowRoute.ts` and
+ * `rememberDriveSession` were all written, all unit-tested, and **called by
+ * nothing**. The reviewer's finding
+ * is the whole reason for this file:
+ *
+ * > `rememberDriveSession` has **zero production callers**; neither
+ * > `upsertShare` call site writes `driveId` or `downloadFolder`;
+ * > `receivedRegrab.ts` is imported **only by its own test**.
+ *
+ * A green suite over code nothing calls is not evidence. The modules' own
+ * suites stay green whether or not the app ever reaches them, so the wiring
+ * needs its own pin — and the pin has to live somewhere jest can see it.
+ *
+ * ## Why these are source-text probes
+ *
+ * All four call sites are in `.tsx` files (`ShareLinkFlowContext.tsx`,
+ * `MainScreen.tsx`) or in a react-native-importing `.ts`
+ * (`src/state/backend.ts`). `jest.config.js` is `testEnvironment: "node"` with
+ * no react-native transform, so none of them can be imported.
+ * The house precedent for pinning a `.tsx` wiring is
+ * `src/lib/__tests__/recentShareLink.test.ts`'s
+ * "MainScreen recentShares memo wiring" / "MainScreen Share again wiring"
+ * blocks, and this file follows it exactly, including its F1 lesson:
+ *
+ * > **the window MUST be bounded**, and the bound must be *asserted*, not
+ * > assumed — a silently-widened window is the defect.
+ *
+ * What these probes CAN prove: the production call exists, in the right
+ * function, with the right argument. What they cannot prove: that it runs.
+ * That is device work.
  */
 
 const SHARE_LINK_FLOW = path.join(
@@ -90,7 +108,10 @@ describe("ShareLinkFlowContext runDownload wiring (H-5)", () => {
       // window, so the line bound is generous and the content self-checks
       // below, not the line count, are the real bound.
       "\n  const openStoredSharePicker = useCallback(",
-      400,
+      // 400 → 402: the no-session toast became a two-line banner branch.
+      // 402 → 405: the guard is now an unreachable backstop behind
+      // pickerGrabGate, and says so; its inner `if (!linkError)` is gone.
+      405,
     );
     // Self-checks on the bound: the region must be runDownload and nothing else.
     expect(r).toContain("setDownloadAllBusy(true)");
@@ -129,8 +150,9 @@ describe("ShareLinkFlowContext runDownload wiring (H-5)", () => {
   });
 
   /**
-   * `DownloadResult.destDir` crosses the RPC and is easily dropped on the
-   * floor; `rememberDriveSession` exists to catch it, and needs a caller.
+   * THE PROBE. `DownloadResult.destDir` already crossed the RPC
+   * and was dropped on the floor; `rememberDriveSession` was written to catch
+   * it and had no caller at all.
    */
   it("persists the drive session after a grab (C-4/C-5)", () => {
     const r = runDownloadSource();
@@ -150,21 +172,48 @@ describe("ShareLinkFlowContext runDownload wiring (H-5)", () => {
   });
 
   /**
-   * The receive path's permission ask needs its own pin.
-   * `notificationPermission.test.ts` covers the decision thoroughly — the
-   * `AppState` guard, the memo, the log lines — and none of it reaches the
-   * question of whether the ask is wired into the receive gesture at all:
-   * delete `void ensureNotificationPermission();` from `runDownload` and the
-   * suite stays green. Without it, a user who only ever receives is never
-   * asked in the foreground, and the only prompt comes from the backstop
-   * inside `notifyTransferComplete`, whose `AppState === "active"` guard
+   * Ruling 5: the no-session guard and its message stay as an **unreachable
+   * backstop** now that `pickerGrabGate` prevents the tap that reached them.
+   *
+   * The negative probe above passes if the guard is deleted outright, so on
+   * its own it does not defend the ruling — it only forbids one wrong shape.
+   * This pins the backstop positively, per the codebase's own doctrine that
+   * "a guard that only holds while its one caller remembers it is not a
+   * guard".
+   */
+  it("keeps the no-session backstop and its message, unreachable but present", () => {
+    const r = runDownloadSource();
+    expect(r).toContain("if (!sessionDriveId) {");
+    expect(r).toContain('linkNotice("still-resolving", STILL_RESOLVING_MESSAGE)');
+  });
+
+  /**
+   * the receive path's permission
+   * ASK had no pin.
+   *
+   * `notificationPermission.test.ts` covers the *decision* thoroughly: the
+   * `AppState` guard, the memo, the log lines. None of it reaches the actual
+   * question — **is the ask wired into the receive gesture at
+   * all?** The reviewer deleted `void ensureNotificationPermission();` from
+   * `runDownload` and the entire suite stayed green, which is the same shape of
+   * hole found for `rememberDriveSession`: a well-tested module nothing
+   * calls.
+   *
+   * Until this line existed, a user who only ever *received* was never asked
+   * in the foreground; their first and only prompt came from the backstop
+   * inside `notifyTransferComplete`, whose own `AppState === "active"` guard
    * confines it to the background — a permission dialog over another app.
    *
-   * Three claims, all bounded to `runDownload` except the import: the aliased
-   * import exists, because a call to a name nothing imports is a
-   * ReferenceError waiting for the device; the call is inside `runDownload`;
-   * and it is fire-and-forget, because awaiting it would park the grab, the
-   * modal dismissal and the progress card behind an OS dialog.
+   * Three claims, all bounded to `runDownload` except the import:
+   *
+   *   1. the aliased import exists (a call to a name nothing imports is not a
+   *      call — it is a ReferenceError waiting for the device);
+   *   2. the call is inside `runDownload`, not somewhere else in the file;
+   *   3. it is fire-and-forget. `await`ing it would park the grab, the modal
+   *      dismissal and the progress card behind an OS dialog, and a denial is
+   *      meant to stay silent.
+   *
+   * What this cannot prove: that the OS prompt appears. Device work.
    */
   it("asks for the notification permission on the user's own Grab tap (H-4)", () => {
     // 1 — the import. Asserted against the whole file, but as an exact
@@ -291,10 +340,13 @@ describe("MainScreen onTapRow routing (ADD-1, H-5)", () => {
   });
 
   /**
-   * The probe. `onTapRow` acquires this class of defect one ad-hoc branch at
-   * a time, so the handler asks `rowTapRoute` once and dispatches on the
-   * answer: a further outcome is then a change to a tested pure module rather
-   * than another `if` nobody can assert.
+   * THE PROBE.
+   *
+   * `onTapRow` has shipped this class of defect three times
+   * (`receivedRowRoute.ts`'s header records it), each time as one more ad-hoc
+   * branch. The handler must now ask `rowTapRoute` once and dispatch on the
+   * answer, so that a fourth outcome is a change to a tested pure module
+   * rather than a fourth `if` nobody can assert.
    */
   it("dispatches on rowTapRoute rather than on inline isBundle/primaryFile ifs", () => {
     const r = onTapRowSource();

@@ -126,6 +126,33 @@ describe("runGuardedResolve generation guard", () => {
     }
   });
 
+  // the generic-exception path used to pass raw exception
+  // text straight to onFailure — unbounded, so the linkError surface truncated
+  // it with "…". Raw text now goes only to the debug log; onFailure gets the
+  // bounded fallback via `userFacingError`.
+  it("never passes raw exception text to onFailure — bounded fallback only", async () => {
+    const gen: ResolveGenRef = { current: 0 };
+    const cbs = makeCallbacks();
+    const logs: string[] = [];
+    const raw =
+      "Error: ENOENT no such file or directory, open '/data/user/0/com.anjouinc.peardrop/files/some/very/deep/path/that/goes/on/and/on/and/on/manifest.json'";
+    await runGuardedResolve("peardrop://boom", gen, {
+      openLink: async () => {
+        throw new Error(raw);
+      },
+      abortOpen: async () => {},
+      onLog: (_level, msg) => logs.push(msg),
+      ...cbs,
+    });
+    expect(cbs.onFailure).toHaveBeenCalledTimes(1);
+    const shown = cbs.onFailure.mock.calls[0]?.[0] ?? "";
+    expect(shown).toBe("Could not open link.");
+    expect(shown).not.toContain(raw);
+    expect(shown.length).toBeLessThanOrEqual(100);
+    // The raw text is not discarded — it still reaches the debug log.
+    expect(logs.some((m) => m.includes(raw))).toBe(true);
+  });
+
   it("calls abortOpen before incrementing state callbacks", async () => {
     const gen: ResolveGenRef = { current: 0 };
     const calls: string[] = [];

@@ -148,7 +148,7 @@ describe("the RN copy is the ENGINE's copy", () => {
   });
 });
 
-describe("ruling 5 · isError has a reader", () => {
+describe("FIX-2026-09 ruling 5 · isError has a reader", () => {
   /**
    * These read the real `MainScreen.tsx` and `EmptyState.tsx` off disk and
    * assert on their source text. No `.tsx` can be imported by a test here, so

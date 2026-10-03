@@ -205,8 +205,8 @@ export type ActivityReason =
 /**
  * the WRITE side of `lastPeerLeftAt`.
  *
- * `classifyTransfer` below is the only reader of that field; until this sprint
- * the three writers were three separate inline ternaries in
+ * `classifyTransfer` below is the only reader of that field; the three
+ * writers used to be three separate inline ternaries in
  * `src/state/backend.ts` — the `peer-connected`, `peer-disconnected` and
  * `download-peer-disconnected` handlers. That file imports react-native, so
  * jest cannot reach any of them, and the rule this module exists to enforce
@@ -304,7 +304,7 @@ export function classifyTransfer(
     // `lastPeerLeftAt` means no departure was ever observed, which is the
     // seconds-old pre-connect window of a grab that has just started. There
     // is no evidence of an ending, so hold: a wrong release here is the
-    // eight-sprint regression, a wrong hold costs one background window that
+    // recurring regression, a wrong hold costs one background window that
     // the next event re-evaluates.
     if (t.lastPeerLeftAt === null) return "download";
 

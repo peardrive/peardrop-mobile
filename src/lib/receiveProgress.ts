@@ -186,7 +186,7 @@ export function receiveRowStatus(
     return { state: "receiving", label: `Receiving (${pct}%)`, tone: "warning" };
   }
 
-  return { state: "starting", label: "Starting…", tone: "warning" };
+  return { state: "starting", label: "Starting…", tone: "muted" };
 }
 
 /**

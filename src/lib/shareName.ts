@@ -216,7 +216,7 @@ export function checkShareName(raw: string): ShareNameCheck {
  *
  * Separate from `checkShareName` because the button must not flash an error
  * at someone who has merely cleared the field to retype it. **An empty field
- * disables the button and shows nothing** — the sprint is explicit that no
+ * disables the button and shows nothing** — by design, no
  * default is silently substituted, so the button simply waits.
  */
 export function canConfirmShareName(raw: string): boolean {
@@ -229,12 +229,10 @@ export function canConfirmShareName(raw: string): boolean {
  * `isUuidLike` is injected rather than imported so this module stays free of
  * `MainScreen`'s helpers and testable on its own.
  *
- * The UUID branch is the whole point of this sprint. "Shared photo" exists
+ * The UUID branch is the main case. "Shared photo" exists
  * because the photo picker hands over UUID cache filenames, and those files
  * now reach a naming box — so prefilling the raw filename would put the UUID
- * in front of the user as their suggested name. Prefilling the human label
- * instead turns the fallback that caused this sprint into the prefill that
- * fixes it. The real extension is kept either way.
+ * in front of the user as their suggested name. The real extension is kept either way.
  */
 export function prefillForSingleFile(
   fileName: string,

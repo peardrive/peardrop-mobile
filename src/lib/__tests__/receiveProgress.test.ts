@@ -126,6 +126,21 @@ describe("receiveRowStatus", () => {
     expect(s.label).toBe("Starting…");
   });
 
+  it("tones starting as MUTED, not as in-progress amber", () => {
+    // A transfer is seeded by `peer-connected` alone, with no grab requested,
+    // so this row can read "Starting…" in amber while the picker above it says
+    // no sender was found. `theme.warning` is documented as the in-progress
+    // colour, so amber was a misuse of the token by its own definition.
+    expect(receiveRowStatus(transfer()).tone).toBe("muted");
+  });
+
+  it("keeps amber for the states that really are in progress", () => {
+    // Positive control for the test above: if `warning` stopped appearing
+    // anywhere, that assertion would pass for the wrong reason.
+    expect(receiveRowStatus(transfer({ percent: 42 })).tone).toBe("warning");
+    expect(receiveRowStatus(transfer({ percent: 100 })).tone).toBe("warning");
+  });
+
   it("reports receiving with a percent while bytes move", () => {
     const s = receiveRowStatus(transfer({ percent: 42 }));
     expect(s.state).toBe("receiving");
@@ -140,8 +155,9 @@ describe("receiveRowStatus", () => {
   });
 
   it("DISTINGUISHES a finished download from one stuck at 100%", () => {
-    // Same percent, different state, different label. If these two ever
-    // collapse, a stuck grab reads as a finished one again.
+    // The load-bearing assertion here. Same percent, different
+    // state, different label. If these two ever collapse, the bug that
+    // produced the original report is back.
     const stuck = receiveRowStatus(transfer({ percent: 100, completed: false }));
     const done = receiveRowStatus(transfer({ percent: 100, completed: true }));
 
@@ -266,9 +282,12 @@ describe("receiveRowStatus", () => {
     });
   });
 
-  // `download-outcome` writes `completed: true` on all three outcomes,
-  // because every "this is over" reader consults it — so a row that reads
-  // `completed` first says "Saved" over a grab that saved nothing.
+  // "A grab in which every file failed
+  // still says Download complete." The engine, haptic and notification halves
+  // landed separately; the ROW is this one. `download-outcome` writes
+  // `completed: true` on all three outcomes (src/state/backend.ts:1700),
+  // because every "this is over" reader consults it — so the row read "Saved"
+  // over a grab that saved nothing.
   describe("a grab the engine graded", () => {
     // The ordering probe, same shape as the one above: a `downloadOutcome`
     // clause placed below the `completed` clause is unreachable code that
@@ -310,8 +329,9 @@ describe("receiveRowStatus", () => {
       expect(s.state).toBe("partial");
       expect(s.label).toBe("Saved 2 of 3 — 1 didn't make it");
       expect(s.label).not.toBe("Saved");
-      // `warning`, not `danger`: mirrors the haptic split — warning for
-      // partial, error for failed.
+      // `warning`, not `danger`: mirrors the haptic split the engine half
+      // already shipped — haptics.warning() for partial, haptics.error() for
+      // failed (src/state/backend.ts:1672-1673).
       expect(s.tone).toBe("warning");
     });
 
@@ -506,8 +526,9 @@ describe("grabCompletionMessage", () => {
     );
   });
 
-  // Cancelling a ten-file share after three must say what was kept. Silence
-  // leaves the user to work out what they have.
+  // Cancelling a ten-file share after three used to produce
+  // silence. Silence beat the "Download complete" it produced before that,
+  // but it still left the user to work out what they had.
   describe("cancelled grabs", () => {
     it("says what was kept, without celebrating or apologising", () => {
       expect(grabCompletionMessage({ saved: 3, failed: 0, cancelled: true })).toEqual({

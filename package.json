@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "peardrop-mobile",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "PearDrop for Android and iOS",
   "main": "expo-router/entry",
   "scripts": {
@@ -24,6 +24,7 @@
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.9.0",
     "@react-navigation/native": "^7.1.26",
+    "@react-navigation/native-stack": "7.14.10",
     "b4a": "^1.7.3",
     "bare-fs": "^4.6.0",
     "bare-path": "^3.0.0",

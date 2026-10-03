@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import type { RecentShareAction } from "../lib/recentShareLink";
+import { ToastOutlet } from "./Toast";
 
 export type RecentShareItem = {
   id: string;
@@ -40,9 +41,9 @@ export type SendSheetProps = {
   onPickFiles: () => void;
   onPickPhotos: () => void;
   /**
-   * Folder sharing is not offered on the Send surface. The prop stays
-   * optional so callers can keep the handler wired and the entry point can
-   * be re-added without touching parents.
+   * Folder sharing is hidden from the Send surface for now. The prop is kept
+   * optional so callers can keep wiring the handler without a rebuild churn;
+   * the entry point can be re-added here later without touching parents.
    */
   onPickFolder?: () => void;
   /** Recent hosted shares, ordered most-recent first. Empty list = section hidden. */
@@ -187,6 +188,12 @@ export default function SendSheet({
           ) : null}
         </Pressable>
       </Pressable>
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -242,7 +249,7 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
+      backgroundColor: theme.scrim,
       alignItems: "center",
       justifyContent: "center",
       padding: theme.pad,

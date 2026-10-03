@@ -17,7 +17,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useAppTheme } from "../state/ThemeContext";
 import { haptics } from "../lib/haptics";
-import { resolveHintFor } from "../lib/resolveHint";
+import {
+  RESOLVE_HINTS,
+  RESOLVE_LOOKING_LABEL,
+  resolveHintFor,
+} from "../lib/resolveHint";
+import { indicatorColor } from "../lib/indicatorColor";
+import PearSonarLite from "./PearSonarLite";
 // The scan payload is classified before anything is claimed about it.
 // Copy lives there, not here.
 import { classifyScan, type ScanOutcome } from "../lib/scanOutcome";
@@ -25,6 +31,7 @@ import { classifyScan, type ScanOutcome } from "../lib/scanOutcome";
 // with an info icon, "error" stays theme.danger.
 import type { LinkNotice } from "../lib/resolveNotice";
 import type { AppTheme } from "./themes";
+import { ToastOutlet } from "./Toast";
 
 /**
  * how often the elapsed-resolve clock is
@@ -154,6 +161,13 @@ export default function ReceiveSheet({
   useEffect(() => {
     if (!resolving) {
       setResolveElapsedMs(0);
+      // Leaving the looking state re-mounts the camera, so clear the latch or
+      // it ignores every later code. Covers Cancel and a failed resolve alike.
+      scannedRef.current = false;
+      // The "Got it — opening…" badge must go with it: it is the first arm of
+      // the badge ternary, so a stale one hides every later rejection.
+      setScanFlash(false);
+      setScanError(null);
       return;
     }
     const startedAt = Date.now();
@@ -275,7 +289,37 @@ export default function ReceiveSheet({
             </View>
 
             <AnimatedView style={[styles.camWrap, { borderColor }]}>
-              {Platform.OS === "web" ? (
+              {/* First arm on purpose: unmounting CameraView is the only
+                  thing that releases the Android camera. Hiding would not.
+
+                  `visible &&` closes an iOS-only path: Modal keeps its
+                  children rendered after the first open there (`isRendered`),
+                  so a hidden sheet would mount a second, invisible sonar
+                  whenever the picker resolves. No-op on Android, which
+                  unmounts the subtree outright. */}
+              {visible && resolving ? (
+                <View style={styles.lookingPanel}>
+                  <PearSonarLite
+                    size={120}
+                    color={indicatorColor(theme)}
+                    label={RESOLVE_LOOKING_LABEL}
+                  />
+                  <Text
+                    style={styles.lookingText}
+                    accessibilityLiveRegion="polite"
+                  >
+                    {resolveHint ?? RESOLVE_HINTS.initial}
+                  </Text>
+                  <Pressable
+                    style={styles.lookingCancel}
+                    onPress={onAbortResolving}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel"
+                  >
+                    <Text style={styles.lookingCancelLabel}>Cancel</Text>
+                  </Pressable>
+                </View>
+              ) : Platform.OS === "web" ? (
                 <View style={styles.camPlaceholder}>
                   <Text style={styles.camLabel}>QR Code Scan</Text>
                   <Text style={styles.camHint}>
@@ -405,24 +449,8 @@ export default function ReceiveSheet({
               </Pressable>
             </View>
 
-            {/*
-              Directly under the paste row that
-              holds the spinner, so the words and the spinner read as one state.
-              `accessibilityLiveRegion="polite"` because this appears mid-wait
-              with no user action: a screen reader must announce it without
-              stealing focus from the input the user may still be editing.
-              Renders nothing at all until the first threshold — the spinner
-              alone is the correct affordance for a resolve that is about to
-              succeed.
-            */}
-            {resolveHint ? (
-              <Text
-                style={styles.resolveHint}
-                accessibilityLiveRegion="polite"
-              >
-                {resolveHint}
-              </Text>
-            ) : null}
+            {/* The hint used to render here too. The looking panel owns it now,
+                and two polite live regions announced the same sentence twice. */}
 
             {linkError ? (
               <View style={styles.errorRow}>
@@ -436,11 +464,14 @@ export default function ReceiveSheet({
                     color={theme.muted}
                   />
                 ) : null}
+                {/* no numberOfLines — the notice wraps
+                    instead of truncating with "…", same as SharePreviewModal's
+                    errBanner. Copy length is capped upstream (check:copy
+                    global 120; per-constant jest caps at 100). */}
                 <Text
                   style={
                     linkError.tone === "wait" ? styles.waitText : styles.errorText
                   }
-                  numberOfLines={2}
                 >
                   {linkError.text}
                 </Text>
@@ -463,6 +494,12 @@ export default function ReceiveSheet({
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
+      {/* last child on purpose: this Modal is its own Android window,
+          and a root-level toast would be painted under it (and untappable).
+          While this sheet is open its outlet is the last registered, so it
+          owns the toast; it unregisters on close and the root takes over.
+          See src/lib/toastOutletSelect.ts. */}
+      {visible && <ToastOutlet />}
     </Modal>
   );
 }
@@ -471,10 +508,47 @@ function createStyles(theme: AppTheme) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: "rgba(0,0,0,0.5)",
+      // A dialog window OCCLUDES an activity-window toast, it does not dim it,
+      // so dropping the wash never made one tappable — it only left a theme.bg
+      // card on a theme.bg screen. Edge-to-edge is force-on here, so both
+      // translucency getters return true whatever the JSX says and this wash
+      // already reaches both system bars. Nothing to ADD, and nothing to
+      // remove either: the `statusBarTranslucent` at :261 is a pre-existing
+      // no-op that ruling 11 deliberately left alone (SharePreviewModal does
+      // not carry it, and the dim covers its bars just the same).
+      backgroundColor: theme.scrim,
       alignItems: "center",
       justifyContent: "center",
       padding: theme.pad,
+    },
+    lookingPanel: {
+      ...StyleSheet.absoluteFillObject,
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16,
+    },
+    // theme.muted, never theme.danger: a resolve still running has not failed,
+    // and colouring it like the error row tells the user to give up too early.
+    lookingText: {
+      marginTop: 16,
+      color: theme.muted,
+      fontSize: 13,
+      lineHeight: 18,
+      textAlign: "center",
+    },
+    lookingCancel: {
+      marginTop: 24,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.surfaceSubtle,
+      paddingHorizontal: 16,
+      paddingVertical: 10,
+      borderRadius: 999,
+    },
+    lookingCancelLabel: {
+      color: theme.text,
+      fontWeight: "600",
+      fontSize: 13,
     },
     card: {
       width: "100%",
@@ -485,6 +559,11 @@ function createStyles(theme: AppTheme) {
       borderColor: theme.border,
       padding: theme.pad,
       gap: 14,
+      shadowColor: "#000",
+      shadowOpacity: 0.18,
+      shadowOffset: { width: 0, height: 4 },
+      shadowRadius: 10,
+      elevation: 4,
     },
     titleRow: {
       flexDirection: "row",
@@ -618,16 +697,6 @@ function createStyles(theme: AppTheme) {
       color: theme.onPrimary,
       fontWeight: "700",
       fontSize: 13,
-    },
-    // `theme.muted`, not `theme.danger`: a
-    // resolve that is still running has not failed, and colouring the hint like
-    // the error row would tell the user to give up on a share that is about to
-    // work. That is the same mistake the copy deny-list exists to prevent.
-    resolveHint: {
-      color: theme.muted,
-      fontSize: 13,
-      lineHeight: 18,
-      marginTop: 2,
     },
     errorRow: {
       flexDirection: "row",

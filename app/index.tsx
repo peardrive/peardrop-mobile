@@ -8,7 +8,7 @@ import { ShareLinkFlowProvider } from "../src/state/ShareLinkFlowContext";
 import IncomingLinkBridge from "../src/state/IncomingLinkBridge";
 import { ThemeProvider, useAppTheme } from "../src/state/ThemeContext";
 import SharePreviewModal from "../src/ui/SharePreviewModal";
-import { ToastProvider } from "../src/ui/Toast";
+import { ToastOutlet, ToastProvider } from "../src/ui/Toast";
 import BackgroundRestrictionPrompt from "../src/ui/BackgroundRestrictionPrompt";
 import { LIGHT_THEME_IDS } from "../src/ui/themes";
 
@@ -66,6 +66,7 @@ export default function App() {
                     returned to; renders nothing until there is something to
                     say. */}
                 <BackgroundRestrictionPrompt />
+                <ToastOutlet />
               </ShareLinkFlowProvider>
             </BackendProvider>
           </ToastProvider>
