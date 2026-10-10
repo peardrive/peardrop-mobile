@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
 import { useBackend } from "../state/backend";

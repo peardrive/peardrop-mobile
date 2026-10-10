@@ -1,6 +1,9 @@
 /**
  * what the ongoing foreground-service notification says.
  *
+ * Only the throttle constants and `NotificationPostDecision` are live, reused
+ * by `notificationContent.ts`; the id-4711 comments below predate the two rows.
+ *
  * ## Why this file exists
  *
  * shipped the native half (`TransferService.updateNotification`),

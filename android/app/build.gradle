@@ -218,8 +218,8 @@ android {
         // Bumping them here and not there is reverted by the next prebuild
         // without a word. Keep them literal and identical to what prebuild
         // would emit, so a regeneration is a no-op on this pair.
-        versionCode 4
-        versionName "0.2.2"
+        versionCode 5
+        versionName "0.2.3"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         buildConfigField "boolean", "DEV_INSTRUMENTATION", "${devInstrumentation}"
@@ -283,6 +283,18 @@ android {
                 output.outputFileName =
                     "peardrop-INSTRUMENTED-DO-NOT-PUBLISH-${variant.versionName}.apk"
             }
+        }
+    }
+
+    // Off for `bundleRelease`: `shrinkResources` emits one shrunk file per split.
+    // `include` lists all four ABIs because it gates which get native code built.
+    def enableAbiSplits = (findProperty('peardropAbiSplits') ?: 'true').toBoolean()
+    splits {
+        abi {
+            enable enableAbiSplits
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'
+            universalApk true
         }
     }
 

@@ -49,7 +49,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
   fun start(promise: Promise) {
     try {
       val context = reactApplicationContext
-      TransferService.ensureChannel(context)
+      TransferService.ensureChannels(context)
       val intent = Intent(context, TransferService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.startForegroundService(intent)
@@ -67,6 +67,9 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
     try {
       val context = reactApplicationContext
       context.stopService(Intent(context, TransferService::class.java))
+      // `stopService` is asynchronous, so both rows are cleared here too;
+      // `cancel` on an already-cancelled id is a no-op.
+      TransferService.clearRows(context)
       promise.resolve("stopped")
     } catch (e: Exception) {
       promise.resolve("error:${e.javaClass.simpleName}:${e.message ?: ""}")
@@ -102,27 +105,38 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
   }
 
   /**
-   * refresh the ongoing notification's text and progress.
-   *
-   * `percent` outside 0..100 renders an indeterminate bar. Resolves rather
-   * than rejects on failure — a notification refresh must never be able to
-   * break the transfer it is describing.
+   * Flat parameters so nothing here parses or validates, and it resolves rather
+   * than rejects: a refresh must not break the transfer it describes.
    */
   @ReactMethod
-  fun update(
-    title: String,
-    text: String,
-    percent: Double,
-    cancelLabel: String,
+  fun updateRows(
+    receivingPresent: Boolean,
+    receivingTitle: String,
+    receivingText: String,
+    receivingSubline: String,
+    receivingPercent: Double,
+    sharingPresent: Boolean,
+    sharingTitle: String,
+    sharingText: String,
+    sharingSubline: String,
+    sharingPercent: Double,
+    serviceRow: String,
     promise: Promise
   ) {
     try {
-      TransferService.updateNotification(
+      TransferService.applyRows(
         reactApplicationContext,
-        title,
-        text,
-        percent.toInt(),
-        cancelLabel
+        receivingPresent,
+        receivingTitle,
+        receivingText,
+        receivingSubline,
+        receivingPercent.toInt(),
+        sharingPresent,
+        sharingTitle,
+        sharingText,
+        sharingSubline,
+        sharingPercent.toInt(),
+        serviceRow
       )
       promise.resolve("updated")
     } catch (e: Exception) {
@@ -133,7 +147,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
   /**
    * was a Cancel tapped that could not be delivered to JS?
    *
-   * The notification's Cancel emits `PeardropCancelAllTransfers` directly
+   * The Receiving row's Cancel emits `PeardropCancelReceiving` directly
    * when a `ReactContext` is available, which is the expected path — the
    * foreground service exists to keep the process alive, so one should be.
    * This is the fallback for when it is not: the tap is recorded and the JS

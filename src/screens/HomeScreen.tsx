@@ -13,7 +13,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import { pickFolder, enumerateFolder, FolderTooLargeError } from "../lib/folderShare";
 import * as Clipboard from "expo-clipboard";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "../ui/themes";

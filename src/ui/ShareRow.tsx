@@ -1,10 +1,11 @@
 import React, { useMemo } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import ActiveIndicator, { type ActiveIndicatorState } from "./ActiveIndicator";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
+import { PINNING_ENABLED } from "../lib/pinning";
 
 export type ShareRowStatus = {
   /** Copy shown in the sub-line. Falls through to `meta` when null/undefined. */
@@ -127,7 +128,7 @@ export default function ShareRow({
               style={styles.nameMark}
             />
           ) : null}
-          {isPinned ? (
+          {PINNING_ENABLED && isPinned ? (
             <Ionicons
               name="pin"
               size={15}

@@ -21,7 +21,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystemLegacy from "expo-file-system/legacy";
 import * as IntentLauncher from "expo-intent-launcher";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useNavigation } from "@react-navigation/native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { useVideoPlayer, VideoView } from "expo-video";
@@ -68,6 +68,7 @@ import {
 // unit-tested and must not be edited; importing from it is how the menu and
 // the foreground service stay on one definition of "in flight".
 import { classifyTransfer } from "../lib/transferActivity";
+import { comparePinned, PINNING_ENABLED } from "../lib/pinning";
 import { describeSaveResult } from "../lib/saveToDownloadsResult";
 import {
   isSaveToDownloadsAvailable,
@@ -1141,10 +1142,10 @@ export default function MainScreen() {
 
     // two-level sort — pinned shares first, then recency within
     // each group. Applies in both the All and Favorites views.
+    // `comparePinned` returns 0 while pinning is off, so recency alone decides.
     list.sort((a, b) => {
-      const pa = a.isPinned ? 1 : 0;
-      const pb = b.isPinned ? 1 : 0;
-      if (pa !== pb) return pb - pa;
+      const pinned = comparePinned(a, b);
+      if (pinned !== 0) return pinned;
       return (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0);
     });
     return list;
@@ -1302,11 +1303,11 @@ export default function MainScreen() {
     }
 
     if (sort !== "recent") {
-      // Re-sort while preserving pinned-first semantics.
+      // Re-sort while preserving pinned-first semantics (a no-op level while
+      // the switch is off, same as the recency sort above).
       list.sort((a, b) => {
-        const pa = a.isPinned ? 1 : 0;
-        const pb = b.isPinned ? 1 : 0;
-        if (pa !== pb) return pb - pa;
+        const pinned = comparePinned(a, b);
+        if (pinned !== 0) return pinned;
         if (sort === "name") {
           return (a.name ?? "").localeCompare(b.name ?? "");
         }
@@ -3347,16 +3348,20 @@ export default function MainScreen() {
               },
             });
           }
-          list.push({
-            key: "pin",
-            icon: kebabDrive.isPinned ? "pin" : "pin-outline",
-            label: kebabDrive.isPinned ? "Unpin" : "Pin to top",
-            activeTint: kebabDrive.isPinned,
-            onPress: () => {
-              togglePinned(kebabDrive);
-              setKebabSheet(null);
-            },
-          });
+          // The pin row is not offered while the switch is off. Kept whole
+          // rather than deleted so flipping `PINNING_ENABLED` restores it.
+          if (PINNING_ENABLED) {
+            list.push({
+              key: "pin",
+              icon: kebabDrive.isPinned ? "pin" : "pin-outline",
+              label: kebabDrive.isPinned ? "Unpin" : "Pin to top",
+              activeTint: kebabDrive.isPinned,
+              onPress: () => {
+                togglePinned(kebabDrive);
+                setKebabSheet(null);
+              },
+            });
+          }
           // The received row's re-share pair.
           //
           // Ahead of the hosted branches and mutually exclusive with them:

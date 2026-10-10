@@ -162,7 +162,12 @@ describe("a torn store write must not empty the store", () => {
       { driveId: "drive-1", isPinned: true, isFavorite: false },
     ]);
     const mod = freshHostedFlags();
-    expect(await mod.loadHostedFlags()).toHaveLength(1);
+    const loaded = await mod.loadHostedFlags();
+    expect(loaded).toHaveLength(1);
+    // `retirePins` clears the flag on the way in and must leave the record;
+    // the migration's own properties live in `pinning.test.ts`.
+    expect(loaded[0]).not.toHaveProperty("isPinned");
+    expect(loaded[0]?.driveId).toBe("drive-1");
 
     fs.tearNext = FLAGS_FILE;
     await mod.setHostedShareFavorite("drive-1", true).catch(() => {});

@@ -13,7 +13,7 @@ import {
   View,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { Ionicons } from "@expo/vector-icons";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useAppTheme } from "../state/ThemeContext";
 import { haptics } from "../lib/haptics";

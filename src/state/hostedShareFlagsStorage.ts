@@ -1,5 +1,6 @@
 import RNFS from "react-native-fs";
 import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
+import { PINNING_ENABLED, stripStoredPins } from "../lib/pinning";
 
 /**
  * Per-hosted-share organizational flags. Hosted drives live in the engine
@@ -10,7 +11,9 @@ import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 
 export type HostedShareFlags = {
   driveId: string;
-  isPinned: boolean;
+  /** Optional, or a required field would force the key back onto every record
+   * and undo `retirePins`. Readers treat absent as `false`. */
+  isPinned?: boolean;
   isFavorite: boolean;
   /** User-supplied name captured at share creation. When present, the
    *  list card + File-info modal read this back as the drive title
@@ -39,7 +42,9 @@ function sanitize(raw: unknown): HostedShareFlags[] {
         : undefined;
     out.push({
       driveId,
-      isPinned: r.isPinned === true,
+      // See the field's comment: omitted while pinning is off, because this
+      // output is what the next `writeToDisk` persists.
+      ...(PINNING_ENABLED ? { isPinned: r.isPinned === true } : {}),
       isFavorite: r.isFavorite === true,
       ...(customName ? { customName } : {}),
     });
@@ -50,11 +55,25 @@ function sanitize(raw: unknown): HostedShareFlags[] {
 /** see `src/lib/atomicFile.ts`. */
 async function readFromDisk(): Promise<HostedShareFlags[]> {
   const result = await readJsonFile(STORAGE_FILE);
-  if (result.status === "ok") return sanitize(result.value);
+  if (result.status === "ok") return sanitize(await retirePins(result.value));
   return [];
 }
 
-/** Temp file plus rename, never a bare write. */
+/** Runs before `sanitize` can coerce the key into a boolean. It never prunes a
+ * record left with only a `driveId`, which the user never asked to remove. */
+async function retirePins(raw: unknown): Promise<unknown> {
+  if (PINNING_ENABLED || !Array.isArray(raw)) return raw;
+  const migrated = stripStoredPins(raw);
+  if (migrated.cleared === 0) return raw;
+  try {
+    await writeJsonAtomic(STORAGE_FILE, migrated.records);
+  } catch {
+    // best-effort, exactly like `writeToDisk`
+  }
+  return migrated.records;
+}
+
+/** Temp + rename, was a bare writeFile. */
 async function writeToDisk(flags: HostedShareFlags[]): Promise<void> {
   try {
     await writeJsonAtomic(STORAGE_FILE, flags);
@@ -91,7 +110,9 @@ async function upsertFlags(
   const existing: HostedShareFlags =
     idx >= 0 && list[idx]
       ? (list[idx] as HostedShareFlags)
-      : { driveId, isPinned: false, isFavorite: false };
+      // No `isPinned` seed: `false` would write the key back onto every record
+      // created for a favorite or a rename.
+      : { driveId, isFavorite: false };
   const next: HostedShareFlags = { ...existing, ...patch };
   // No-op write if nothing actually changed.
   if (

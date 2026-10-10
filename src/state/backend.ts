@@ -62,7 +62,11 @@ import {
   type FakeDownloadOpts,
   type FakeDownloadResult,
 } from "../lib/rpc";
-import { upsertShare } from "./receivedSharesStorage";
+import {
+  subscribeShares,
+  upsertShare,
+  type ReceivedShare,
+} from "./receivedSharesStorage";
 import {
   flush as flushDebugLog,
   initDebugLog,
@@ -76,7 +80,8 @@ import {
 import { awaitDebugLogging, subscribeDebugLogging } from "./debugLogStorage";
 import { initDeviceIdentityLog } from "../lib/deviceIdentity";
 import {
-  activeTransfers,
+  // Not imported here: the cancel path reaches it through
+  // `selectReceivingCancelTargets`, the notification path through `describeNotificationRows`.
   decideServiceTransition,
   describeActivity,
   IDLE_HOST_GRACE_MS,
@@ -87,18 +92,19 @@ import {
 } from "../lib/transferActivity";
 import {
   drainPendingCancel,
-  EVENT_CANCEL_ALL,
+  EVENT_CANCEL_RECEIVING,
   isForegroundServiceAvailable,
   isScreenOn,
   startForegroundService,
   stopForegroundService,
-  updateServiceProgress,
+  updateServiceRows,
 } from "../lib/foregroundService";
 import {
-  classifyNotificationPost,
-  describeTransferNotification,
-  type LastPost,
-} from "../lib/notificationProgress";
+  classifyRowPost,
+  describeNotificationRows,
+  selectReceivingCancelTargets,
+  type LastRowPost,
+} from "../lib/notificationContent";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
 import { parseAliveReading } from "../lib/aliveTicks";
 import { evaluateFreeze } from "../lib/freezeDetect";
@@ -323,12 +329,15 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * React subscriber. Written beside the single `setDrives` call.
    */
   const drivesRef = useRef<DriveRecord[]>([]);
-  /**
-   * What was last pushed to the ongoing notification, and when. Null means
-   * nothing posted in this service window, so the first update of the next
-   * window always posts instead of being suppressed as a duplicate.
-   */
-  const lastNotificationRef = useRef<LastPost | null>(null);
+  /** A ref, not state: its only consumer runs inside a `setTransfers` updater,
+   * where a state read would be a render value consulted outside the render. */
+  const receivedSharesRef = useRef<ReceivedShare[]>([]);
+  /** One slot per row, or the two interfere; null means nothing posted in this
+   * service window, so the next window's first update always posts. */
+  const lastNotificationRef = useRef<{
+    receiving: LastRowPost | null;
+    sharing: LastRowPost | null;
+  }>({ receiving: null, sharing: null });
   /**
    * Completion-path persistence still in flight. Serialized so the stop path
    * has a single thing to await, and so two completions landing together
@@ -395,41 +404,53 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * handler reads it synchronously to decide the foreground service and a
    * stale read there is undetectable. Never call `setTransfers` elsewhere.
    */
-  /**
-   * Resolve a display name for a drive, or null. Best-effort by design: the
-   * manifest does not carry a received drive while its download is in flight,
-   * so `describeTransferNotification` reads correctly without it.
-   */
-  const driveDisplayName = useCallback((driveId: string): string | null => {
+  /** Falls back to the received-share store, because the drives manifest holds
+   * no received drive mid-download. A partial grab overstates the count. */
+
+  /** Its own effect, never folded into the boot effect, whose dep array is a
+   * tripwire: a retrigger there restarts the worklet. */
+  useEffect(() => {
+    return subscribeShares((list) => {
+      receivedSharesRef.current = list;
+    });
+  }, []);
+
+  const driveNamesFor = useCallback((driveId: string): string[] => {
     const record = drivesRef.current.find((d) => d.id === driveId);
-    if (!record) return null;
-    const named = typeof record.name === "string" ? record.name.trim() : "";
-    if (named) return named;
-    // A single-file share reads better as its file than as its drive.
-    const files = record.files;
-    if (Array.isArray(files) && files.length === 1) {
-      const only = files[0]?.name;
-      if (typeof only === "string" && only.trim()) return only.trim();
+    if (record) {
+      const named = typeof record.name === "string" ? record.name.trim() : "";
+      if (named) return [named];
+      const files = record.files;
+      if (Array.isArray(files)) {
+        const names = files
+          .map((f) => (typeof f?.name === "string" ? f.name.trim() : ""))
+          .filter((n) => n.length > 0);
+        if (names.length > 0) return names;
+      }
     }
-    return null;
+    const share = receivedSharesRef.current.find((s) => s.driveId === driveId);
+    if (share) {
+      const names = share.files
+        .map((f) => (typeof f?.name === "string" ? f.name.trim() : ""))
+        .filter((n) => n.length > 0);
+      if (names.length > 0) return names;
+      const fallback = share.shareName.trim();
+      if (fallback) return [fallback];
+    }
+    return [];
   }, []);
 
   /**
-   * Push the current transfer set to the ongoing notification. Engine-driven
-   * and never on a timer: RN timers record no ticks at all while backgrounded,
-   * so a timer-fed notification would stop updating exactly when it is the
-   * only thing the user can see. Engine callbacks keep running because the
-   * foreground service keeps the process scheduled.
+   * Fed by engine events, never a timer: a backgrounded `setInterval` records
+   * no ticks, which is exactly when this notification is all the user can see.
    */
   const pushNotification = useCallback(
     (list: TransferSummary[]) => {
       const now = Date.now();
-      const content = describeTransferNotification(list, now, driveDisplayName);
-      // Both exits are recorded, change-gated on the decision plus the content:
-      // this runs once per transfer mutation, so an ungated line would flood
-      // the log it exists to make readable. The gate still forces one line per
-      // heartbeat window, so a quiet stretch reads as quiet, not as nothing.
-      if (!content) {
+      const rows = describeNotificationRows(list, now, driveNamesFor);
+      // Gated on the decision plus the content, because this runs once per
+      // transfer mutation and an ungated line would flood the log it informs.
+      if (!rows.serviceRow) {
         logChangeGated(
           "info",
           "rn.notify",
@@ -440,33 +461,57 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         );
         return;
       }
-      const decision = classifyNotificationPost(
-        lastNotificationRef.current,
-        content,
-        now
-      );
+
+      // Classified per slot, pushed together in one bridge call: separate calls
+      // would show the native side a half-updated pair.
+      const last = lastNotificationRef.current;
+      const recvDecision = rows.receiving
+        ? classifyRowPost(last.receiving, rows.receiving, now)
+        : ("suppressed-empty" as const);
+      const shareDecision = rows.sharing
+        ? classifyRowPost(last.sharing, rows.sharing, now)
+        : ("suppressed-empty" as const);
+
+      // A row disappearing must reach the service even when neither classified
+      // as `posted`, or the last Receiving row stays on screen.
+      const presenceChanged =
+        (rows.receiving === null) !== (last.receiving === null) ||
+        (rows.sharing === null) !== (last.sharing === null);
+
       logChangeGated(
         "info",
         "rn.notify",
         "notify",
-        `${decision}|${content.title}|${content.text}|${content.percent}|${content.cancelLabel}`,
-        `posted=${decision} title=${JSON.stringify(content.title)} ` +
-          `text=${JSON.stringify(content.text)} percent=${content.percent} ` +
-          `cancel=${JSON.stringify(content.cancelLabel)}`,
+        `${rows.serviceRow}|${recvDecision}|${shareDecision}|` +
+          `${rows.receiving?.title ?? ""}|${rows.receiving?.text ?? ""}|` +
+          `${rows.receiving?.subline ?? ""}|${rows.receiving?.percent ?? ""}|` +
+          `${rows.sharing?.title ?? ""}|${rows.sharing?.text ?? ""}`,
+        `serviceRow=${rows.serviceRow} ` +
+          `recv=${recvDecision} ` +
+          `recvTitle=${JSON.stringify(rows.receiving?.title ?? null)} ` +
+          `recvText=${JSON.stringify(rows.receiving?.text ?? null)} ` +
+          `recvSub=${JSON.stringify(rows.receiving?.subline ?? null)} ` +
+          `recvPercent=${rows.receiving?.percent ?? "n/a"} ` +
+          `share=${shareDecision} ` +
+          `shareTitle=${JSON.stringify(rows.sharing?.title ?? null)} ` +
+          `shareText=${JSON.stringify(rows.sharing?.text ?? null)}`,
         now
       );
-      if (decision !== "posted") return;
-      lastNotificationRef.current = { at: now, content };
-      void updateServiceProgress(
-        content.title,
-        content.text,
-        content.percent,
-        // The Cancel action's label travels with the content it describes, so
-        // the button and the title cannot disagree about how many it stops.
-        content.cancelLabel
-      );
+
+      if (
+        recvDecision !== "posted" &&
+        shareDecision !== "posted" &&
+        !presenceChanged
+      ) {
+        return;
+      }
+      lastNotificationRef.current = {
+        receiving: rows.receiving ? { at: now, row: rows.receiving } : null,
+        sharing: rows.sharing ? { at: now, row: rows.sharing } : null,
+      };
+      void updateServiceRows(rows);
     },
-    [driveDisplayName]
+    [driveNamesFor]
   );
 
   const commitTransfers = useCallback(
@@ -717,13 +762,15 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     );
     serviceStartedForWindowRef.current = active;
     if (active) {
-      // A fresh window starts with no post history, so the first update is
-      // never suppressed as a duplicate of a notification already gone.
-      lastNotificationRef.current = null;
+      // A fresh window has no post history, so the first update cannot be
+      // suppressed as a duplicate.
+      lastNotificationRef.current = { receiving: null, sharing: null };
+      // Content before the start: `applyRows` stores it either way, so the
+      // first frame the user sees is the real row, not the Kotlin default.
+      pushNotification(transfersRef.current);
       void startForegroundService(trigger).then(() => {
-        // Prime the content immediately, chained onto the start rather than
-        // fired beside it: `updateServiceProgress` is a no-op until the
-        // service is believed running.
+        // And again once the service is up, so a row that changed during the
+        // start round-trip is not held back by the rate limit.
         pushNotification(transfersRef.current);
       });
     }
@@ -767,7 +814,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       await pendingStatsWriteRef.current;
       await stopForegroundService("predicate-false");
       // See the twin on the appstate-active path.
-      lastNotificationRef.current = null;
+      lastNotificationRef.current = { receiving: null, sharing: null };
     })();
     return true;
   }, []);
@@ -1113,57 +1160,45 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   );
 
   /**
-   * Cancel every transfer that is currently active. A foreground service may
-   * own one notification and it carries no driveId, so its button cannot
-   * target a single transfer. The set comes from `activeTransfers`, the same
-   * predicate that held the service, so the button cancels exactly the set
-   * the notification describes. Reads `transfersRef`, not `transfers`: this
-   * runs from a native callback outside the render cycle.
+   * Cancels active receives only, through `selectReceivingCancelTargets`, so it
+   * never reaches hosting. Reads `transfersRef`: a native callback has no render.
    */
-  const cancelAllActive = useCallback(
+  const cancelReceiving = useCallback(
     async (reason: string) => {
       const now = Date.now();
       const list = transfersRef.current;
-      const active = activeTransfers(list, now);
+      // `selectReceivingCancelTargets` keeps only `download` reasons, so this
+      // never reaches the hosting stop path.
+      const targets = selectReceivingCancelTargets(list, now);
       debugLog(
         "warn",
         "rn.cancel",
-        `cancel-all (${reason}) — ${describeActivity(list, now)} at=${now}`
+        `cancel-receiving (${reason}) — ${describeActivity(list, now)} ` +
+          `targets=${targets.length} at=${now}`
       );
-      if (active.length === 0) return;
-      await Promise.all(
-        active.map(({ index }) => {
-          const driveId = list[index]?.driveId;
-          return driveId ? cancelInFlight(driveId) : Promise.resolve(undefined);
-        })
-      );
+      if (targets.length === 0) return;
+      await Promise.all(targets.map((driveId) => cancelInFlight(driveId)));
     },
     [cancelInFlight]
   );
 
   /**
-   * `cancelAllActive` behind a ref. The AppState effect that drains a queued
-   * cancel also owns the swarm refresh interval, so listing the function in
-   * its deps would buy a swarm-refresh storm for every identity change. The
-   * ref leaves those deps alone while still calling the current function.
+   * Behind a ref so the draining effect's deps stay put: listing it there would
+   * retrigger a swarm refresh on every identity change of its dependencies.
    */
-  const cancelAllActiveRef = useRef(cancelAllActive);
-  cancelAllActiveRef.current = cancelAllActive;
+  const cancelReceivingRef = useRef(cancelReceiving);
+  cancelReceivingRef.current = cancelReceiving;
 
   /**
-   * The notification's Cancel action arriving from the native side — the one
-   * native-to-JS push in this app. `DeviceEventEmitter` is the matching
-   * receiver for `emitDeviceEvent`, so no native module instance is involved
-   * and nothing can be null at subscribe time. This is an event, not a
-   * timer, so it does not depend on the interval timers that die in the
-   * background.
+   * `DeviceEventEmitter` matches the native `emitDeviceEvent`, so no module
+   * instance exists and nothing can be null at subscribe time.
    */
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener(EVENT_CANCEL_ALL, () => {
-      void cancelAllActive("notification-action");
+    const sub = DeviceEventEmitter.addListener(EVENT_CANCEL_RECEIVING, () => {
+      void cancelReceiving("notification-action");
     });
     return () => sub.remove();
-  }, [cancelAllActive]);
+  }, [cancelReceiving]);
 
   /**
    * `opts.serve` is the explicit announce opt-in. Omit it and the engine
@@ -2070,16 +2105,14 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         // nothing left to protect. Unconditional, because the OS may have
         // stopped it already and a believed state is not a reason to skip.
         void stopForegroundService("appstate-active");
-        // Claim a Cancel tap that could not be delivered live, so a press the
-        // user made cannot evaporate. Ordered after the service stop: if the
-        // transfers already finished, the active set is empty and nothing is
-        // cancelled, which is the correct outcome.
+        // Claims a tap that a null `currentReactContext` kept the service from
+        // delivering live. Ordered after the stop: an empty target set is right.
         void drainPendingCancel().then((pending) => {
-          if (pending) void cancelAllActiveRef.current("drained-on-resume");
+          if (pending) void cancelReceivingRef.current("drained-on-resume");
         });
-        // The notification goes with the service, so the post history that
-        // described it is stale from here on.
-        lastNotificationRef.current = null;
+        // Both rows go with the service, so the post history that described
+        // them is stale from here on.
+        lastNotificationRef.current = { receiving: null, sharing: null };
         void refreshSwarm();
         // The foreground transition is the moment to recover anything the
         // engine finished while the app was away, including a download whose

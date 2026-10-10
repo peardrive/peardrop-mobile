@@ -1,6 +1,12 @@
 import { NativeModules, Platform } from "react-native";
 
 import { flush as flushDebugLog, log as debugLog } from "./debugLog";
+import {
+  PROGRESS_INDETERMINATE,
+  PROGRESS_NONE,
+  type NotificationRow,
+  type ServiceRowId,
+} from "./notificationContent";
 
 /**
  * The shipping foreground service: the mechanism that keeps a backgrounded
@@ -16,22 +22,29 @@ const TAG = "rn.probe.oem";
 type ServiceModule = {
   start: () => Promise<string>;
   stop: () => Promise<string>;
-  update: (
-    title: string,
-    text: string,
-    percent: number,
-    cancelLabel: string
+  updateRows: (
+    receivingPresent: boolean,
+    receivingTitle: string,
+    receivingText: string,
+    receivingSubline: string,
+    receivingPercent: number,
+    sharingPresent: boolean,
+    sharingTitle: string,
+    sharingText: string,
+    sharingSubline: string,
+    sharingPercent: number,
+    serviceRow: string
   ) => Promise<string>;
   drainServiceLog: () => Promise<string[]>;
   drainPendingCancel: () => Promise<boolean>;
   isScreenInteractive: () => Promise<boolean>;
 };
 
-/** The event `TransferService` emits when its Cancel action is tapped. Must
- *  match `EVENT_CANCEL_ALL` in TransferService.kt: there is no shared module
- *  across the JS/Kotlin boundary, so this is a matched pair of literals and a
- *  rename has to touch both. */
-export const EVENT_CANCEL_ALL = "PeardropCancelAllTransfers";
+/**
+ * Must match `EVENT_CANCEL_RECEIVING` in `TransferService.kt`: no module is
+ * shared across the boundary, so a rename has to touch both.
+ */
+export const EVENT_CANCEL_RECEIVING = "PeardropCancelReceiving";
 
 const native: ServiceModule | undefined = (
   NativeModules as { PeardropTransferService?: ServiceModule }
@@ -146,38 +159,47 @@ export async function isScreenOn(): Promise<boolean | null> {
 }
 
 /**
- * Update the ongoing notification's text and progress.
- *
- * The notification must show real progress rather than a static string: a
- * `dataSync` Play declaration is asked what user-visible feature the type
- * serves, and this is a notification users will see often. Silently ignored
- * when the service is not running — Android drops a `notify` for a
- * notification id that no foreground service owns.
+ * Not gated on `believedRunning`: `applyRows` stores content either way, so
+ * pushing before `start()` gives the first frame the real row.
  */
-export async function updateServiceProgress(
-  title: string,
-  text: string,
-  percent: number,
-  cancelLabel: string
-): Promise<void> {
-  if (!native || !believedRunning) return;
+export async function updateServiceRows(rows: {
+  receiving: NotificationRow | null;
+  sharing: NotificationRow | null;
+  serviceRow: ServiceRowId | null;
+}): Promise<void> {
+  if (!native?.updateRows) return;
+  const blank = { title: "", text: "", subline: "", percent: PROGRESS_NONE };
+  const recv = rows.receiving ?? blank;
+  const share = rows.sharing ?? blank;
   try {
-    await native.update(
-      title,
-      text,
-      Math.max(-1, Math.min(100, Math.round(percent))),
-      cancelLabel
+    await native.updateRows(
+      rows.receiving !== null,
+      recv.title,
+      recv.text,
+      recv.subline,
+      clampPercent(recv.percent),
+      rows.sharing !== null,
+      share.title,
+      share.text,
+      share.subline,
+      clampPercent(share.percent),
+      rows.serviceRow ?? "receiving"
     );
   } catch {
     // Never let a notification refresh break a transfer.
   }
 }
 
+function clampPercent(percent: number): number {
+  if (!Number.isFinite(percent)) return PROGRESS_INDETERMINATE;
+  return Math.max(PROGRESS_NONE, Math.min(100, Math.round(percent)));
+}
+
 /**
  * take a Cancel tap that could not be delivered live.
  *
- * The notification's Cancel emits `EVENT_CANCEL_ALL` straight into JS when a
- * ReactContext exists, which is the expected path. This is the fallback for
+ * The Receiving row's Cancel emits `EVENT_CANCEL_RECEIVING` straight into JS
+ * when a ReactContext exists, which is the expected path. This is the fallback for
  * when it does not — the tap is held natively and collected here on the next
  * foreground transition, so a cancel the user pressed cannot silently vanish.
  *

@@ -1,5 +1,6 @@
 import RNFS from "react-native-fs";
 import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
+import { PINNING_ENABLED, stripStoredPins } from "../lib/pinning";
 import { planReceivedDelete } from "../lib/deleteReceivedPlan";
 import { demoteMissingFile } from "../lib/receivedFileHealth";
 import { baseName } from "../lib/files";
@@ -113,7 +114,9 @@ function sanitize(raw: unknown): ReceivedShare[] {
       firstSeenAt,
       lastUpdatedAt,
       files,
-      isPinned: r.isPinned === true,
+      // Omitted, not coerced: `sanitize`'s output is what the next write
+      // persists, so emitting the key would put it straight back on disk.
+      ...(PINNING_ENABLED ? { isPinned: r.isPinned === true } : {}),
       isFavorite: r.isFavorite === true,
       // Unlike the two flags above, these are not coerced to a default: an
       // older record has no value, and an empty one would be a lie about
@@ -134,17 +137,32 @@ function sanitize(raw: unknown): ReceivedShare[] {
  */
 async function readFromDisk(): Promise<ReceivedShare[]> {
   const result = await readJsonFile(STORAGE_FILE);
-  if (result.status === "ok") return sanitize(result.value);
+  if (result.status === "ok") return sanitize(await retirePins(result.value));
   // `missing`, `corrupt` and `unreadable` all yield an empty list, but the last
   // two have already been logged and preserved by `readJsonFile`.
   return [];
 }
 
 /**
- * Temp file plus rename, never a bare write onto the final path: a kill
- * part-way through would truncate the real store. The failure is swallowed
- * — the in-memory cache stays accurate for this session, and the on-disk
- * file is the previous good one either way.
+ * Runs before `sanitize` can coerce the key into a boolean, and writes through
+ * `writeJsonAtomic` only on a non-zero `cleared`.
+ */
+async function retirePins(raw: unknown): Promise<unknown> {
+  if (PINNING_ENABLED || !Array.isArray(raw)) return raw;
+  const migrated = stripStoredPins(raw);
+  if (migrated.cleared === 0) return raw;
+  try {
+    await writeJsonAtomic(STORAGE_FILE, migrated.records);
+  } catch {
+    // best-effort, exactly like `writeToDisk` — an unwritten migration
+    // runs again next launch, and the in-memory list is already pin-free.
+  }
+  return migrated.records;
+}
+
+/**
+ * Temp file then rename, because a kill part-way through a direct write
+ * truncates the store. A swallowed failure leaves the previous good file.
  */
 async function writeToDisk(shares: ReceivedShare[]): Promise<void> {
   try {
