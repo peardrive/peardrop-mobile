@@ -53,6 +53,8 @@ import {
   RPC_TEST_FAKE_DOWNLOAD,
   RPC_REFRESH_SWARM,
   RPC_SET_DEBUG_LOGGING,
+  RPC_PEERS_LOOKUP,
+  RPC_LOOKUP_RELEASE,
 } from "../../rpc-commands.mjs";
 
 import {
@@ -61,6 +63,7 @@ import {
   type FakeUploadOpts,
   type FakeDownloadOpts,
   type FakeDownloadResult,
+  type LookupResult,
 } from "../lib/rpc";
 import {
   subscribeShares,
@@ -90,6 +93,8 @@ import {
   msUntilActivityCouldChange,
   nextLastPeerLeftAt,
 } from "../lib/transferActivity";
+import { bytesAdvanceAt } from "../lib/bytesAdvance";
+import { carriesPreviousOutcome, restartTransfer } from "../lib/transferRestart";
 import {
   drainPendingCancel,
   EVENT_CANCEL_RECEIVING,
@@ -102,6 +107,7 @@ import {
 import {
   classifyRowPost,
   describeNotificationRows,
+  displayFileName,
   selectReceivingCancelTargets,
   type LastRowPost,
 } from "../lib/notificationContent";
@@ -234,6 +240,13 @@ export type BackendAPI = {
   refreshStatus: () => Promise<void>;
   refreshDrives: () => Promise<void>;
   refreshSwarm: () => Promise<void>;
+  /** Is anyone announcing these shares right now? One shared lookup-only node engine-side, never one swarm per row. */
+  // Returns an empty list on any failure, because a waiting row must never be advanced on a lookup that did not happen.
+  lookupPeers: (keys: string[]) => Promise<LookupResult[]>;
+  /** Drop the shared lookup node. Also called on the background transition. */
+  releaseLookup: () => Promise<void>;
+  /** Whether the app is in the foreground, exposed because the waiting loop must stop on background and restart on foreground, and the loop is built where the resolve and the download live. */
+  appActive: boolean;
 };
 
 const BackendContext = createContext<BackendAPI | null>(null);
@@ -286,6 +299,32 @@ function rememberDriveOrigin(set: Set<string>, driveId: string): void {
   }
 }
 
+/** One file's label, across both shapes this app stores. `name` holds a display name
+ * on one shape and a raw key on the other, so both go through `displayFileName`. */
+function fileLabel(
+  f: { displayName?: unknown; name?: unknown } | null | undefined
+): string {
+  if (!f) return "";
+  if (typeof f.displayName === "string" && f.displayName.trim()) {
+    return displayFileName(f.displayName);
+  }
+  return typeof f.name === "string" ? displayFileName(f.name) : "";
+}
+
+/** The keys a grab asked for, or null for a whole-share grab. With neither field the
+ * engine enumerates the share, and only then does the drive's own file list apply. */
+function selectedNamesOf(payload: {
+  fileName?: string;
+  fileNames?: string[];
+}): string[] | null {
+  const many = Array.isArray(payload?.fileNames)
+    ? payload.fileNames.filter((n) => typeof n === "string" && n.trim().length > 0)
+    : [];
+  if (many.length > 0) return many;
+  const one = typeof payload?.fileName === "string" ? payload.fileName.trim() : "";
+  return one ? [one] : null;
+}
+
 export function BackendProvider({ children }: { children: React.ReactNode }) {
   const workletRef = useRef<InstanceType<typeof Worklet> | null>(null);
   const rpcRef = useRef<InstanceType<typeof RPC> | null>(null);
@@ -306,6 +345,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState("booting");
   const [logs, setLogs] = useState<string[]>([]);
+  /** Foreground, as the platform reports it; the waiting loop reads this to stop and restart, because it runs only while the app is visible. */
+  const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
   const [hyperdriveStatus, setHyperdriveStatus] = useState<WorkletStatus | null>(
     null
   );
@@ -332,6 +373,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   /** A ref, not state: its only consumer runs inside a `setTransfers` updater,
    * where a state read would be a render value consulted outside the render. */
   const receivedSharesRef = useRef<ReceivedShare[]>([]);
+  /** `pushNotification` reached from the share subscription, which is
+   *  declared above it and must keep an empty dep array. */
+  const pushNotificationRef = useRef<((list: TransferSummary[]) => void) | null>(null);
   /** One slot per row, or the two interfere; null means nothing posted in this
    * service window, so the next window's first update always posts. */
   const lastNotificationRef = useRef<{
@@ -398,12 +442,6 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     return "unknown";
   }, []);
 
-  /**
-   * The only way to write `transfers`. The ref is written inside the updater,
-   * not at call sites and not in an effect, because the AppState background
-   * handler reads it synchronously to decide the foreground service and a
-   * stale read there is undetectable. Never call `setTransfers` elsewhere.
-   */
   /** Falls back to the received-share store, because the drives manifest holds
    * no received drive mid-download. A partial grab overstates the count. */
 
@@ -412,7 +450,11 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     return subscribeShares((list) => {
       receivedSharesRef.current = list;
+      /** Re-push, because the notification only refreshed on a transfer mutation while a share record can change without one. */
+      // The rate limit drops a duplicate when nothing user-visible changed, so a record write that moves nothing costs one comparison.
+      pushNotificationRef.current?.(transfersRef.current);
     });
+    // The dependency array stays empty, because a retrigger here re-subscribes, so the push is reached through a ref instead.
   }, []);
 
   const driveNamesFor = useCallback((driveId: string): string[] => {
@@ -422,17 +464,13 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       if (named) return [named];
       const files = record.files;
       if (Array.isArray(files)) {
-        const names = files
-          .map((f) => (typeof f?.name === "string" ? f.name.trim() : ""))
-          .filter((n) => n.length > 0);
+        const names = files.map(fileLabel).filter((n) => n.length > 0);
         if (names.length > 0) return names;
       }
     }
     const share = receivedSharesRef.current.find((s) => s.driveId === driveId);
     if (share) {
-      const names = share.files
-        .map((f) => (typeof f?.name === "string" ? f.name.trim() : ""))
-        .filter((n) => n.length > 0);
+      const names = share.files.map(fileLabel).filter((n) => n.length > 0);
       if (names.length > 0) return names;
       const fallback = share.shareName.trim();
       if (fallback) return [fallback];
@@ -514,6 +552,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     [driveNamesFor]
   );
 
+  /** The only way to write `transfers`; the ref is synced inside the updater so
+   * the background handler cannot read a stale one. Never call `setTransfers`. */
   const commitTransfers = useCallback(
     (next: (prev: TransferSummary[]) => TransferSummary[]) => {
       setTransfers((prev) => {
@@ -529,6 +569,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     [pushNotification]
   );
 
+  pushNotificationRef.current = pushNotification;
+
   const upsertTransfer = useCallback(
     (driveId: string, update: TransferUpdate) => {
       commitTransfers((prev) =>
@@ -538,15 +580,20 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     [commitTransfers, originFor]
   );
 
-  /**
-   * Mark a transfer as stopped by the user. One function for both callers, so
-   * a cancelled row has a single shape. `completed: true` because it is over,
-   * `cancelled: true` beside it so the celebratory path can opt out.
-   * `lastPeerLeftAt: null` is the load-bearing one: a non-null stamp holds the
-   * foreground service through the idle-host grace window, and the swarm is
-   * already destroyed, so nothing can reconnect. Only the service predicate
-   * reads that field; if anything else starts to, this write becomes wrong.
-   */
+  /** Forget a stopped drive's transfer entirely: a dead entry kept with a frozen percentage went on driving the row. */
+  // Goes through the same commit path as every mutation, so the ref sync and the notification feed cannot be skipped.
+  const removeTransfer = useCallback(
+    (driveId: string) => {
+      commitTransfers((prev) => {
+        const next = prev.filter((t) => t.driveId !== driveId);
+        return next.length === prev.length ? prev : next;
+      });
+    },
+    [commitTransfers]
+  );
+
+  /** Mark a transfer as stopped by the user, one function for both callers so a cancelled row has a single shape. */
+  // Clearing the peer-left stamp is the load-bearing part: a non-null stamp holds the foreground service through the idle grace window, and the swarm is already destroyed, so nothing can reconnect.
   const markCancelled = useCallback(
     /**
      * Pass `null` — never 0 — when there is no count: the locally-settled
@@ -660,15 +707,28 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     }) => {
       if (payload?.driveId) {
         rememberDriveOrigin(receivedIdsRef.current, payload.driveId);
-        upsertTransfer(payload.driveId, (prev) => ({
-          ...prev,
-          origin: "received",
-          direction: "download",
-        }));
+        // The row is reset, not merged into: the map is keyed by drive and the share's own drive is reused, so a second grab arrives on the same id.
+        // A spread then carried the previous grab's completed and cancelled flags into a download that is only just starting, and the completed flag is what holds the foreground service.
+        upsertTransfer(payload.driveId, (prev) => {
+          if (carriesPreviousOutcome(prev)) {
+            appendStateLog(
+              `download restart on drive=${payload.driveId} — clearing the previous run's outcome`
+            );
+          }
+          return {
+            ...restartTransfer(prev, Date.now()),
+            origin: "received",
+            direction: "download",
+            // Set on every start, including back to null, or a whole-share grab inherits the last grab's selection.
+            selectedFileNames: selectedNamesOf(payload),
+          };
+        });
       }
       return invoke(rpcRef.current, RPC_HYPERDRIVE_DOWNLOAD, payload);
     },
-    [upsertTransfer]
+    // `appendStateLog` is `useCallback(…, [])`, so listing it cannot
+    // re-create this callback.
+    [upsertTransfer, appendStateLog]
   );
 
   const abortOpen = useCallback(async (driveId?: string) => {
@@ -1039,6 +1099,34 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     }
   }, [appendErrorLog]);
 
+  const lookupPeers = useCallback(
+    async (keys: string[]): Promise<LookupResult[]> => {
+      if (!Array.isArray(keys) || keys.length === 0) return [];
+      try {
+        const res = await invoke(rpcRef.current, RPC_PEERS_LOOKUP, { keys });
+        // A failed round answers an empty list rather than "nothing found".
+        // The two are different and only one of them may move a row's backoff.
+        if (!res?.ok) {
+          appendErrorLog("lookup: the round was refused", res?.error);
+          return [];
+        }
+        return Array.isArray(res.results) ? res.results : [];
+      } catch (err: unknown) {
+        appendErrorLog(`lookup: ${String((err as Error)?.message || err)}`, err);
+        return [];
+      }
+    },
+    [appendErrorLog]
+  );
+
+  const releaseLookup = useCallback(async () => {
+    try {
+      await invoke(rpcRef.current, RPC_LOOKUP_RELEASE, {} as Record<string, never>);
+    } catch (err: unknown) {
+      appendErrorLog(`lookup-release: ${String((err as Error)?.message || err)}`, err);
+    }
+  }, [appendErrorLog]);
+
   const runFakeUploadTest = useCallback(
     async (opts?: FakeUploadOpts & { simulate?: "hosted" | "received" }) => {
       const { simulate = "hosted", ...wireOpts } = opts || {};
@@ -1092,6 +1180,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
             size: f.size,
             isDownloaded: false,
           })),
+          // The simulated receive stops at a resolved file list, which is
+          // exactly what `ready` means.
+          status: "ready",
         });
       } catch (err: unknown) {
         appendErrorLog("fake-download: upsertShare failed", err);
@@ -1364,6 +1455,23 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     typeof evt.bytesTransferred === "number"
                       ? evt.bytesTransferred
                       : prev.bytesTransferred,
+                  // Previous value on absence, not zero: the engine omits it on the hosted path, where the question is meaningless.
+                  bytesFromPeers:
+                    typeof evt.bytesFromPeers === "number"
+                      ? evt.bytesFromPeers
+                      : prev.bytesFromPeers,
+                  // `activeKey` is carried through even when null — the engine saying "between files" differs from an older
+                  // worklet omitting it, and a bar drawn on a stale key is a bar on a file nothing is writing.
+                  activeKey:
+                    "activeKey" in evt ? (evt.activeKey ?? null) : prev.activeKey,
+                  activeBytes:
+                    typeof evt.activeBytes === "number"
+                      ? evt.activeBytes
+                      : prev.activeBytes,
+                  activeTotal:
+                    typeof evt.activeTotal === "number"
+                      ? evt.activeTotal
+                      : prev.activeTotal,
                   totalBytes:
                     typeof evt.totalBytes === "number"
                       ? evt.totalBytes
@@ -1378,6 +1486,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       : typeof evt.bytesTransferred === "number"
                         ? evt.bytesTransferred
                         : prev.totalSentBytes,
+                  // Stamped only when bytes rise, so a peer that stopped pulling lets it
+                  // go stale. The engine re-emits every second, so `lastEventAt` cannot.
+                  lastBytesAt: bytesAdvanceAt(evt, prev),
                   // Not marked completed here, even at 100%: completion comes
                   // from an explicit event, so the UI can clamp at 99.
                   completed: prev.completed,
@@ -1470,6 +1581,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       : typeof evt.totalBytes === "number"
                         ? evt.totalBytes
                         : prev.totalSentBytes,
+                  // Bytes did move, so the Sharing row stays for the recency window rather than for as long as the socket.
+                  lastBytesAt: Date.now(),
                   completed: true,
                   lastEventAt: Date.now(),
                 }));
@@ -1485,6 +1598,42 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
              * says how it ended. `percent` reaches 100 only on `complete`.
              * An unrecognised outcome fails closed to `failed`.
              */
+            if (evt.type === "download-file-done") {
+              // The record write does not happen here: this handler has a drive and no share key, and the binding and the single storage writer both live in the flow context.
+              const localPath =
+                typeof evt.localPath === "string" ? evt.localPath : "";
+              const name = typeof evt.name === "string" ? evt.name : "";
+              debugLog(
+                "info",
+                "rn.download",
+                `file done drive=${evt.driveId ?? "?"} name=${name || "?"} ` +
+                  `size=${evt.size ?? "?"} ${evt.filesDone ?? "?"}/${evt.filesTotal ?? "?"}`
+              );
+              // Both are required: no path cannot be written to the record, no name cannot be matched to a manifest file.
+              if (evt.driveId && localPath && name) {
+                upsertTransfer(evt.driveId, (prev) => {
+                  const landed = prev.filesLanded ?? [];
+                  // Idempotent on the path, already unique on disk, so a re-delivered event is a no-op not a second file.
+                  if (landed.some((f) => f.localPath === localPath)) return prev;
+                  return {
+                    ...prev,
+                    filesLanded: [
+                      ...landed,
+                      {
+                        name,
+                        localPath,
+                        size:
+                          typeof evt.size === "number" && Number.isFinite(evt.size)
+                            ? evt.size
+                            : 0,
+                      },
+                    ],
+                    lastEventAt: Date.now(),
+                  };
+                });
+              }
+              return;
+            }
             if (evt.type === "download-outcome") {
               const outcome =
                 evt.outcome === "complete" || evt.outcome === "partial"
@@ -1529,12 +1678,13 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       }
                     : outcome === "partial"
                       ? {
-                          title: "Some files did not arrive",
-                          body: `${kept} of ${kept + failed} saved. Open PearDrop to see what landed.`,
+                          // Clause 3: what has not arrived is still coming.
+                          title: "Still downloading",
+                          body: `${kept} of ${kept + failed} saved. The rest continue when the sender is back.`,
                         }
                       : {
-                          title: "Nothing was saved",
-                          body: "The share stopped before any files arrived.",
+                          title: "Waiting for the sender",
+                          body: "Your files download as soon as the sender is reachable.",
                         }
                 );
                 upsertTransfer(evt.driveId, (prev) => ({
@@ -1703,13 +1853,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               appendLog(`Drive stopped: ${evt.driveId ?? ""}`);
               if (evt.driveId) {
                 const driveId = evt.driveId;
-                upsertTransfer(driveId, (prev) => ({
-                  ...prev,
-                  completed: true,
-                  peersConnected: 0,
-                  peerIds: [],
-                  lastEventAt: Date.now(),
-                }));
+                /** Dropped, not downgraded. Keeping the entry with zero peers left a ghost that went on driving the share's row long after the engine had purged the drive's storage. */
+                removeTransfer(driveId);
                 // The drive is gone; drop it from the origin sets so late or
                 // stray events on a reused driveId are not misattributed.
                 hostedIdsRef.current.delete(driveId);
@@ -1895,6 +2040,50 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               releaseServiceIfInactive("worklet-idle-grace");
               return;
             }
+            /** The engine's silence verdict, logged from this realm as well so an exported log shows both sides of the same event. */
+            if (evt.type === "transfer-stalled") {
+              appendLog(
+                `Transfer stalled (silence ${evt.silenceMs ?? "?"}ms, ` +
+                  `${evt.destroyed ?? 0} connection(s) destroyed)`,
+              );
+              debugLog(
+                "info",
+                "transfer",
+                `stalled key=${(evt.driveId ?? "unknown").slice(0, 8)} ` +
+                  `silenceMs=${evt.silenceMs ?? "?"} peers=${evt.peers ?? "?"} ` +
+                  `destroyed=${evt.destroyed ?? 0}`,
+              );
+              if (evt.driveId) {
+                upsertTransfer(evt.driveId, (prev) => ({
+                  ...prev,
+                  engineStalled: true,
+                  engineSilenceMs:
+                    typeof evt.silenceMs === "number" ? evt.silenceMs : prev.engineSilenceMs,
+                  // The recency clock is deliberately not stamped: a stall is the absence of events, and refreshing it here would hide the stall from every other reader.
+                }));
+              }
+              return;
+            }
+
+            if (evt.type === "transfer-resumed") {
+              appendLog(`Transfer resumed (${evt.percent ?? "?"}%)`);
+              debugLog(
+                "info",
+                "transfer",
+                `resumed key=${(evt.driveId ?? "unknown").slice(0, 8)} ` +
+                  `heldBytes=${evt.heldBytes ?? "?"} pct=${evt.percent ?? "?"}`,
+              );
+              if (evt.driveId) {
+                upsertTransfer(evt.driveId, (prev) => ({
+                  ...prev,
+                  engineStalled: false,
+                  engineSilenceMs: 0,
+                  lastEventAt: Date.now(),
+                }));
+              }
+              return;
+            }
+
             if (evt.type === "download-peer-disconnected") {
               appendLog("Sender disconnected");
               if (evt.driveId) {
@@ -2003,6 +2192,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     refreshDrives,
     refreshStatus,
     upsertTransfer,
+    removeTransfer,
     markCancelled,
     reconcileReceived,
     releaseServiceIfInactive,
@@ -2101,6 +2291,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         // whole background window, so every `lastEventAt` is stale and the
         // first tick after resume would otherwise rule on all of them.
         foregroundSinceRef.current = Date.now();
+        setAppActive(true);
         // A stop trigger: the app is visible again, so the service has
         // nothing left to protect. Unconditional, because the OS may have
         // stopped it already and a believed state is not a reason to skip.
@@ -2122,6 +2313,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         startInterval();
       } else {
         stopInterval();
+        setAppActive(false);
         if (next === "background") {
           // The start trigger, synchronous and first: this is the last moment
           // the process is reliably executing, and the predicate is I/O-free
@@ -2130,6 +2322,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
           // Snapshot on the way out. Still alive at this point, so the status
           // call succeeds; once frozen there would be nothing to ask.
           void markBackgrounded();
+          // Ordered after both of those deliberately: the two calls above are the measurement surface and must not be displaced by a release that is only an optimisation.
+          void releaseLookup();
         }
       }
     };
@@ -2145,6 +2339,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     checkForFreeze,
     markBackgrounded,
     applyServiceForBackground,
+    // Stable: its only dep is `appendErrorLog`, which is `useCallback(…, [])`.
+    // An unstable value here would re-arm the 90 s interval on every render.
+    releaseLookup,
   ]);
 
   useEffect(() => {
@@ -2364,6 +2561,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       refreshStatus,
       refreshDrives,
       refreshSwarm,
+      lookupPeers,
+      releaseLookup,
+      appActive,
     }),
     [
       ready,
@@ -2389,6 +2589,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       refreshStatus,
       refreshDrives,
       refreshSwarm,
+      lookupPeers,
+      releaseLookup,
+      appActive,
     ]
   );
 

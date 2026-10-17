@@ -20,6 +20,8 @@ import {
   RPC_TEST_FAKE_DOWNLOAD,
   RPC_REFRESH_SWARM,
   RPC_SET_DEBUG_LOGGING,
+  RPC_PEERS_LOOKUP,
+  RPC_LOOKUP_RELEASE,
 } from "../rpc-commands.mjs";
 import { setLogEmit, setLogEnabled, binfo } from "./debug-log.mjs";
 
@@ -41,6 +43,8 @@ import {
   bridgeFakeUploadTest,
   bridgeFakeDownloadTest,
   bridgeRefreshSwarm,
+  bridgeLookupPeers,
+  bridgeReleaseLookup,
 } from "./bridge.mjs";
 import { wrapError } from "./engine-errors.mjs";
 
@@ -113,6 +117,10 @@ const rpc = new RPC(IPC, async (req) => {
         return onRefreshSwarm(req);
       case RPC_SET_DEBUG_LOGGING:
         return onSetDebugLogging(req);
+      case RPC_PEERS_LOOKUP:
+        return onPeersLookup(req);
+      case RPC_LOOKUP_RELEASE:
+        return onLookupRelease(req);
       default:
         return;
     }
@@ -369,6 +377,25 @@ function onTestFakeDownload(req) {
   try {
     const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
     const res = bridgeFakeDownloadTest(body || {});
+    req.reply(b4a.from(JSON.stringify(res), "utf8"));
+  } catch (err) {
+    req.reply(b4a.from(outerCatchReply(err), "utf8"));
+  }
+}
+
+async function onPeersLookup(req) {
+  try {
+    const body = JSON.parse(b4a.toString(req.data || b4a.alloc(0), "utf8") || "{}");
+    const res = await bridgeLookupPeers(body.keys, { budgetMs: body.budgetMs });
+    req.reply(b4a.from(JSON.stringify(res), "utf8"));
+  } catch (err) {
+    req.reply(b4a.from(outerCatchReply(err), "utf8"));
+  }
+}
+
+async function onLookupRelease(req) {
+  try {
+    const res = await bridgeReleaseLookup();
     req.reply(b4a.from(JSON.stringify(res), "utf8"));
   } catch (err) {
     req.reply(b4a.from(outerCatchReply(err), "utf8"));

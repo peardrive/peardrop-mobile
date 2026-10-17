@@ -24,7 +24,19 @@ import {
   RPC_TEST_FAKE_DOWNLOAD,
   RPC_REFRESH_SWARM,
   RPC_SET_DEBUG_LOGGING,
+  RPC_PEERS_LOOKUP,
+  RPC_LOOKUP_RELEASE,
 } from "../../rpc-commands.mjs";
+
+/** One row's answer from a lookup round. `peers` is what the DHT reported. */
+export type LookupResult = {
+  key: string;
+  found: boolean;
+  peers?: number;
+  ms?: number;
+  why?: string;
+  error?: string;
+};
 
 export type FakeUploadOpts = {
   durationMs?: number;
@@ -129,6 +141,14 @@ export type RpcResultFor = {
   [RPC_TEST_FAKE_DOWNLOAD]: FakeDownloadResult;
   [RPC_REFRESH_SWARM]: { ok: boolean; refreshed?: number; rejoined?: number; error?: string };
   [RPC_SET_DEBUG_LOGGING]: { ok: boolean; enabled?: boolean; error?: string };
+  /** A released flag means the shared node is gone, answered for an empty key list as well as an explicit release, so a caller cannot tell the two apart and does not need to. */
+  [RPC_PEERS_LOOKUP]: {
+    ok: boolean;
+    error?: string;
+    released?: boolean;
+    results?: LookupResult[];
+  };
+  [RPC_LOOKUP_RELEASE]: { ok: boolean; released?: boolean; error?: string };
 };
 
 export type RpcPayloadFor = {
@@ -164,6 +184,9 @@ export type RpcPayloadFor = {
    * worklet realm has no build-type constant of its own. Absent means off.
    */
   [RPC_SET_DEBUG_LOGGING]: { enabled: boolean; heartbeat?: boolean };
+  /** Share keys, not discovery keys: the engine derives those. */
+  [RPC_PEERS_LOOKUP]: { keys: string[]; budgetMs?: number };
+  [RPC_LOOKUP_RELEASE]: Record<string, never>;
 };
 
 export type RpcCommand = keyof RpcResultFor;

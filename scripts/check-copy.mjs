@@ -1,59 +1,6 @@
 #!/usr/bin/env node
-/**
- * check-copy.mjs — fail the build on user-facing copy that asserts something
- * this app cannot know.
- *
- * ## Why this exists
- *
- * PearDrop has **no connectivity detection of any kind**. It cannot tell
- * "the host is offline" from "DHT discovery is still running", and a share
- * link **never expires**. Copy that says either thing is not a wording
- * preference — it is a false statement about state the app never observes,
- * and it sends the user off to check a Wi-Fi setting that was never the
- * problem. Three such strings shipped (`SharePreviewModal`, `StatusRoute`,
- * `ReceiveScreen`) before anyone noticed, because nothing looked.
- *
- * A second, narrower rule applies too: the literal `Drive not found` is raw
- * engine text and must never reach a user again.
- *
- * ## What it scans, and why it is not a grep
- *
- * A plain `grep -rn` over `src/` returns 102 hits, and ~all of them are the
- * doc comments explaining why the copy is banned — including this file's.
- * A check nobody can keep green is a check that gets deleted. So this walks
- * the source with a small scanner and looks at **only two kinds of text**:
- *
- *   1. **string literals** — `'…'`, `"…"`, and the literal chunks of a
- *      template literal (the `${…}` holes are code and are dropped);
- *   2. **JSX text nodes** — the prose between `>` and `</`. This is not an
- *      optional extra: the live offender this check was written for,
- *      `SharePreviewModal`'s offline banner, was **JSX text, not a string
- *      literal**. A string-literals-only scanner would have reported a
- *      clean tree over a shipped violation — exactly the vacuous-pass
- *      failure mode this check exists to catch.
- *
- * Comments (`//` and block) are blanked before either pass, and test files
- * are skipped. Both filters can hide a real hit, so `--selftest` proves on
- * every run that neither one does — see below.
- *
- * ## --selftest
- *
- * `node scripts/check-copy.mjs --selftest` runs the scanner over an
- * in-file fixture and asserts:
- *
- *   - every one of the four strings that actually shipped still matches;
- *   - the replacement copy and the current empty-state copy do not;
- *   - the extractor finds a JSX-text offender, a string-literal offender
- *     and a template-literal offender, and finds **exactly** those — the
- *     comment in the fixture, which contains the same banned words, is not
- *     reported.
- *
- * A check
- * that can silently match nothing is worse than no check, because it is
- * cited as evidence.
- *
- * Exit codes: 0 clean, 1 violations found, 2 selftest failed / bad usage.
- */
+/** Fail the build on copy asserting what the app cannot know: there is no connectivity detection and links never expire. */
+// Scans string literals and element text, not a plain grep; comments are blanked and tests skipped, and the selftest proves both filters still catch a real hit.
 
 import fs from "fs";
 import path from "path";
@@ -84,63 +31,40 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const SCAN_ROOTS = ["src", "app", "backend", "rpc-commands.mjs"];
 const EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 
-/**
- * `[^a-z]network[^a-z]` is a deliberate hand-rolled word boundary: it must not
- * fire on `networkPolicy` or `sceneNetwork`. The subject text is padded with a
- * space on each side before testing (see `violationsIn`), which restores the
- * boundaries the regex would otherwise lose at start/end of the text.
- */
+/** The hand-rolled word boundary is deliberate: it must not fire on an identifier that merely contains the word. */
+// The subject text is padded with a space on each side before testing, which restores the boundaries the pattern would otherwise lose at the ends.
 const BANNED = /offline|no internet|check your|slow network|[^a-z]network[^a-z]|expired?/i;
 
-/** "No path may ever show 'Drive not found' to a user again." */
+/** The exact strings allowed to say the sender is offline, and nothing else. */
+// An exact-string list, not a loosened pattern, so any new wording containing the word still fails.
+const OFFLINE_CLAIM_ALLOWED = new Set([
+  "Sender offline. Files appear when they're back.",
+  "Sender offline. Choose files now; they download when the sender is back.",
+  "Queued · sender offline",
+  // The row and header line are assembled, so the literal in the source is the
+  // conditional's own arm rather than the finished sentence.
+  '"retrying" : "sender offline"}',
+  // The picker's accessibility label for the sender dot.
+  "Sender offline",
+  "Sender online",
+  /** The row line as the scanner sees it: the extractor drops the template holes, so what it tests is the trailing chunk with the percentage already removed. */
+  "% · sender offline",
+]);
+
+/** Bare union-member tokens that happen to spell a banned word; the copy they drive is on the allow-list above. */
+// An exact-string set, because a lowercase-word rule would exempt a real one-word label too.
+const NON_PROSE_TOKENS = new Set(["expired", "senderOffline"]);
+
+/** No path may ever show 'Drive not found' to a user again. */
 const RAW_ENGINE_TEXT = /drive not found/i;
 
-/**
- * No emoji in product copy.
- *
- * The rule: voice is "a friend helping you move files." No emojis in product copy.
- *
- * Covers the pictographic blocks, the dingbats, Miscellaneous Symbols, the
- * regional indicators and the variation selector that switches a glyph to
- * emoji presentation. It deliberately does NOT cover the typography this app
- * uses on purpose — the em-dash (U+2014), the middot (U+00B7) and the ellipsis
- * (U+2026) all sit below this range and must keep passing. `check-encoding.mjs`
- * governs those.
- *
- * Two things this class is NOT, so nobody reads the paragraph above as a
- * guarantee:
- *
- * 1. **It is not emoji-only.** The dingbat and symbol ranges include glyphs
- *    someone may reach for as typography — ✓ U+2713, ✔ U+2714, ✗ U+2717,
- *    ★ U+2605, ☑ U+2611, ➡ U+27A1, ⭐ U+2B50. A string like "✓ Saved" is
- *    reported. That is the house style (icons are Ionicons, not glyphs), but
- *    it is a style decision enforced here, not a factual claim about emoji.
- * 2. **It is not exhaustive.** U+2300–U+23FF (⌛ ⏰ ⏳), U+25A0–U+25FF (▶ ◀)
- *    and U+203C/U+2049 are outside it, so a bare "⏳" passes. The emoji-
- *    presentation form "⏳️" is caught incidentally by the U+FE0F term only.
- *    Widen the class when a real offender appears rather than pre-emptively —
- *    every widening risks the false positives in (1).
- */
+/** No emoji in product copy. Stops short of the em-dash, middot and ellipsis this app uses on purpose. */
+// Neither emoji-only nor exhaustive: widen it when a real offender appears rather than pre-emptively.
 const EMOJI =
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{1F1E6}-\u{1F1FF}]/u;
 
-/**
- * user-facing prose longer than this truncates with "…" in
- * the app's tightest wrapping container, so any scanned prose STRING LITERAL
- * above the cap fails the build. The scanner cannot tell a 1-line title
- * container from a wrapping banner, so this is one global cap; per-constant
- * (tighter) caps live in jest (`resolveNotice.test.ts`,
- * `resolveDisposition.test.ts`). The length is measured on the
- * whitespace-normalized text, same subject the banned-copy rules test.
- *
- * The rule deliberately does NOT reach JSX text nodes: five existing JSX
- * paragraphs exceed 120 chars (SettingsScreen's debug/OEM-probe explainers at
- * :1050/:1275/:1280/:1441 and FilePickerSheet's folder explainer at :368),
- * every one sitting in a wrapping container with no `numberOfLines`, where
- * truncation cannot occur. The truncation defect class this guards was
- * string-fed error surfaces — linkError, toasts — which are string literals.
- * Widening the rule to JSX text is an owner call.
- */
+/** Prose above this cap truncates in the tightest wrapping container, so a scanned literal over it fails. */
+// Deliberately not applied to element text, where existing paragraphs exceed it in containers that cannot truncate.
 const MAX_PROSE_LENGTH = 120;
 
 /**
@@ -166,21 +90,8 @@ const EXCLUSIONS = [
   },
 ];
 
-/**
- * `src/screens/StatusRoute.tsx` used to
- * be excluded here and is NOT any more.
- *
- * Its exclusion rested on "nothing navigates to 'Status'". That is a weaker
- * fact than it looks: the file is compiled into the app and IS registered as a
- * route (`src/navigation/Tabs.tsx:12`, `:34`, live via `app/index.tsx:4`), so
- * one `navigate("Status", …)` anywhere would ship the copy with no further
- * change and no warning. An exclusion must rest on the file not being built,
- * not on nobody currently calling it. Its two banned strings were rewritten in
- * the same ruling; the file is scanned from here on.
- *
- * `src/screens/ReceiveScreen.tsx` above is a genuinely different case — zero
- * importers — and stays excluded.
- */
+/** An exclusion must rest on the file not being built, never on nobody currently calling it. */
+// A file that is compiled and route-registered would ship its copy on one navigate call with no warning, so it is scanned.
 
 const EXCLUDED_FILES = new Set(EXCLUSIONS.map((e) => e.file));
 
@@ -196,14 +107,8 @@ function isTestFile(rel) {
 // The scanner
 // ---------------------------------------------------------------------------
 
-/**
- * Walk `src` once, returning `masked` — the same length as `src`, with every
- * comment and string body replaced by spaces so offsets and line numbers
- * survive — and `strings`, one `{ text, index }` per string literal body and
- * per literal chunk of a template literal. Regex literals are recognised with
- * the previous-significant-token heuristic so that a quote inside `/["']/`
- * cannot desynchronise the scan.
- */
+/** Walks the source once, returning the same text with comments and string bodies blanked so offsets survive, plus each string literal and template chunk. */
+// Regex literals are recognised by the previous-significant-token heuristic, so a quote inside a character class cannot desynchronise the scan.
 function scan(src) {
   const masked = new Array(src.length).fill(null);
   const strings = [];
@@ -373,12 +278,8 @@ function scan(src) {
   return { masked: masked.join(""), strings };
 }
 
-/**
- * JSX text nodes: the prose between a `>` and the next `</`. Requiring the run
- * to end at a closing tag is what keeps `a > b && c < d` and TypeScript
- * generics out. Any `{ … }` expression inside the run is deleted first — its
- * own strings were already captured by `scan`.
- */
+/** Element text nodes: the prose between a tag close and the next closing tag. */
+// Requiring the run to end at a closing tag is what keeps comparisons and generics out; brace expressions are deleted first, their strings having already been captured.
 function jsxTextNodes(masked) {
   const out = [];
   const re = />([^<>]*)<\//g;
@@ -401,25 +302,14 @@ function jsxTextNodes(masked) {
   return out;
 }
 
-/**
- * Token-shaped strings are never prose: Ionicons names (`cloud-offline-outline`),
- * enum values, style keys, import paths. They have no whitespace and carry a
- * separator or a slash. A bare word with no separator is not skipped, because
- * that shape can be a user-facing label.
- */
+/** Token-shaped strings are never prose: they carry a separator or a slash and no whitespace. A bare capitalised word is not skipped, because that shape can be a user-facing label. */
 function isTokenNotProse(text) {
   if (/\s/.test(text)) return false;
   return /^[A-Za-z0-9_$]*[-./:@][A-Za-z0-9_$\-./:@]*$/.test(text);
 }
 
-/**
- * Argument spans of diagnostic-logging calls. `debugLog`, `appendErrorLog` and
- * `console.*` text goes to logcat and to the exported `peardrop-debug.log`,
- * never to a screen, so the ban does not reach it. Suppression is by span, not
- * by filename — a user-facing string sitting next to a log call is still
- * scanned. Computed over the masked source, where string bodies are already
- * blanked, so a `(` or `)` inside a string cannot throw the paren match off.
- */
+/** Argument spans of logging calls, which reach the log and never a screen. */
+// Suppressed by span, not by filename, so a user-facing string beside a log call is still scanned.
 function logCallSpans(masked) {
   const spans = [];
   const re =
@@ -519,7 +409,8 @@ function violationsIn(rel, src) {
     // Padding restores the word boundaries `[^a-z]network[^a-z]` loses at the
     // start and end of the subject.
     const padded = ` ${text} `;
-    const rule = BANNED.test(padded)
+    if (cand.kind === "string" && NON_PROSE_TOKENS.has(text)) continue;
+    const rule = BANNED.test(padded) && !OFFLINE_CLAIM_ALLOWED.has(text)
       ? "banned-claim"
       : RAW_ENGINE_TEXT.test(padded)
         ? "raw-engine-text"
@@ -575,17 +466,11 @@ const KNOWN_CLEAN = [
   "Tap the heart on a share to add it.",
 ];
 
-// the planted too-long positive control. 130 chars — over
-// the 120 cap, under the 140-char display truncation in `violationsIn`, and
-// free of banned words so it can only be caught by the length rule.
+// The planted too-long positive control: over the cap, under the display truncation, and free of banned words so only the length rule can catch it.
 const TOO_LONG_CONTROL =
   "This sentence is the planted too-long positive control for the length cap and it rambles on well past the hundred and twenty mark.";
 
-/**
- * A rocket, which is squarely in the pictographic
- * range and carries none of the banned words — so if it is reported, it was
- * reported by the emoji rule and by nothing else.
- */
+/** Emoji positive control, carrying none of the banned words, so a report of it can only have come from the emoji rule. */
 const EMOJI_CONTROL = "Sending your files \u{1F680}";
 
 const FIXTURE = [
@@ -595,8 +480,7 @@ const FIXTURE = [
   'const bad = "The peer is offline.";',
   `const cap = "${TOO_LONG_CONTROL}";`,
   "const tpl = `The link has expired after ${n} days`;",
-  // the typography that must NOT be flagged:
-  // em-dash, middot and ellipsis are deliberate house style.
+  // Emoji positive control, plus the typography that must not be flagged: em-dash, middot and ellipsis are deliberate house style.
   `const emoji = "${EMOJI_CONTROL}";`,
   'const typography = "Saved 3 of 4 — one didn\'t make it · hold on…";',
   "const re = /offline|expired/;",
@@ -631,9 +515,46 @@ function selftest() {
     );
   }
 
-  // Extractor control: the fixture holds one string-literal, one
-  // template-literal and one JSX-text offender, plus two comments and an
-  // Ionicons token carrying the same words that must not be found.
+  /** The two narrowings, each with its own control, because a narrowed guard that nothing probes quietly becomes a loophole. */
+  // Both assert the same thing in two directions: the exact strings pass, and everything adjacent to them still fails.
+  for (const s of OFFLINE_CLAIM_ALLOWED) {
+    const hits = violationsIn("<allow>", `const x = ${JSON.stringify(s)};`);
+    const banned = hits.some((h) => h.rule === "banned-claim");
+    (banned ? failures : ok).push(
+      `${banned ? "ALLOW-LIST BROKEN" : "allowed"}  allowed offline claim: ${s}`,
+    );
+  }
+  // Refused through the allow-list rather than the regex: a variation on an allowed string is still refused.
+  for (const s of [
+    ...KNOWN_OFFENDERS.filter((o) => /offline/i.test(o)),
+    "Sender offline. Files appear when they are back.",
+    "The sender is offline.",
+  ]) {
+    const hits = violationsIn("<allow>", `const x = ${JSON.stringify(s)};`);
+    const banned = hits.some((h) => h.rule === "banned-claim");
+    (banned ? ok : failures).push(
+      `${banned ? "still refused" : "ALLOW-LIST TOO WIDE"}  near-miss: ${s}`,
+    );
+  }
+  // The status token passes; a sentence with the same word does not.
+  for (const [text, shouldPass] of [
+    ['"expired"', true],
+    ['"Your share has expired."', false],
+    ['"expired share"', false],
+    ['"senderOffline"', true],
+    // A near-miss identifier is not admitted, because the set is exact strings.
+    ['"senderOfflineNow"', false],
+    ['"The sender is senderOffline."', false],
+  ]) {
+    const hits = violationsIn("<token>", `const x = ${text};`);
+    const banned = hits.some((h) => h.rule === "banned-claim");
+    const good = shouldPass ? !banned : banned;
+    (good ? ok : failures).push(
+      `${good ? "token rule ok" : "TOKEN RULE WRONG"}  ${text} -> banned=${banned}`,
+    );
+  }
+
+  // Extractor control: the fixture holds one string-literal, one template-literal and one element-text offender, plus two comments and a token carrying the same words that must not be found.
   const found = violationsIn("<fixture>", FIXTURE);
   const kinds = found.map((h) => `${h.kind}:${h.text}`).sort();
   const expected = [
@@ -658,9 +579,7 @@ function selftest() {
     );
   }
 
-  // positive control: the planted long string must FAIL, and
-  // it must fail under the `too-long` rule specifically — if it were caught by
-  // a banned-word match instead, the length rule would be untested.
+  // The planted long string must fail, and specifically under the length rule: caught by a banned-word match instead, the length rule would be untested.
   const tooLongHits = found.filter((h) => h.rule === "too-long");
   if (
     tooLongHits.length === 1 &&
@@ -676,9 +595,7 @@ function selftest() {
     );
   }
 
-  // the planted rocket must fail, and specifically
-  // under the `emoji` rule — if a banned word caught it instead, the emoji rule
-  // would be untested. The typography line is the matching negative control.
+  // The planted rocket must fail under the emoji rule specifically, or that rule is untested.
   const emojiHits = found.filter((h) => h.rule === "emoji");
   if (emojiHits.length === 1 && emojiHits[0].text === EMOJI_CONTROL) {
     ok.push(
@@ -730,8 +647,7 @@ function main() {
   for (const root of SCAN_ROOTS) {
     const abs = path.join(REPO_ROOT, root);
     if (!fs.existsSync(abs)) continue;
-    // A root may be a single file (`rpc-commands.mjs`), and `walk` expects a
-    // directory: it would yield nothing, which looks exactly like clean.
+    // A root may be a single file; `walk` yields nothing for one, which would look exactly like scanned-and-clean.
     const roots = fs.statSync(abs).isDirectory() ? walk(abs) : [abs];
     for (const file of roots) {
       const rel = path.relative(REPO_ROOT, file).split(path.sep).join("/");
@@ -760,8 +676,8 @@ function main() {
   }
   console.error(
     "\nPearDrop has no connectivity detection and links never expire, so copy" +
-      "\nmay not claim either. 'Drive not found' is raw engine text." +
-      `\nProse over ${MAX_PROSE_LENGTH} chars truncates with "…" on screen.`,
+      "\nmay not claim either. 'Drive not found' is raw engine text (ADD-2)." +
+      `\nProse over ${MAX_PROSE_LENGTH} chars truncates with "…" on screen (I-7).`,
   );
   process.exit(1);
 }

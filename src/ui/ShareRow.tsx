@@ -1,11 +1,83 @@
-import React, { useMemo } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  AccessibilityInfo,
+  Animated,
+  Easing,
+  Image,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import ActiveIndicator, { type ActiveIndicatorState } from "./ActiveIndicator";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
 import { PINNING_ENABLED } from "../lib/pinning";
+import { FileKindBadge } from "./FileTypeIcon";
+import { highlightPlan } from "../lib/readyHighlight";
+
+
+/** The tint, keyed on the tick value rather than a boolean, so a re-render cannot replay it. */
+// One animated sequence on the native driver, because a per-frame write from the JS side is what stutters.
+function useReadyHighlight(tick: number): Animated.Value {
+  const value = useRef(new Animated.Value(0)).current;
+  const [reduceMotion, setReduceMotion] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((v) => {
+      if (mounted) setReduceMotion(v);
+    });
+    const sub = AccessibilityInfo.addEventListener("reduceMotionChanged", (v) => {
+      if (mounted) setReduceMotion(v);
+    });
+    return () => {
+      mounted = false;
+      sub.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    // 0 is "never highlighted", so a freshly mounted row stays quiet.
+    if (!tick) return undefined;
+    const plan = highlightPlan(reduceMotion);
+    value.setValue(0);
+    if (!plan.animated) {
+      // One tint, held, no animation at all. `setValue` either side of a plain
+      // timer rather than a timing of duration 0, which still schedules frames.
+      value.setValue(1);
+      const id = setTimeout(() => value.setValue(0), plan.totalMs);
+      return () => {
+        clearTimeout(id);
+        value.setValue(0);
+      };
+    }
+    const pulse = () => [
+      Animated.timing(value, {
+        toValue: 1,
+        duration: plan.pulseMs,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: true,
+      }),
+      Animated.timing(value, {
+        toValue: 0,
+        duration: plan.pulseMs,
+        easing: Easing.inOut(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ];
+    const seq = Animated.sequence([...pulse(), ...pulse()]);
+    seq.start();
+    return () => {
+      seq.stop();
+      value.setValue(0);
+    };
+  }, [tick, reduceMotion, value]);
+
+  return value;
+}
 
 export type ShareRowStatus = {
   /** Copy shown in the sub-line. Falls through to `meta` when null/undefined. */
@@ -23,6 +95,8 @@ export type ShareRowStatus = {
 export type ShareRowProps = {
   /** Ionicons glyph shown when no thumbnail is available. */
   iconName: React.ComponentProps<typeof Ionicons>["name"];
+  /** Three-letter type badge drawn over the glyph, when the kind earns one. */
+  iconBadge?: string | null;
   /** Local file path or URI to render as the tile thumbnail (images only). */
   previewUri?: string | null;
   /** Local video file URI. A one-frame thumbnail is generated on demand
@@ -50,6 +124,8 @@ export type ShareRowProps = {
   selectionMode?: boolean;
   /** Only meaningful when `selectionMode` is true. */
   selected?: boolean;
+  /** Bumped by the list when this row has just become ready. The value is the trigger, not a boolean: a counter cannot be missed by a re-render and cannot replay on one either. */
+  highlightTick?: number;
 };
 
 /**
@@ -58,6 +134,7 @@ export type ShareRowProps = {
  */
 export default function ShareRow({
   iconName,
+  iconBadge,
   previewUri,
   videoUri,
   name,
@@ -73,9 +150,11 @@ export default function ShareRow({
   showTopDivider = true,
   selectionMode,
   selected,
+  highlightTick = 0,
 }: ShareRowProps) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const highlight = useReadyHighlight(highlightTick);
   const videoThumb = useVideoThumbnail(previewUri ? null : videoUri);
   const thumbUri = previewUri ?? videoThumb;
   const subColor =
@@ -99,6 +178,21 @@ export default function ShareRow({
       accessibilityState={selectionMode ? { checked: !!selected } : undefined}
       accessibilityLabel={`${name}, ${subText}`}
     >
+      {/* The tint is an opacity on an overlay rather than an animated background colour, which is not a native-driver property; nothing here changes a layout value, so the row never moves. */}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.highlight,
+          {
+            // A light tint, never a wash: the accent at full strength would
+            // make the row unreadable.
+            opacity: highlight.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 0.12],
+            }),
+          },
+        ]}
+      />
       <View style={styles.thumb}>
         {thumbUri ? (
           <Image
@@ -111,7 +205,10 @@ export default function ShareRow({
           // green on the same subtle-surface tile every folder surface uses.
           <Ionicons name="folder-outline" size={28} color={theme.primary} />
         ) : (
-          <Ionicons name={iconName} size={26} color={theme.text} />
+          <>
+            <Ionicons name={iconName} size={28} color={theme.text} />
+            <FileKindBadge text={iconBadge ?? null} size={28} color={theme.text} />
+          </>
         )}
         <ActiveIndicator state={indicatorState} />
       </View>
@@ -200,6 +297,13 @@ function createStyles(theme: AppTheme) {
       borderTopColor: theme.border,
     },
     rowDim: { opacity: 0.85 },
+    // Behind the content, inside the row's own bounds. `accent` at a low
+    // opacity is the light tint; the overlay itself never changes size.
+    highlight: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: theme.primary,
+      opacity: 0,
+    },
     checkSlot: {
       width: 32,
       height: 32,

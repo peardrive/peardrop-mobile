@@ -48,7 +48,75 @@ export type NotificationTransferInput = TransferActivityInput & {
   totalBytes: number | null;
   /** Fallback denominator: `totalBytes` is not always populated for a host. */
   driveSize: number | null;
+  /** When a byte figure last rose, stamped by the single writer in `backend.ts`.
+   * `lastEventAt` cannot stand in: the engine re-emits a snapshot every second. */
+  lastBytesAt?: number | null;
+  /** Keys this grab asked for; null when it took the whole share, the only case
+   * `driveNamesFor` answers correctly, because it knows the share not the selection. */
+  selectedFileNames?: readonly string[] | null;
 };
+
+/** How recently bytes must have moved for a peer to count as receiving. Ten seconds
+ * clears the engine's one-second cadence, so a missed tick does not flap the row. */
+export const BYTES_RECENT_MS = 10_000;
+
+/** Did a byte figure go up inside the window? Absent or non-finite is "no":
+ * this gates a claim about a peer, and an unstamped row has no evidence. */
+export function movedRecently(
+  t: NotificationTransferInput,
+  now: number
+): boolean {
+  const at = finiteOrNull(t.lastBytesAt);
+  if (at === null) return false;
+  const since = now - at;
+  return since >= 0 && since < BYTES_RECENT_MS;
+}
+
+/** Is this download doing anything a file count may be claimed about? A row held only
+ * by the pre-connect allowance has no evidence yet, and must not contribute a file. */
+function hasTransferEvidence(
+  t: NotificationTransferInput,
+  now: number
+): boolean {
+  if ((finiteOrNull(t.bytesTransferred) ?? 0) > 0) return true;
+  if ((finiteOrNull(t.peersConnected) ?? 0) > 0) return true;
+  if (t.progressEverReceived === true) return true;
+  return movedRecently(t, now);
+}
+
+/** The basename, with no leading separator. Engine keys are `/a/b/c.epub` and the
+ * stored share keeps the key in `name`, so the raw value reaches the row as a path. */
+export function displayFileName(name: string): string {
+  const trimmed = String(name ?? "").trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(/[/\\]+/).filter((p) => p.length > 0);
+  return parts.length > 0 ? parts[parts.length - 1]! : "";
+}
+
+/** Basenames, deduped in first-seen order. The grab's own `selectedFileNames` wins when
+ * set: `driveNamesFor` resolves to the whole share, so a one-of-three grab counts three. */
+function fileNamesOf(
+  transfers: readonly NotificationTransferInput[],
+  namesFor: DriveNamesResolver
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of transfers) {
+    const selected = t.selectedFileNames;
+    const source =
+      selected && selected.length > 0 ? selected : namesFor(t.driveId);
+    for (const raw of source) {
+      if (typeof raw !== "string") continue;
+      const name = displayFileName(raw);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(name);
+    }
+  }
+  return out;
+}
 
 /** An empty array is a real case, not an error: the manifest carries no
  * received drive mid-download, so each branch reads correctly without names. */
@@ -96,6 +164,9 @@ export function describeNotificationRows(
   }
 
   const downloads: NotificationTransferInput[] = [];
+  /** Held by the predicate, but nothing has happened yet. Counted as 0 files
+   * and still given a row, because the service must never run without one. */
+  let connecting = 0;
   /** Hosted entries with a peer attached — the shares being downloaded. */
   const servingHosts: NotificationTransferInput[] = [];
   for (const { index, reason } of active) {
@@ -103,11 +174,15 @@ export function describeNotificationRows(
     if (!transfer) continue;
     // `reason` is authoritative, not `origin`: it carries the
     // hosted-with-peers and grace-window branches.
-    if (reason === "download") downloads.push(transfer);
-    else if (reason === "upload") servingHosts.push(transfer);
+    if (reason === "download") {
+      if (hasTransferEvidence(transfer, now)) downloads.push(transfer);
+      else connecting++;
+    } else if (reason === "upload" && movedRecently(transfer, now)) {
+      servingHosts.push(transfer);
+    }
   }
 
-  const receiving = downloads.length > 0
+  const receiving = downloads.length > 0 || connecting > 0
     ? buildReceivingRow(downloads, namesFor)
     : null;
   const sharing = buildSharingRow(list, servingHosts, namesFor);
@@ -127,17 +202,14 @@ function buildReceivingRow(
   downloads: readonly NotificationTransferInput[],
   namesFor: DriveNamesResolver
 ): NotificationRow {
-  const names: string[] = [];
-  for (const t of downloads) {
-    for (const n of namesFor(t.driveId)) {
-      if (typeof n === "string" && n.trim()) names.push(n.trim());
-    }
-  }
+  const names = fileNamesOf(downloads, namesFor);
 
   // Counts files from the same list the text renders, so the two cannot
   // disagree; with no names it falls back to transfers, which understates.
   const fileCount = names.length > 0 ? names.length : downloads.length;
-  const title = `Receiving ${fileCount} ${fileCount === 1 ? "file" : "files"}`;
+  const title = fileCount > 0
+    ? `Receiving ${fileCount} ${fileCount === 1 ? "file" : "files"}`
+    : "Receiving…";
   const text = names.length > 0 ? joinNames(names) : "Connecting…";
 
   // Sum only when every download knows its total: a partial sum is

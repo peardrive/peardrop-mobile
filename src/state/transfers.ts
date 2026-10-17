@@ -26,6 +26,11 @@ export function baseTransfer(
     totalBytes: null,
     driveSize: null,
     totalSentBytes: 0,
+    // Null, not `now`: no byte has moved yet, and a stamp here would make a
+    // brand-new row read as actively transferring.
+    lastBytesAt: null,
+    // Null until a grab names its files; a whole-share grab leaves it null.
+    selectedFileNames: null,
     peersConnected: 0,
     peerIds: [],
     completed: false,

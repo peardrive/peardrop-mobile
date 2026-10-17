@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  AppState,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -111,7 +112,8 @@ export default function ReceiveSheet({
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const pasteRef = useRef<TextInput>(null);
-  const [permission, requestPermission] = useCameraPermissions();
+  /** Re-reads the permission without prompting: once declined for good, nothing else ever re-reads it. */
+  const [permission, requestPermission, getPermission] = useCameraPermissions();
   const scannedRef = useRef(false);
   const flash = useRef(new Animated.Value(0)).current;
   const [scanFlash, setScanFlash] = useState(false);
@@ -135,28 +137,19 @@ export default function ReceiveSheet({
     return () => clearTimeout(t);
   }, [visible, focusPaste]);
 
-  /**
-   * the elapsed-resolve clock.
-   *
-   * **Built here from scratch, not moved.** Nothing in the live receive path
-   * tracked elapsed time: this sheet's only other state is `scanFlash` and its
-   * only other timer is the 250 ms paste-focus `setTimeout` above, and
-   * `resolveGuard`'s 30 s timer is a *rejection* timer that nothing observes.
-   * The one "Still looking…" affordance that ever existed is in
-   * `src/screens/ReceiveScreen.tsx`, which is dead code (no import anywhere in
-   * `src` or `app`) **and whose copy fails the deny-list that
-   * `src/lib/__tests__/resolveHint.test.ts` enforces** — so it could not be
-   * revived even if the file were live.
-   *
-   * Wall-clock delta, not a tick count. A count of intervals under-reports
-   * whenever the JS thread is starved — and on this project's own measurements
-   * RN timers stop entirely when the app is backgrounded — which would make the
-   * hint appear late or not at all precisely when the wait is longest.
-   * `Date.now()` cannot be starved.
-   *
-   * The cleanup clears the interval on BOTH transitions that matter: `resolving`
-   * going false, and this sheet unmounting.
-   */
+  /** Re-read the camera permission on open and on every return to the foreground. */
+  // The foreground edge is load-bearing: it is the one signal that the user may have changed the answer in Settings.
+  useEffect(() => {
+    if (!visible || Platform.OS === "web") return;
+    void getPermission();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void getPermission();
+    });
+    return () => sub.remove();
+  }, [visible, getPermission]);
+
+  /** The elapsed-resolve clock, a wall-clock delta rather than a tick count. */
+  // Timers stop in the background here, so counting intervals would show the hint late exactly when the wait is longest.
   const [resolveElapsedMs, setResolveElapsedMs] = useState(0);
   useEffect(() => {
     if (!resolving) {

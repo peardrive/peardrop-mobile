@@ -17,6 +17,8 @@ import {
   engineFakeUploadTest,
   engineFakeDownloadTest,
   engineRefreshSwarm,
+  engineLookupPeers,
+  engineReleaseLookup,
 } from "./hyperdrive-engine.mjs";
 import { EngineError, wrapError } from "./engine-errors.mjs";
 
@@ -199,6 +201,22 @@ export function bridgeFakeDownloadTest(opts) {
 export async function bridgeRefreshSwarm() {
   try {
     return await engineRefreshSwarm();
+  } catch (err) {
+    return bridgeFailure(err);
+  }
+}
+
+export async function bridgeLookupPeers(keys, opts) {
+  try {
+    return await engineLookupPeers(keys, opts || {});
+  } catch (err) {
+    return bridgeFailure(err);
+  }
+}
+
+export async function bridgeReleaseLookup() {
+  try {
+    return await engineReleaseLookup();
   } catch (err) {
     return bridgeFailure(err);
   }

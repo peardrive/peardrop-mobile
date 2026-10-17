@@ -8,30 +8,54 @@ import React, {
   useState,
 } from "react";
 import { useBackend } from "./backend";
-import type { OpenLinkResult } from "./types";
+import type { OpenLinkResult, TransferSummary } from "./types";
 import {
   appendDownloadResults,
   loadDownloaded,
   type DownloadedItem,
 } from "./receivedFilesStorage";
 import {
+  createWaitingShare,
+  deleteShare,
   loadShare,
+  loadShares,
   markFilesDownloaded,
+  patchShare,
   rememberDriveSession,
+  subscribeShares,
   upsertShare,
   type ReceivedShare,
   type ReceivedShareFile,
 } from "./receivedSharesStorage";
-// The fetch/keep rule and the offline picker's
-// adapter are pure modules because this whole file is
-// unreachable from the suite. Do NOT re-inline either one here — the
-// hand-rolled split these replaced is the defect they exist to close.
+import {
+  rowLifecycle,
+  type RowLifecycleEvent,
+  type RowLifecycleState,
+  type SelectionDiff,
+} from "../lib/rowLifecycle";
+import { rowLifecycleFromShare } from "../lib/rowLifecycleFromShare";
+import { senderLookupFor } from "../lib/senderLookup";
+import { isLiveSessionRefusal } from "../lib/liveSessionGuard";
+import {
+  GRAB_QUEUED_TOAST,
+  GRAB_TOAST_DELAY_MS,
+  shareView,
+  type FlapHold,
+  type ShareRecordLike,
+  type ShareView,
+} from "../lib/shareModel";
+import { planStallRetry } from "../lib/stallRetry";
+// The fetch/keep rule and the offline picker's adapter stay pure modules: this file is unreachable from the suite, and re-inlining them restores the defect they close.
 import {
   heldNames,
   partitionGrabNames,
   storedShareToOpenResult,
   type StoredFileLike,
 } from "../lib/receivedRegrab";
+import {
+  buildShareKeyDriveIndex,
+  resolveReceivedTransfer,
+} from "../lib/receiveProgress";
 import { addReceived } from "./statsStorage";
 import { runGuardedResolve, type ResolveTimerRef } from "./resolveGuard";
 import { extractKey, normalizeShareLink, shouldAttemptResolve } from "../lib/links";
@@ -41,15 +65,30 @@ import { useDevMode } from "./devModeStorage";
 import RNFS from "react-native-fs";
 import { baseName } from "../lib/files";
 import { healShareFiles } from "../lib/receivedFileHealth";
-import { userFacingError } from "../lib/errorMessage";
+import { errorCause } from "../lib/errorMessage";
 import { ensurePermission as ensureNotificationPermission } from "../lib/notifications";
 import { log as debugLog, logStructuredError } from "../lib/debugLog";
-// The verdict and the ordering both live in pure
-// modules under src/lib because a .tsx cannot be imported by jest in this
-// project (`jest.config.js` is testEnvironment: "node", no react-native
-// transform). Do NOT re-inline either one here; inlining is
-// exactly what made the old `files.length` guard unassertable.
+// The verdict and the ordering live in pure modules because jest cannot import a .tsx here; inlining is what made the old guard unassertable.
 import { classifyResolve } from "../lib/resolveOutcome";
+import {
+  isLoopStatus,
+  matchSelection,
+  statusAfterResolve,
+} from "../lib/waitingStatus";
+import {
+  classifyGrabFailure,
+  classifyResolveFailure,
+  resumedToast,
+  savesWaitingRow,
+  senderAvailableToast,
+  WAITING_SAVED_TOAST,
+} from "../lib/waitingDisposition";
+import {
+  createWaitingLoop,
+  TICK_MS,
+  type WaitingLoop,
+  type WaitingRow,
+} from "../lib/waitingLoop";
 import { previewHandoffFor, type ResolveHandoffKind } from "../lib/previewHandoff";
 import {
   disposeResolve,
@@ -61,14 +100,11 @@ import {
   isDemoLink,
   materializeDemoFiles,
 } from "../lib/demo";
-// tone-tagged notices — "wait" (normal wait, muted) vs
-// "error" (real failure, red). Tone rule and timeout copy live in src/lib so
-// the suite reaches them.
+// Tone-tagged notices: a normal wait is muted, a real failure is red. The rule lives in a pure module so the suite reaches it.
 import {
   ALREADY_HELD_MESSAGE,
   linkNotice,
   noticeForResolveFailure,
-  RESOLVE_TIMEOUT_MESSAGE,
   STILL_RESOLVING_MESSAGE,
   type LinkNotice,
 } from "../lib/resolveNotice";
@@ -79,17 +115,14 @@ type ShareLinkFlowApi = {
   setLinkDraft: (s: string) => void;
   resolving: boolean;
   linkError: LinkNotice | null;
-  /**
-   * bumped when the 30 s resolve guard fires. MainScreen
-   * watches this and closes the Receive sheet — the timeout's message goes out
-   * as a top-level info toast instead of an inline card, so the user lands
-   * back on the list rather than staring at a dead sheet. One-shot signal,
-   * same pattern as `manualEntryTick`.
-   */
+  /** Bumped when the 30 s resolve guard fires; MainScreen closes the sheet and the message goes out as a toast. */
   resolveTimeoutTick: number;
   /** Bumped when a resolve succeeds and the picker takes over; MainScreen
    *  hides the Receive sheet on it. Not a close — the resolve succeeded. */
   previewOpenedTick: number;
+  /** Bumped when a link is saved as a waiting row; MainScreen closes the
+   *  Receive sheet on it, or the new row stays hidden behind it. */
+  waitingSavedTick: number;
   sessionDriveId: string | null;
   lastResolvedLink: string;
   openResult: OpenLinkResult | null;
@@ -97,69 +130,29 @@ type ShareLinkFlowApi = {
   closePreview: () => void;
   qrVisible: boolean;
   setQrVisible: (v: boolean) => void;
-  /**
-   * v5 polish: bumped when the QR scanner's "Enter link manually" affordance
-   * is tapped. MainScreen watches this and opens the Receive sheet with the
-   * paste input auto-focused. One-shot signal — consumers read the number,
-   * open on change, no explicit clear needed.
-   */
+  /** Bumped when the scanner's manual-entry affordance is tapped; MainScreen opens Receive with the input focused. */
   manualEntryTick: number;
   requestManualEntry: () => void;
-  /**
-   * open the file picker over a stored received share,
-   * rendered from disk, without waiting for the sender to be found. Kicks off
-   * the resolve the grab will need in parallel. No-op for an empty record.
-   */
+  /** Open the picker over a stored share rendered from disk, starting the resolve in parallel. No-op when empty. */
   openStoredSharePicker: (share: ReceivedShare) => void;
   downloadAllBusy: boolean;
+  /** The last grab failed for a real reason, not an absent sender. */
+  grabFailed: boolean;
   downloadAllFromPreview: () => Promise<void>;
   downloadSelectedFromPreview: (fileNames: string[]) => Promise<void>;
-  /**
-   * Resolves a scanned link immediately. `writeDraft` also puts it in the
-   * Receive input, so the × and the retry icon work — opt-in per call site,
-   * because the deep-link bridge must NOT leave a link in a sheet the user
-   * never opened.
-   */
+  /** Resolves a scanned link at once. `writeDraft` is opt-in: the deep-link bridge must not leave a link in a sheet nobody opened. */
   resolveFromScan: (text: string, opts?: { writeDraft?: boolean }) => Promise<void>;
   /** Re-runs the resolve against whatever's currently in linkDraft. */
   retryResolve: () => Promise<void>;
-  /**
-   * Re-runs the resolve for the reopen picker, against `lastResolvedLink`.
-   * Separate from `retryResolve` because that one reads `linkDraft`, which the
-   * reopen path never sets.
-   */
+  /** Re-runs the resolve for the reopen picker against `lastResolvedLink`, which `retryResolve` never reads. */
   relookupPreview: () => Promise<void>;
   abortResolving: () => void;
-  /**
-   * IDs of already-downloaded files matching the most recent paste/scan.
-   * ReceiveScreen highlights these and calls `clearHighlights` when the
-   * flash animation finishes.
-   */
-  highlightedDownloadedIds: string[];
-  clearHighlights: () => void;
-  /**
-   * Names of files in the currently-resolved manifest that the user
-   * already has on disk (matched by `(shareLink, fileName)` AND the
-   * underlying file still exists). SharePreviewModal uses this to badge
-   * those rows, default them unchecked, and reduce their opacity.
-   * Empty array when the resolve isn't a partial-match case.
-   */
+  /** Manifest files already on disk, matched by link and name; the preview badges them and defaults them unchecked. */
   alreadyDownloadedNames: string[];
-  /**
-   * file names the preview modal should pre-check when it
-   * opens — typically populated by the "tap a missing child file"
-   * smart re-grab flow. null = no preselection (modal applies its
-   * default selection rules).
-   */
+  /** File names the preview should pre-check; null leaves the modal to its own default selection. */
   pendingPreselection: string[] | null;
   setPendingPreselection: (names: string[] | null) => void;
-  /**
-   * the moment-of-completion signal for a download. Set to
-   * `{ shareKey, names, at }` immediately after `markFilesDownloaded`
-   * fires. Consumers (MainScreen) read it once and call
-   * `consumeCompletedDownload` to clear, which makes it a one-shot
-   * trigger rather than persisting state.
-   */
+  /** One-shot completion signal, cleared by `consumeCompletedDownload` so it never becomes persisted state. */
   lastCompletedDownload: {
     shareKey: string;
     names: string[];
@@ -167,22 +160,44 @@ type ShareLinkFlowApi = {
     saved: number;
     /** Files the engine skipped. Non-zero means a PARTIAL grab. */
     failed: number;
-    /**
-     * the user stopped this grab part-way. `saved` still counts
-     * what landed; `failed` is meaningless here because the remaining files
-     * were never attempted.
-     */
+    /** Stopped part-way: `saved` counts what landed, and `failed` means nothing because the rest were never attempted. */
     cancelled?: boolean;
     at: number;
   } | null;
   consumeCompletedDownload: () => void;
+  /** Look this row up right now, with its backoff reset. */
+  retryWaitingRow: (shareKey: string) => Promise<void>;
+  /** Leave the loop. Downloaded files stay; an empty waiting row is removed. */
+  stopWaitingRow: (shareKey: string) => Promise<void>;
+  /** The open picker's view: every string, tick, percentage and button it draws comes from here and nothing else, so there is no second code path to drift. */
+  pickerView: ShareView | null;
+  /** Is the real record still loading behind the picker? The picker holds its tick seeding while true, so a draft cannot seed off the synthesised stand-in. */
+  pickerHydrating: boolean;
+  /** One anti-flap hold per share key, shared by every surface: two holds are two sources of truth about the same question. */
+  // A mutable map rather than state, because the hold is an output of rendering and storing it would re-render on every decision.
+  flapHolds: Map<string, FlapHold>;
+  /** Commit the picker's draft. The only selection write: ticks and the x are a draft until the button is tapped. */
+  // `stop` is separate from `remove` because only the first should tear a pipe down.
+  confirmSelection: (diff: SelectionDiff) => Promise<void>;
 };
 
 const ShareLinkFlowContext = createContext<ShareLinkFlowApi | null>(null);
 
 export function ShareLinkFlowProvider({ children }: { children: React.ReactNode }) {
-  const { ready, openLink, startDownload, abortOpen, cancelTransfer, deactivateDrive } =
-    useBackend();
+  const {
+    ready,
+    openLink,
+    startDownload,
+    abortOpen,
+    /** The purging handle is in scope for exactly one caller, `rejectUnusableResolve`, which purges only a store the resolve itself created; every user-stop path here uses the non-purging one. */
+    cancelTransfer,
+    cancelInFlight,
+    deactivateDrive,
+    lookupPeers,
+    appActive,
+    transfers,
+    drives,
+  } = useBackend();
   const { show: showToast } = useToast();
   const { enabled: devMode } = useDevMode();
   const [linkDraft, setLinkDraftRaw] = useState("");
@@ -190,10 +205,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   const [linkError, setLinkError] = useState<LinkNotice | null>(null);
   const [resolveTimeoutTick, setResolveTimeoutTick] = useState(0);
   const [previewOpenedTick, setPreviewOpenedTick] = useState(0);
+  const [waitingSavedTick, setWaitingSavedTick] = useState(0);
 
-  // Wrap setLinkDraft so any input edit immediately clears the error.
-  // Without this the previous error sticks until the next resolve completes,
-  // which makes the screen feel unresponsive after a failure.
+  // Clear the error on any edit, or it sticks until the next resolve and the screen feels dead.
   const setLinkDraft = useCallback((next: string) => {
     setLinkDraftRaw(next);
     setLinkError(null);
@@ -212,18 +226,16 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     setManualEntryTick((n) => n + 1);
   }, []);
   const [downloadAllBusy, setDownloadAllBusy] = useState(false);
-  const [highlightedDownloadedIds, setHighlightedDownloadedIds] = useState<string[]>([]);
+  /** The last grab failed for a reason that is not an absent sender. Drives the
+   * picker's one error status; a missing peer queues instead and never sets it. */
+  const [grabFailed, setGrabFailed] = useState(false);
   const [alreadyDownloadedNames, setAlreadyDownloadedNames] = useState<string[]>([]);
-  // pendingPreselection survives across debounced resolve attempts
-  // (so retries preserve it) but clears on explicit clear, modal close, or
-  // download completion.
+  // Survives debounced retries; cleared on explicit clear, modal close or completion.
   const [pendingPreselection, setPendingPreselectionState] = useState<string[] | null>(null);
   const setPendingPreselection = useCallback((names: string[] | null) => {
     setPendingPreselectionState(names && names.length > 0 ? names : null);
   }, []);
-  // one-shot completion signal — instead of "did this share have a recent
-  // download?", the model is "what's the just-completed download?" Consumers
-  // read once on state change and call consumeCompletedDownload to clear.
+  // One-shot: consumers read it on change and call consumeCompletedDownload to clear.
   const [lastCompletedDownload, setLastCompletedDownload] = useState<{
     shareKey: string;
     names: string[];
@@ -236,74 +248,27 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     setLastCompletedDownload(null);
   }, []);
 
-  const clearHighlights = useCallback(() => {
-    setHighlightedDownloadedIds([]);
-  }, []);
-
   const resolveGen = useRef(0);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * The one draft value a scan wrote and has already resolved itself.
-   *
-   * A scan resolves immediately AND writes the draft, because the input, its ×
-   * and the retry icon are all keyed on `linkDraft`. Writing it re-arms the
-   * 450 ms debounce, and a second resolve is not merely redundant: it bumps
-   * the generation and calls `abortOpen()`, killing the first mid-flight so an
-   * `out.driveId` it produced never gets torn down. One-shot, compared by value.
-   */
+  /** The draft a scan has already resolved itself. Re-arming the debounce would bump the generation and abort that
+   *  resolve mid-flight, orphaning a driveId it had produced. One-shot, compared by value. */
   const draftWrittenByScanRef = useRef<string | null>(null);
-  /**
-   * The last COMMITTED `linkDraft`, mirrored so an event handler can read it
-   * without taking it as a dependency.
-   *
-   * `resolveFromScan` needs to know whether its write will actually change the
-   * draft: writing an identical value is a no-op, no effect re-run follows, and
-   * a one-shot armed for it is never consumed — it then swallows the next
-   * genuine resolve of that same link. Taking `linkDraft` as a dep instead
-   * would re-create the callback on every keystroke.
-   */
+  /** The last committed draft, mirrored so a handler can read it without taking it as a dependency. Writing an
+   *  identical value is a no-op, so a one-shot armed for it would swallow the next genuine resolve of that link. */
   const linkDraftRef = useRef("");
   /** Synchronous re-entry latch for `relookupPreview` — see its comment. */
   const relookupInFlightRef = useRef(false);
   const resolveTimerRef = useRef<ResolveTimerRef["current"]>(null);
+  /** Share keys with a user-started grab in flight: the loop's own per-row guard cannot see a grab the user started from the picker. */
+  const busyRowsRef = useRef<Set<string>>(new Set());
+  /** How the current session was obtained. A ref, not state, because the close path reads it synchronously inside a callback whose identity must not change. */
+  const sessionReusedRef = useRef<"session" | "storage" | null>(null);
+  /** The loop is built once and reads its deps through refs, because a loop recreated on every render would restart its own round. */
+  const lookupPeersRef = useRef(lookupPeers);
+  lookupPeersRef.current = lookupPeers;
 
-  /**
-   * F4 — dismissing a preview now TEARS THE SESSION DOWN.
-   *
-   * ## What it cost to be three state setters
-   *
-   * `engineOpenDrive` leaves a live session behind on a successful resolve: a
-   * Hyperswarm, a Hyperdrive and a Corestore, registered in `activeDrives`
-   * (`hyperdrive-engine.mjs`, the `activeDrives.set(driveId, session)` at the
-   * end of `engineOpenDrive`) with download tracking bound to it. Dismissing
-   * the preview touched none of it — the engine's own comment above that
-   * `swarm.join` says so: *"the dismissal path is three RN state setters and
-   * touches the engine not at all … the window is exactly the
-   * previewed-and-never-grabbed session, which is the ordinary case rather
-   * than an exotic one."*
-   *
-   * The consequence is a transfer on BOTH phones. The receiver's connection
-   * makes the host emit `peer-connected`, which mints a transfer row there
-   * with `peersConnected > 0`, which `classifyTransfer` calls `upload` — so
-   * merely LOOKING at someone's link pins their foreground service up, and
-   * keeps it pinned, because the peer never goes away.
-   *
-   * ## Why this is safe, and the one fact the safety rests on
-   *
-   * A successful grab does NOT come through here. `runDownload` closes the
-   * modal with its own direct `setPreviewVisible(false)` (see the comment
-   * in that function), for its own reason — it wants the transfer
-   * card visible while the fetch runs. So this teardown cannot fire under a
-   * running download. **If anyone ever routes `runDownload` through
-   * `closePreview`, this must move.** `engineDeactivateDrive` does guard
-   * itself against a live `_dlRunning` loop, but that guard is a
-   * backstop, not the reason this is safe.
-   *
-   * Storage is preserved: deactivate tears down the swarm and closes the
-   * drive, it does not purge. A re-resolve of the same link re-opens it.
-   *
-   * Fire-and-forget on purpose — dismissing a modal must not await the DHT.
-   */
+  /** Dismissing a preview tears the session down. Leaving it up keeps a peer attached on the host, which mints an
+   *  upload transfer there and pins its foreground service for a share that was only ever looked at. */
   const closePreview = useCallback(() => {
     setPreviewVisible(false);
     setLinkError(null);
@@ -318,29 +283,19 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     }
     void abortOpen();
     setResolving(false);
-    // The demo drive has no engine session to release.
-    if (sessionDriveId && sessionDriveId !== DEMO_DRIVE_ID) {
+    // Never release a session this preview did not open: `engineOpenDrive` reuses the share's own drive, so
+    // `sessionDriveId` can name a live re-share, and releasing it would silently stop seeding.
+    if (
+      sessionDriveId &&
+      sessionDriveId !== DEMO_DRIVE_ID &&
+      sessionReusedRef.current !== "session"
+    ) {
       void deactivateDrive(sessionDriveId).catch(() => {});
     }
   }, [abortOpen, deactivateDrive, sessionDriveId]);
 
-  /**
-   * Classify the dedup match between the resolved manifest and
-   * the user's existing downloaded files. Three outcomes:
-   *
-   * - "full":    every manifest file is already on disk under this link →
-   *              skip the preview, highlight the rows, toast.
-   * - "partial": some manifest files match, others don't → open the preview
-   *              with `alreadyDownloadedNames` populated; new files default
-   *              checked, already-downloaded default unchecked + badged.
-   * - "none":    no overlap (or all stored entries deleted from disk) →
-   *              open the preview normally, no badges.
-   *
-   * Match key is `(shareLink, fileName)` — never `fileName` alone (so two
-   * files with the same name from different shares are never conflated).
-   * `loadDownloaded()` already filters out entries whose underlying file
-   * is missing from disk, so the candidates list is implicitly on-disk.
-   */
+  /** Classify the resolved manifest against files already on disk: full match skips the preview, partial badges
+   *  the known rows unchecked, none opens normally. Keyed on link AND name, never name alone. */
   const classifyDedup = useCallback(
     (
       candidates: DownloadedItem[],
@@ -354,15 +309,8 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       if (candidates.length === 0 || manifestNames.length === 0) {
         return { kind: "none", alreadyNames: [], matchedIds: [] };
       }
-      // Manifest entries from Hyperdrive (and the demo
-      // synthetic manifest) carry leading-slash paths like "/welcome.txt",
-      // but appendDownloadResults strips paths via baseName() — stored
-      // DownloadedItem.name is "welcome.txt" without the slash. Without
-      // normalizing both sides, the lookup would always miss → the modal
-      // would show every file as new even when some were already on disk.
-      // Key the map on baseName() so prefixes don't matter; preserve the
-      // original manifest name in `alreadyNames` so SharePreviewModal's
-      // existing `selected.has(f.name)` checks still match.
+      // Manifest names carry a leading slash and stored names do not, so both sides are keyed on baseName;
+      // the original manifest name is preserved so the modal's own selection checks still match.
       const candidateByBaseName = new Map<string, DownloadedItem>();
       for (const c of candidates) candidateByBaseName.set(baseName(c.name), c);
       const alreadyNames: string[] = [];
@@ -385,10 +333,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     [],
   );
 
-  // persist / refresh the per-share record from a resolved
-  // manifest. The new record's file list comes from the engine (canonical
-  // current state of the share); any per-file `isDownloaded` / `localPath`
-  // metadata the user already had is preserved by name match.
+  // Refresh the stored record from a resolved manifest, preserving per-file downloaded metadata by name.
   const reconcileShareRecord = useCallback(
     async (manifest: OpenLinkResult, normalizedLink: string): Promise<ReceivedShare | null> => {
       const key = extractKey(normalizedLink);
@@ -398,33 +343,16 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         (existing?.files ?? []).map((f) => [baseName(f.name), f]),
       );
       const manifestFiles = manifest.files ?? [];
-      /**
-       * `isDownloaded: true` cannot simply carry forward whenever a prior
-       * record has a `localPath` — a file deleted outside the app must not
-       * stay "on device" for the life of the install: the row's re-grab
-       * affordance is gated on `isMissing`, and a re-paste must not answer
-       * *"You've already got these"* for a file that is gone.
-       *
-       * The stat happens here, at resolve time, inside the user's paste
-       * gesture and in the foreground — deliberately not on a timer, which in
-       * this app would have nowhere to run. One `RNFS.exists` per file that
-       * claims to be downloaded; files that never were are not probed.
-       *
-       * A probe that throws counts as **absent**. Demoting a file that is
-       * really there costs one re-grab; keeping one that is gone is the defect.
-       */
+      /** `isDownloaded` is re-probed here rather than carried forward: a file deleted outside the app must not stay
+       *  "on device" forever. A probe that throws counts as absent — a needless re-grab beats claiming a missing file. */
       const onDisk = new Map<string, boolean>();
       for (const f of existingByName.values()) {
         if (!f.isDownloaded || !f.localPath || onDisk.has(f.localPath)) continue;
         try {
           onDisk.set(f.localPath, await RNFS.exists(f.localPath));
         } catch {
-          // Deliberately NOT `false`. A
-          // thrown `RNFS.exists` means "could not check", not "gone" — and
-          // recording it as `false` would demote the entry and strip its
-          // `localPath`, orphaning bytes that Delete could then no longer
-          // unlink. Leaving it unset makes the probe return `undefined`, which
-          // `healShareFiles` treats as "hold the record".
+          // Deliberately not `false`: a thrown probe means "could not check", and recording it as gone would strip
+          // the localPath, orphaning bytes that Delete could no longer unlink.
         }
       }
       const healed = healShareFiles({
@@ -444,33 +372,20 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       const next: ReceivedShare = {
         shareKey: key,
         shareLink: normalizedLink,
-        /**
-         * The engine drive id, persisted here.
-         *
-         * It already crosses the RPC on every resolve. Without persisting it,
-         * the only share-key → driveId mapping in the app is
-         * `buildShareKeyDriveIndex`'s in-memory `Map`, rebuilt from
-         * `engineListDrives`, which **does not survive a restart** — so a share
-         * the user walked away from would have no id to be re-opened by.
-         *
-         * `?? existing?.driveId` and not a bare `manifest.driveId`: a resolve
-         * that somehow answers without one must not be the thing that erases
-         * the id a previous resolve earned. `upsertShare`'s merge guard would
-         * also catch that, and this is the belt to its braces — the guard is
-         * deliberately narrow and a second caller could be written tomorrow.
-         */
+        /** The engine drive id is persisted because the only other share-key mapping is an in-memory index that does
+         *  not survive a restart. Falling back to the existing id stops a resolve without one from erasing it. */
         driveId: manifest.driveId ?? existing?.driveId,
-        /**
-         * Not news at resolve time — `rememberDriveSession` owns writing
-         * it after a grab — but it is carried forward explicitly because this
-         * literal is a FRESH record: omitting the key relies on the merge
-         * guard, and stating it does not.
-         */
+        /** Carried forward explicitly because this literal is a fresh record; omitting it would rely on the merge guard. */
         downloadFolder: existing?.downloadFolder,
         shareName: manifest.shareName || existing?.shareName || "Share",
         firstSeenAt: existing?.firstSeenAt ?? now,
         lastUpdatedAt: existing?.lastUpdatedAt ?? now,
         files: reconciledFiles,
+        // A resolve carries a newer file list, never a newer intent: a row the
+        // user had queued or paused keeps both its status and its selection.
+        status: statusAfterResolve(existing?.status, reconciledFiles),
+        selection: existing?.selection,
+        missing: existing?.missing,
       };
       try {
         await upsertShare(next);
@@ -482,95 +397,86 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     [],
   );
 
-  /**
-   * The single rejection route for a resolve whose manifest did not
-   * replicate.
-   *
-   * Extracted out of `applyDedupClassification` because it is needed at
-   * **two** points that are deliberately at different depths: `runResolve`
-   * calls it *before* anything is persisted, and
-   * `applyDedupClassification` keeps it as a second line of defence for any
-   * future call site that reaches the classifier directly. Both must do the
-   * same four things, so there is one copy of them.
-   *
-   * What this branch is for: the engine's `drive.update({ wait: true })`
-   * resolves on head metadata, NOT on content-blob replication. After it
-   * resolves, the engine tries `/.peardrop.json` (whose blob may not have
-   * streamed yet) and falls back to `drive.list("/")`, which only sees
-   * locally-replicated entries. In that window a resolve can come back with no
-   * manifest — and, because of the fallback, sometimes with files anyway.
-   * Treat it as a transient failure: friendly error, fire-and-forget cleanup of
-   * the half-formed drive engine-side so retries don't accumulate stale
-   * `activeDrives` entries, and let the user hit "Try again" once the
-   * connection is warm.
-   */
+  /** A resolve that found nobody becomes a row, not an error, so the user is returned to the list with a row that says what is happening. */
+  // An existing record is kept as it is, so a second paste of a link already queued cannot demote it and lose its selection.
+  const saveWaitingRow = useCallback(
+    async (link: string, why: string) => {
+      try {
+        const row = await createWaitingShare(link);
+        if (!row) {
+          // A link with no extractable key should have been caught by the classifier, so say so rather than fail silently.
+          debugLog("warn", "rn.waiting", `no key in link, no row saved (${why})`);
+          return;
+        }
+        debugLog("info", "rn.waiting", `row saved status=${row.status} reason=${why}`);
+        // The status is checked rather than assumed: promising to keep looking for a row the loop will never pick up is a plausible-but-false line.
+        if (!isLoopStatus(row.status)) {
+          haptics.error();
+          setLinkError(noticeForResolveFailure(RESOLVE_NO_MANIFEST_MESSAGE));
+          return;
+        }
+        setLinkError(null);
+        haptics.warning();
+        showToast(WAITING_SAVED_TOAST, { kind: "info" });
+        // Bumped last, after the row exists: the early returns above keep the
+        // sheet open so their error is visible.
+        setWaitingSavedTick((n) => n + 1);
+      } catch (err: unknown) {
+        logStructuredError("rn.waiting", "could not save a waiting row", err);
+      }
+    },
+    [showToast],
+  );
+
+  /** The single rejection route for a resolve whose manifest did not replicate, called at two depths so both do the same four things. */
+  // The engine's update resolves on head metadata, not on blob replication, so in that window a resolve can return no manifest and sometimes files anyway.
   const rejectUnusableResolve = useCallback(
     (manifest: OpenLinkResult, where: string) => {
-      // The engine logs why the manifest was
-      // unavailable; this records what the user actually saw, WHICH PREDICATE
-      // decided it, and that we purged the half-formed drive. `files` is
-      // reported for diagnosis only — it is explicitly not what was gated on.
+      // Records what the user saw, which predicate decided it, and which branch the drive took; the file count is for diagnosis and is not what was gated on.
       debugLog(
         "warn",
         "rn.resolve",
         `no-manifest resolve rejected at ${where} drive=${manifest.driveId ?? "?"} ` +
           `hasManifest=${manifest.hasManifest} files=${manifest.files?.length ?? 0} ` +
-          `- gated on hasManifest (NOT files.length); showing retry copy and purging the half-formed drive`,
+          `- gated on hasManifest (NOT files.length); showing retry copy; ` +
+          `reused=${manifest.reused ?? "?"} so the drive is ${
+            manifest.reused ? "deactivated only" : "purged"
+          }`,
       );
       haptics.warning();
       if (manifest.driveId) {
-        void cancelTransfer(manifest.driveId, { purge: true });
+        /** Only a store this resolve created is purged; a reused store may hold blocks the user wants, so it is deactivated instead. */
+        // The reuse field is a string or absent, and the engine encodes created-by-this-call as absent, so an equality test against false would never purge.
+        if (!manifest.reused) {
+          void cancelTransfer(manifest.driveId, { purge: true });
+        } else {
+          void deactivateDrive(manifest.driveId);
+        }
       }
-      // This must not be the literal "Couldn't find
-      // any files at this link…" — that is a claim about file COUNT, and the
-      // guard here is not keyed on file count and cannot make that
-      // claim. It is an EXPORTED CONSTANT rather than a literal so
-      // that the copy deny-list applies to it mechanically — a string in a .tsx
-      // cannot be reached by a test in this project. See
-      // `src/lib/resolveDisposition.ts` and its `__tests__`.
-      // tone "wait" — the manifest not having replicated yet
-      // is one of the two normal-wait cases, not a failure. Rendered muted
-      // with an info icon, never red.
+      // Not a claim about file count, because this guard is not keyed on file count. An exported constant, not a
+      // literal, so the copy deny-list can reach it; tone is a normal wait, never red.
       setLinkError(linkNotice("no-manifest", RESOLVE_NO_MANIFEST_MESSAGE));
     },
-    [cancelTransfer],
+    [cancelTransfer, deactivateDrive],
   );
 
   const applyDedupClassification = useCallback(
     (
       kind: "full" | "partial" | "none",
       alreadyNames: string[],
-      matchedIds: string[],
       manifest: OpenLinkResult,
       normalizedLink: string,
     ) => {
-      // A guard keyed on
-      // `!manifest.files || manifest.files.length === 0` would be wrong
-      // in BOTH directions:
-      //
-      //  - a share whose manifest legitimately declares zero files RESOLVED,
-      //    and file-count keying would report it as a failure (the destructive
-      //    direction — `reconcileShareRecord`'s keep-loop would then drop every
-      //    not-yet-downloaded entry of a share the user already held);
-      //  - files produced by the engine's `drive.list("/")` fallback with no
-      //    manifest at all would be reported as a success.
-      //
-      // `hasManifest` is the only value that separates those, and it already
-      // crosses the RPC. `classifyResolve` gates on `=== true` and fails closed.
-      //
-      // NOTE this is now the SECOND line of defence: `runResolve` classifies
-      // before it persists, so in the ordinary flow control never reaches here
-      // with an unusable result. It is kept because a guard that only runs
-      // when the caller remembered to call it is not a guard.
+      // Recorded once here rather than at the three `setSessionDriveId` calls
+      // below, so the three cannot disagree about how this session was obtained.
+      sessionReusedRef.current = manifest.reused ?? null;
+      // Keying on file count would be wrong both ways: a share legitimately declaring zero files would read as a
+      // failure, and the engine's directory-listing fallback would read as a success. Only `hasManifest` separates them.
       if (classifyResolve(manifest) !== "usable") {
         rejectUnusableResolve(manifest, "applyDedupClassification");
         return;
       }
-      // LLLLLL: a successful resolve clears the link input — the
-      // user has moved past "I'm typing a link" into "I'm looking at what's
-      // in the share." Failures leave the link in place so retry has
-      // something to work with. Same for the smart-regrab preselection:
-      // the modal is about to consume it, so wiping it here is harmless.
+      // A successful resolve clears the input; failures keep it so retry has something to work with.
       const clearOnSuccess = () => {
         setLinkDraftRaw("");
         setPendingPreselectionState(null);
@@ -583,14 +489,13 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         if (handoff.closesReceiveSheet) setPreviewOpenedTick((n) => n + 1);
       };
       if (kind === "full") {
-        // Every manifest file is already on disk. Skip
-        // the preview entirely; the Receive screen flashes the matching
-        // rows via highlightedDownloadedIds.
-        setHighlightedDownloadedIds(matchedIds);
+        // Every manifest file is already on disk, so the preview is skipped.
         setAlreadyDownloadedNames([]);
         setSessionDriveId(manifest.driveId ?? null);
         setLastResolvedLink(normalizedLink);
         setOpenResult(manifest);
+        // A resolve only lands against an announcer that answered, so this is the sender-online signal.
+        setLastResolveAt(Date.now());
         handOffToPreview("full");
         haptics.actionDone();
         showToast("You've already got these.");
@@ -604,6 +509,8 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setSessionDriveId(manifest.driveId ?? null);
         setLastResolvedLink(normalizedLink);
         setOpenResult(manifest);
+        // A resolve only lands against an announcer that answered, so this is the sender-online signal.
+        setLastResolveAt(Date.now());
         handOffToPreview("partial");
         haptics.actionDone();
         // In the preview's banner, not a toast: the preview is opening in the
@@ -617,6 +524,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       setSessionDriveId(manifest.driveId ?? null);
       setLastResolvedLink(normalizedLink);
       setOpenResult(manifest);
+      setLastResolveAt(Date.now());
       handOffToPreview("none");
       haptics.actionDone();
       clearOnSuccess();
@@ -631,24 +539,10 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         setLinkError(linkNotice("malformed", "That doesn't look like a PearDrop link."));
         return;
       }
-      // Report "looking" synchronously, in the caller's own commit.
-      //
-      // `runGuardedResolve` fires `onBegin` only after awaiting `abortOpen()`,
-      // a worklet RPC round trip, so `resolving` stayed false across the commit
-      // that opens the reopen picker — and `pickerLookupStatus` reads
-      // "null session, not resolving" as `notFoundYet`. The picker's first
-      // paint therefore claimed no sender had been found and offered an
-      // enabled "Look again" for a lookup that had not started.
-      //
-      // Safe against a stranded flag: the malformed return above is the only
-      // exit that precedes this line, the demo branch clears it explicitly,
-      // and the guarded path clears it in `onFinally` (or a superseding
-      // resolve clears it instead).
+      // Report "looking" synchronously: the guarded path only fires onBegin after an RPC round trip, so the picker's
+      // first paint claimed no sender had been found and offered a Look again for a lookup that had not started.
       setResolving(true);
-      // Find candidate dedup matches: downloaded entries that came from
-      // THIS link AND whose underlying file still exists on disk.
-      // loadDownloaded() filters out missing files for us, so this list is
-      // already on-disk-only.
+      // Dedup candidates: entries from this link whose file still exists; loadDownloaded already drops missing ones.
       let candidates: DownloadedItem[] = [];
       try {
         const downloaded = await loadDownloaded();
@@ -660,10 +554,8 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         // If the probe fails we fall through to a normal resolve with no
         // dedup behavior (better than blocking the share over a JSON read).
       }
-      // per-share dedup. The new storage canonicalizes by share
-      // key, so a paste of a previously-grabbed link returns an existing
-      // record with the right `isDownloaded` flags. Legacy disk-based
-      // dedup stays as a fallback for shares that predate the new storage.
+      // Storage canonicalises by share key, so a re-paste returns the record with its downloaded flags intact.
+      // The disk-based path stays as a fallback for shares predating that storage.
       const reconcileAndDedup = async (
         out: OpenLinkResult,
       ): Promise<{ kind: "full" | "partial" | "none"; alreadyNames: string[]; matchedIds: string[] }> => {
@@ -677,9 +569,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
             if (hit?.isDownloaded) alreadyNames.push(n);
           }
         }
-        // Fall back to the disk-existing legacy items if the new storage
-        // didn't yield matches (covers any edge case where the migration
-        // didn't capture a record but the user still has the file).
+        // Fall back to disk-existing items when storage yields nothing, covering a record the migration missed.
         if (alreadyNames.length === 0) {
           const legacy = classifyDedup(candidates, out);
           return legacy;
@@ -693,31 +583,20 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         return { kind: "partial", alreadyNames, matchedIds };
       };
 
-      // Magic demo link: synthetic manifest from the bundled assets module.
-      // We still run the dedup classification so partial-match badges work
-      // for the demo (e.g., user added demo files via Settings then pastes
-      // peardrop://demo).
+      // Demo link: a synthetic manifest, still classified so partial-match badges behave as they do for real shares.
       if (isDemoLink(normalized)) {
         resolveGen.current++;
         const demoResult = getDemoOpenResult();
         setResolving(false);
         setLinkError(null);
-        // the demo path goes through the SAME
-        // classify-then-persist order as the real one. It never touches the
-        // engine, so the engine's `receive.no-manifest` gate cannot protect it
-        // — this call site is one of the three reasons the RN guard has to
-        // exist at all (see `src/lib/resolveDisposition.ts`). Today
-        // `getDemoOpenResult()` sets `hasManifest: true` (`src/lib/demo.ts`),
-        // so behaviour here is unchanged; the point is that it stays unchanged
-        // only while that stays true, and now that is enforced rather than
-        // assumed.
+        // The demo path never touches the engine, so the engine's no-manifest gate cannot protect it; this is one of
+        // the reasons the guard here has to exist, and it holds only while the demo keeps declaring a manifest.
         await disposeResolve(demoResult, {
           persist: () => reconcileAndDedup(demoResult),
           accept: (cls) =>
             applyDedupClassification(
               cls.kind,
               cls.alreadyNames,
-              cls.matchedIds,
               demoResult,
               normalized,
             ),
@@ -738,31 +617,14 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         },
         onSuccess: async (out) => {
           if (out.driveId) {
-            // Calling `reconcileAndDedup(out)` before classification would put
-            // the classification guard after the decision has already been
-            // made: `reconcileAndDedup` reaches
-            // `reconcileShareRecord` → `await upsertShare(next)`, so a
-            // manifest-less resolve would ALREADY have written a `files: []`
-            // `ReceivedShare` to peardrop-received-shares.json by the time the
-            // guard ran — and nothing deletes it. That persisted row would be a
-            // permanent `Share · 0 B` entry the user sees, so no change to the
-            // guard's predicate alone can fix it — the ordering itself has to
-            // classify first.
-            //
-            // `disposeResolve` classifies FIRST and calls `persist` only on a
-            // good resolve. Its ordering is unit-tested in
-            // `src/lib/__tests__/resolveDisposition.test.ts`; the order here is
-            // not expressible as a test because this file is a .tsx.
-            //
-            // The draft is deliberately kept on both routes so the user can
-            // re-paste, copy or edit; they clear it with the × on the input.
+            // Classify BEFORE persisting. Reconciling first writes an empty-file record that nothing deletes, leaving
+            // a permanent zero-byte row; no change to the guard's predicate fixes that, only the ordering does.
             await disposeResolve(out, {
               persist: () => reconcileAndDedup(out),
               accept: (cls) =>
                 applyDedupClassification(
                   cls.kind,
                   cls.alreadyNames,
-                  cls.matchedIds,
                   out,
                   normalized,
                 ),
@@ -771,22 +633,21 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           } else {
             // Server said ok but forgot the driveId — treat as a soft failure.
             haptics.error();
-            // The copy must not suggest "check your Wi-Fi?" — that is a
-            // diagnosis nothing in this app can make — there is no connectivity
-            // detection anywhere in the tree. A resolve that has not completed
-            // cannot distinguish "the host is offline" from "DHT discovery is
-            // still running", so it must claim neither.
+            // No connectivity diagnosis in the copy: nothing here can tell an offline host from a slow lookup.
             setLinkError(
               linkNotice("missing-drive-id", "Couldn't open that link — give it another go?"),
             );
           }
         },
-        onFailure: (message) => {
+        onFailure: (message, cause) => {
+          // Sender absent: save the link as a row rather than show an error the user can do nothing with.
+          const kind = classifyResolveFailure({ cause });
+          if (savesWaitingRow(kind)) {
+            void saveWaitingRow(normalized, `resolve-failed:${cause ?? "none"}`);
+            return;
+          }
           haptics.error();
-          // the engine's `receive.no-manifest` rejection
-          // arrives here carrying the SAME sentence as the RN-side guard
-          // ("Two routes, one sentence" — resolveDisposition.ts), so it gets
-          // the same "wait" tone. Every other message stays an error.
+          // The engine's no-manifest rejection carries the same sentence as the guard here, so it gets the same wait tone.
           setLinkError(noticeForResolveFailure(message));
         },
         onTimeout: () => {
@@ -794,13 +655,11 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           // pending open when we time out.
           void abortOpen();
           haptics.warning();
-          // the 30 s timeout is the other normal-wait case,
-          // and it does not leave an inline card at all — the app returns
-          // to the list. No linkError is set; the muted wait copy goes out as
-          // a top-level info toast, and the tick tells MainScreen to close
-          // the Receive sheet. The copy claims nothing about connectivity.
+          // The 30 s timeout leaves no inline card: the app returns to the list and the wait copy goes out as a toast.
           setLinkError(null);
-          showToast(RESOLVE_TIMEOUT_MESSAGE, { kind: "info" });
+          // The row replaces the wait toast, because it says the same thing
+          // and keeps saying it. The sheet still closes on the same tick.
+          void saveWaitingRow(normalized, "resolve-timeout");
           setResolveTimeoutTick((n) => n + 1);
         },
         onFinally: () => setResolving(false),
@@ -813,8 +672,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       applyDedupClassification,
       reconcileShareRecord,
       rejectUnusableResolve,
-      // the timeout's wait copy is a toast now.
-      showToast,
+      // The timeout's wait copy is now the saved row's toast, which
+      // `saveWaitingRow` owns — so that is the dependency, not `showToast`.
+      saveWaitingRow,
     ],
   );
 
@@ -851,22 +711,10 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     async (text: string, opts?: { writeDraft?: boolean }) => {
       setQrVisible(false);
       if (opts?.writeDraft) {
-        // One string for both, so the guard cannot miss by a normalisation
-        // difference. Ref first: it must be in place before the effect reads
-        // the new draft. Raw setter, so a pending preselection survives.
+        // One string for both so the guard cannot miss on normalisation; ref first, before the effect reads the draft.
         const shown = normalizeShareLink(text);
-        // Arm the one-shot ONLY when the write really changes the draft.
-        //
-        // Scanning the code for a link already sitting in the input (the
-        // normal case after a failed paste, since the draft is kept) is a
-        // no-op setter: React bails out, the debounce effect's deps are
-        // unchanged, it never re-runs, and the ref is never consumed. It then
-        // matches the NEXT time that value is typed or pasted and swallows a
-        // resolve the user did ask for — a silently dead paste.
-        //
-        // Skipping the write is also the right UX: the input already shows
-        // this link, and no debounce arms, so the scan's own resolve below
-        // stays the only one.
+        // Arm the one-shot only when the write really changes the draft. Re-writing the value already in the input is
+        // a no-op setter, so the ref is never consumed and would swallow the next resolve the user did ask for.
         if (shown !== linkDraftRef.current) {
           draftWrittenByScanRef.current = shown;
           setLinkDraftRaw(shown);
@@ -882,24 +730,10 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     await runResolve(linkDraft);
   }, [linkDraft, runResolve]);
 
-  /**
-   * "Look again" from the reopen picker.
-   *
-   * `retryResolve` cannot serve this: it is keyed on `linkDraft`, and
-   * `openStoredSharePicker` never writes one — so calling it from the picker
-   * returned immediately and did nothing. `lastResolvedLink` IS set there
-   * (`setLastResolvedLink(share.shareLink)`), so that is what to re-resolve.
-   *
-   * Re-entry guard, not politeness: `closePreview` bumps `resolveGen`, and a
-   * second concurrent resolve would bump it again and abort the first
-   * mid-flight, leaking its session.
-   */
+  /** Look again from the reopen picker, which `retryResolve` cannot serve because it reads a draft that path never
+   *  writes. The re-entry guard is load-bearing: a second concurrent resolve aborts the first and leaks its session. */
   const relookupPreview = useCallback(async () => {
-    // A ref, not `resolving`. The state flag is set a commit later than the
-    // tap, so two taps inside one abort-RPC round trip both passed it; the
-    // second bumped the generation and the first was then discarded before
-    // `onSuccess`, stranding a drive the engine had already registered. A ref
-    // is written synchronously, so the second tap cannot get past it.
+    // A ref, not the state flag: that is set a commit later, so two quick taps both passed it and stranded a drive.
     if (relookupInFlightRef.current) return;
     if (!lastResolvedLink) return;
     relookupInFlightRef.current = true;
@@ -922,112 +756,370 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     setResolving(false);
   }, [abortOpen]);
 
+  /** The one writer of an after-grab status, and the one place the transition is logged, so an export cannot miss one. */
+  // A stall with the peer attached is the one failure the waiting loop cannot help with; one timer per share, replaced not stacked.
+  const retryNowRef = useRef<(shareKey: string) => Promise<boolean>>(
+    async () => false,
+  );
+  const stallTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+  const scheduleStallRetry = useCallback(
+    (shareKey: string, state: RowLifecycleState) => {
+      const existing = stallTimersRef.current.get(shareKey);
+      if (existing) {
+        clearTimeout(existing);
+        stallTimersRef.current.delete(shareKey);
+      }
+      const plan = planStallRetry(state, Date.now());
+      if (plan.at === null) return;
+      const delay = Math.max(0, plan.at - Date.now());
+      debugLog(
+        "info",
+        "rowstate",
+        `rowstate retry key=${shareKey.slice(0, 6)} attempt=${plan.attempt} in=${delay}ms`,
+      );
+      stallTimersRef.current.set(
+        shareKey,
+        setTimeout(() => {
+          stallTimersRef.current.delete(shareKey);
+          void retryNowRef.current(shareKey);
+        }, delay),
+      );
+    },
+    [],
+  );
+
+  // Every pending timer dies with the provider, so a retry cannot fire into an
+  // unmounted tree.
+  useEffect(
+    () => () => {
+      for (const timer of stallTimersRef.current.values()) clearTimeout(timer);
+      stallTimersRef.current.clear();
+    },
+    [],
+  );
+
+  const applyRowEvent = useCallback(
+    async (shareKey: string, event: RowLifecycleEvent): Promise<void> => {
+      const key = String(shareKey || "").toLowerCase();
+      if (!key) return;
+      try {
+        const share = await loadShare(key);
+        if (!share) return;
+        const before = rowLifecycleFromShare(share);
+        const { state, log } = rowLifecycle(before, event, { shareKey: key });
+        // `log === null` is the reducer saying nothing moved. Writing anyway
+        // would bump `lastUpdatedAt` and reset the seven-day clock on a no-op.
+        if (!log) return;
+        /** A moved percentage is not a transition: the percentage is recomputed on every read, so an event that only advanced the bar has nothing to write. */
+        // Gated on the persisted set, so the log and the write agree by construction: if there is nothing to store, there is nothing to say.
+        const sameSelection =
+          before.selection.length === state.selection.length &&
+          before.selection.every((n, i) => n === state.selection[i]);
+        const movedSomethingStored =
+          before.status !== state.status ||
+          before.pauseReason !== state.pauseReason ||
+          before.stallRetries !== state.stallRetries ||
+          !sameSelection;
+        if (!movedSomethingStored) return;
+        debugLog("info", "rowstate", log);
+        /** Expiry is never stored, because it is a function of the timestamp and a stored value would still read expired after the record moved on. */
+        if (state.status === "expired") return;
+        await patchShare(key, {
+          status: state.status,
+          selection: state.selection.length > 0 ? [...state.selection] : undefined,
+          pauseReason: state.pauseReason ?? undefined,
+          stallRetries: state.stallRetries,
+        });
+        // After the write, so the retry re-reads the row just persisted; a no-op returned above.
+        scheduleStallRetry(key, state);
+      } catch (err: unknown) {
+        logStructuredError("rowstate", "could not record a row transition", err);
+      }
+    },
+    [scheduleStallRetry],
+  );
+
+  /** Drive to share key, for the two paths that start a download. */
+  // The derived index cannot serve here: a received drive is absent from the engine's drive list until its download has already finished.
+  const driveToShareRef = useRef<Map<string, string>>(new Map());
+
+  /** One bound drive per row. Binding supersedes, so a share has at most one drive and it is the one it is bound to now, not the newest seen. */
+  // Append-only, a share accumulated a drive id per resolve and the progress driver drove one row from all of them at once, dead drives included.
+  const bindDriveToShare = useCallback((driveId: string, shareKey: string) => {
+    const key = String(shareKey || "").toLowerCase();
+    if (!driveId || !key) return;
+    for (const [id, boundKey] of driveToShareRef.current) {
+      if (boundKey === key && id !== driveId) driveToShareRef.current.delete(id);
+    }
+    driveToShareRef.current.set(driveId, key);
+  }, []);
+
+  /** The open picker's share, re-read on every storage write, so the picker follows the same single source of truth the row does. */
+  const [pickerShare, setPickerShare] = useState<ReceivedShare | null>(null);
+
+  /** When the last resolve landed, and a one-second clock while the picker is open. */
+  // The model is a pure function of the time, and a peer that leaves emits one event and then silence, so a model recomputed only on an event cannot notice silence.
+  const [lastResolveAt, setLastResolveAt] = useState<number>(0);
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!previewVisible) return undefined;
+    setNowTick(Date.now());
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [previewVisible]);
+  useEffect(() => {
+    const key = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+    if (!previewVisible || !key) {
+      setPickerShare(null);
+      return;
+    }
+    let alive = true;
+    const refresh = () => {
+      void loadShare(key).then((s) => {
+        if (alive) setPickerShare(s);
+      });
+    };
+    refresh();
+    const off = subscribeShares(refresh);
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [previewVisible, lastResolvedLink]);
+
+  /** Progress moves a row to downloading; first byte is applied first so a stray event cannot start one while queued. */
+  // Landed files are tracked per share and keyed by path, because the sweep re-runs every second.
+  const landedAppliedRef = useRef<Map<string, Set<string>>>(new Map());
+
+  /** A file is marked saved only on the engine's completion event, one file at a time as it lands. */
+  // The saved count derives from the record's flags, whose only writer ran after the whole grab returned, so the count sat at zero and then jumped.
+  const applyFilesLanded = useCallback(
+    async (shareKey: string, transfer: TransferSummary): Promise<void> => {
+      const key = String(shareKey || "").toLowerCase();
+      if (!key) return;
+      const landed = transfer.filesLanded;
+      if (!landed || landed.length === 0) return;
+      let applied = landedAppliedRef.current.get(key);
+      if (!applied) {
+        applied = new Set<string>();
+        landedAppliedRef.current.set(key, applied);
+      }
+      for (const file of landed) {
+        if (applied.has(file.localPath)) continue;
+        // Claimed before the await: the sweep can re-enter while this promise is open, and a claim made on completion would let the second pass rewrite the file.
+        applied.add(file.localPath);
+        try {
+          await markFilesDownloaded(key, [
+            { name: file.name, localPath: file.localPath, size: file.size },
+          ]);
+          await applyRowEvent(key, { type: "FILE_DONE", file: file.name });
+        } catch (err: unknown) {
+          // Released, so the next sweep retries. A file on disk that the
+          // record does not know about reads to the user as a lost file.
+          applied.delete(file.localPath);
+          logStructuredError("rowstate", "could not record a landed file", err);
+        }
+      }
+    },
+    [applyRowEvent],
+  );
+
+  /** Bytes seen on the previous progress tick, per share. */
+  const lastProgressBytesRef = useRef<Map<string, number>>(new Map());
+
+  const applyRowProgress = useCallback(
+    async (shareKey: string, transfer: TransferSummary): Promise<void> => {
+      const key = String(shareKey || "").toLowerCase();
+      if (!key) return;
+      // FIRST_BYTE is an edge: testing a cumulative total stayed true forever and re-fired every tick, un-pausing at 1 Hz.
+      const seen = Number(transfer.bytesFromPeers ?? 0);
+      const prev = lastProgressBytesRef.current.get(key);
+      lastProgressBytesRef.current.set(key, seen);
+      // A decrease is a per-download counter reset, not lost bytes; without
+      // this a resumed transfer would never un-pause.
+      const grew = prev !== undefined && seen > prev;
+      const restarted = prev !== undefined && seen < prev;
+      const firstEver = prev === undefined;
+      const advanced = seen > 0 && (grew || restarted || firstEver);
+      if (!advanced) return;
+      await applyRowEvent(key, { type: "FIRST_BYTE" });
+      try {
+        const share = await loadShare(key);
+        if (!share) return;
+        const derived = rowLifecycleFromShare(share, transfer);
+        await applyRowEvent(key, {
+          type: "BYTES",
+          pct: derived.pct,
+          filesDone: derived.filesDone,
+        });
+      } catch (err: unknown) {
+        logStructuredError("rowstate", "could not record progress", err);
+      }
+    },
+    [applyRowEvent],
+  );
+
+  /** Where a grab ends, decided from the disk and nowhere else, through the one terminal both grab paths share. */
+  // The engine's reply reports what it attempted; only the record knows what survived to disk. Short of the selection is a pause, never a failure.
+  const settleGrabTerminal = useCallback(
+    async (shareKey: string, chosenNames: readonly string[]): Promise<void> => {
+      const chosen = chosenNames.map((n) => baseName(n));
+      if (chosen.length === 0) return;
+      const settled = await loadShare(shareKey);
+      const held = new Set(
+        (settled?.files ?? [])
+          .filter((f) => f.isDownloaded && f.localPath)
+          .map((f) => baseName(f.name)),
+      );
+      const savedCount = chosen.filter((n) => held.has(n)).length;
+      await applyRowEvent(
+        shareKey,
+        savedCount >= chosen.length
+          ? { type: "ALL_DONE", filesDone: savedCount }
+          : { type: "PEER_LOST" },
+      );
+    },
+    [applyRowEvent],
+  );
+
+  /** Ask the model whether this row should be paused, and dispatch if so; the decision is the model's, so one rule lives in one place. */
+  const maybePauseOnPeerLoss = useCallback(
+    async (shareKey: string, transfer: TransferSummary): Promise<void> => {
+      try {
+        const share = await loadShare(shareKey);
+        if (!share) return;
+        const view = shareView({
+          record: share,
+          transfer,
+          lookup: null,
+          now: Date.now(),
+        });
+        if (!view.shouldPause) return;
+        /** Which pause: the peer count at the moment of the silence verdict is what separates "the link went bad" from "the sender went away". */
+        // The verdict fires on silence whether or not a peer still looks attached, and a peer still on the books with nothing moving is the first case.
+        const peersAttached = (transfer.peersConnected ?? 0) > 0;
+        // One event carrying the peer count, so the reducer keeps the stalled/offline decision in one place.
+        await applyRowEvent(shareKey, { type: "STALLED", peersAttached });
+      } catch (err: unknown) {
+        logStructuredError("rowstate", "could not apply the peer-loss pause", err);
+      }
+    },
+    [applyRowEvent],
+  );
+
+  /** The pause read, on the peer-loss rule, checked on the clock as well as on the event. */
+  // A peer that leaves emits one event then silence, so an event-only bridge cannot notice the window passing.
+  const [pauseTick, setPauseTick] = useState(0);
+  useEffect(() => {
+    const watching = transfers.some(
+      (t) => t.origin === "received" && (t.peersConnected ?? 0) === 0,
+    );
+    if (!watching) return undefined;
+    const id = setInterval(() => setPauseTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [transfers]);
+
+  /** One pass per transfers update or per tick; the engine's coalescer already holds progress well below that. */
+  useEffect(() => {
+    for (const t of transfers) {
+      if (t.origin !== "received") continue;
+      const key = driveToShareRef.current.get(t.driveId);
+      if (!key) continue;
+      // Sequential, not raced: a file landing this pass must be written before the count is taken.
+      void (async () => {
+        await applyFilesLanded(key, t);
+        await applyRowProgress(key, t);
+      })();
+      void maybePauseOnPeerLoss(key, t);
+    }
+  }, [
+    transfers,
+    applyFilesLanded,
+    applyRowProgress,
+    maybePauseOnPeerLoss,
+    pauseTick,
+  ]);
+
+  /** The grab toast, on a two-second fuse, keyed by share so a second tap cannot leave the first tap's timer to announce a queue that has since started moving. */
+  const grabToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armGrabToast = useCallback(
+    (shareKey: string) => {
+      if (grabToastTimerRef.current) clearTimeout(grabToastTimerRef.current);
+      grabToastTimerRef.current = setTimeout(() => {
+        grabToastTimerRef.current = null;
+        void (async () => {
+          // Re-read rather than trusting a captured value: the whole point is
+          // whether a byte landed in the last two seconds.
+          const fresh = await loadShare(shareKey);
+          if (!fresh || fresh.status !== "queued") return;
+          showToast(GRAB_QUEUED_TOAST, { kind: "info" });
+        })();
+      }, GRAB_TOAST_DELAY_MS);
+    },
+    [showToast],
+  );
+
   const runDownload = useCallback(
     async (fileNames?: string[]) => {
-      /**
-       * This guard is REACHABLE BY A USER.
-       *
-       * `openStoredSharePicker` opens the
-       * modal from disk with `sessionDriveId === null` on purpose — that is the
-       * `closePreview` seam — and the resolve that will supply a session runs
-       * in parallel. Tap Grab inside that window and a silent `return` would be
-       * a dead button.
-       *
-       * `engineDownload` cannot be made to work here: it answers
-       * `receive.no-session` without a live `activeDrives` entry
-       * (`hyperdrive-engine.mjs`), so there is genuinely nothing to download
-       * from yet. What changes is that the user is told which of the two
-       * things happened — still looking, or already failed.
-       */
+      /** `queued` is written here, before anything that can take a round trip, because otherwise nothing wrote a status until the grab had already finished. */
+      // Fire-and-forget on purpose: the write must not be something the user's tap waits on, and the reducer has already decided the status.
+      const grabKeyAtTap = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+      const grabSelection =
+        fileNames && fileNames.length
+          ? fileNames
+          : (openResult?.files || []).map((f) => f.name);
+      if (grabKeyAtTap && grabSelection.length > 0) {
+        // The first grab IS a confirmed selection; `add` carries all of it.
+        void applyRowEvent(grabKeyAtTap, {
+          type: "SELECTION_CONFIRMED",
+          diff: { add: grabSelection },
+        });
+        // The notification ask has to precede the dismissal, and the picker now closes on the tap, so it is raised here; the order is asserted by a test.
+        // Still fire-and-forget: the grab, the dismissal and the row's status must not wait on an OS dialog, and a denial stays silent by design.
+        void ensureNotificationPermission();
+        setPreviewVisible(false);
+        setLinkError(null);
+        // Only if no byte arrives in two seconds, or it announces queuing that never happened.
+        armGrabToast(grabKeyAtTap);
+      }
+      /** Reachable: the picker opens from disk with no session while the resolve runs, so a silent return here is a dead Grab button. */
       if (!sessionDriveId) {
-        // a wait-tone notice keeps its info kind here too —
-        // "still looking" reported through an error toast would be the same
-        // red-for-normal-wait defect this item removed.
-        // The preview is open, so this goes in its banner. A toast here was
-        // the only feedback for the tap and it rendered behind the modal.
-        //
-        // UNREACHABLE BACKSTOP. `pickerGrabGate` disables Grab unless the
-        // lookup reached `found`, so no user tap arrives here any more. Kept
-        // because a guard that only holds while its one caller remembers it is
-        // not a guard. The `if (!linkError)` that used to wrap this is GONE:
-        // in the common not-found case a wait notice was already set, so the
-        // tap produced no banner, no toast and no state change at all.
+        // Opened from disk with no sender yet, so the selection is kept rather than refused; the toast is fused on the tap.
+        if (grabKeyAtTap && grabSelection.length > 0) {
+          // They have just asked for these files, so the grab that follows is the one worth announcing.
+          void ensureNotificationPermission();
+          return;
+        }
+        // Wait tone, not error: "still looking" in red is the defect this removed. Unreachable backstop — Grab is
+        // disabled until the lookup reaches found — kept because a guard only its caller remembers is not a guard.
         setLinkError(linkNotice("still-resolving", STILL_RESOLVING_MESSAGE));
         return;
       }
+      // The pairing the progress bridge above needs, recorded before the
+      // first byte can arrive.
+      if (grabKeyAtTap) bindDriveToShare(sessionDriveId, grabKeyAtTap);
       setDownloadAllBusy(true);
       setLinkError(null);
-      // The receive path's own permission ask.
-      //
-      // Without this line the ONLY product ask is on the send path
-      // (`MainScreen.tsx`, after `sharePaths` returns ok), so someone who only
-      // ever receives would never be asked in the foreground at all — their
-      // first and only prompt would come from the backstop inside
-      // `notifyTransferComplete`, which its own `AppState === "active"` guard
-      // confines to the background.
-      //
-      // This is the mirror of the send-path site: the user's own Grab tap, app
-      // in front of them, the first moment they have something worth being
-      // notified about. Fire-and-forget for the same reason — the grab, the
-      // modal dismissal below and the progress card must not wait on an OS
-      // dialog, and a denial stays silent by design. `ensurePermission` logs
-      // every outcome to `debugLog`, so the export can settle whether the
-      // dialog was shown and what was answered.
+      // A new attempt is not the previous one's failure, cleared here rather than on open so a reopened picker still shows why the last grab did not start.
+      setGrabFailed(false);
+      let grabErrored = false;
+      // The receive path's own permission ask: without it a receive-only user is never prompted in the foreground.
+      // Fire-and-forget, because the grab must not wait on an OS dialog and a denial stays silent by design.
       void ensureNotificationPermission();
-      // Close the preview modal IMMEDIATELY so the transfer
-      // card on the Receive screen (driven by upload-progress events)
-      // becomes visible while the download runs. Awaiting
-      // startDownload before closing would leave the modal sitting there,
-      // covering the screen for the entire duration of the fetch with
-      // no progress feedback. Errors surface via the linkError that
-      // ReceiveScreen renders below the link input, so closing the
-      // modal early doesn't lose error visibility.
+      // Close the preview before starting, or the modal covers the screen for the whole fetch with no progress shown.
       setPreviewVisible(false);
+      // Claimed for the whole grab so the loop cannot start a second download for this share; released in the finally.
+      const busyKey = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+      if (busyKey) busyRowsRef.current.add(busyKey);
       try {
-        // Partition the in-scope file names into "already on
-        // disk under this link" and "needs fetching from the peer". The
-        // alreadyDownloadedNames set was populated during runResolve from
-        // the (shareLink, name) intersection. If the user manually
-        // checked an already-downloaded file in the modal, we honour that
-        // by including its name in fileNames here — but we still skip the
-        // re-fetch so we don't create `filename (1)` duplicates via
-        // uniquePath, and we surface a "kept your existing copy" toast.
+        // Split into already-held and needs-fetching: re-fetching a held file would write `name (1)` beside it.
         const allManifestNames = (openResult?.files || []).map((f) => f.name);
         const targetNames =
           fileNames && fileNames.length ? fileNames : allManifestNames;
-        /**
-         * ONE fetch/keep rule, fed by BOTH notions
-         * of "the user already has this".
-         *
-         * Two separate `targetNames.filter` calls over just
-         * `alreadyDownloadedNames` would not be enough, because that set is
-         * populated *exclusively* by a successful resolve. The engine skips
-         * nothing — it selects by
-         * `wantedSet` and collides through `uniquePath`, which writes
-         * `` `${stem} (${i})${ext}` `` — so any grab that did not come through
-         * a resolve would re-fetch every file the user already held and leave
-         * `photo (1).jpg` next to `photo.jpg`, by construction. That is the
-         * whole reason `partitionGrabNames` exists.
-         *
-         * Two lists go in, concatenated, because the two sources are not
-         * interchangeable and neither subsumes the other:
-         *
-         * - **the stored record** carries the `isDownloaded`/`localPath` pair
-         *   `healShareFiles`'s healing keeps honest, and is the only source that is right
-         *   on the offline path. It is re-read here rather than captured at
-         *   picker-open time so a resolve that demoted a file in between is
-         *   respected.
-         * - **`alreadyDownloadedNames`** is the resolve's own answer, and on
-         *   the legacy-dedup fallback (`classifyDedup`, for shares that predate
-         *   the per-share store) it is the ONLY answer. Dropping it would
-         *   reintroduce the duplicates for exactly those shares.
-         *
-         * `heldNames` unions over the whole list, so an entry held by either
-         * source is kept. The synthetic `localPath` below is not a path and is
-         * never read: `loadDownloaded()` has already confirmed those files
-         * exist on disk, the path itself is not carried across the resolve, and
-         * `isHeld` asks only whether there is one.
-         */
+        /** One fetch/keep rule fed by both notions of "already held". The resolve-populated set alone is not enough:
+         *  a grab that skipped a resolve would re-fetch everything and leave `name (1)` duplicates by construction. */
         const shareKeyForGrab = lastResolvedLink
           ? extractKey(lastResolvedLink)
           : null;
@@ -1044,10 +1136,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           isDownloaded: true,
           localPath: n,
         }));
-        // An empty target list is passed through as an empty grab rather than
-        // into `partitionGrabNames`, whose documented reading of "no requested
-        // names" is "everything in the share" — right for the modal's "Grab
-        // everything", wrong as a fallback for a manifest that produced none.
+        // An empty target list is an empty grab: `partitionGrabNames` reads "no names" as "everything in the share".
         const { fetch: fetchNames, keep: keepNames } = targetNames.length
           ? partitionGrabNames(
               [...(storedRecord?.files ?? []), ...legacyHeld],
@@ -1056,27 +1145,11 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           : { fetch: [] as string[], keep: [] as string[] };
 
         const isDemo = sessionDriveId === DEMO_DRIVE_ID;
-        /**
-         * The folder the engine actually wrote into.
-         *
-         * `DownloadResult.destDir` crosses the RPC from the engine's
-         * `_downloadRoot`. Captured here and
-         * persisted below so a later re-grab, and the row's "where did these
-         * go" answer, have something to read.
-         */
+        /** The folder the engine wrote into, persisted so a re-grab and the row's "where did these go" can read it. */
         let grabDestDir: string | undefined;
         let fetchedFiles: { name: string; path: string; size: number }[] = [];
-        /**
-         * per-file casualties from the grab.
-         *
-         * `engineDownload` continues past a failed file — it unlinks the
-         * partial, pushes the key onto `failed`, and carries on with the
-         * next entry — then returns `ok: true` with the survivors. So
-         * `ok` does NOT mean "you have the whole share", and reporting an
-         * unqualified success for a partial grab is the same defect as
-         * showing no progress: the user cannot tell what they actually
-         * have. Carried out to the completion toast.
-         */
+        /** Per-file casualties: the engine continues past a failed file and still returns ok, so ok does not mean the
+         *  whole share arrived. Carried out to the completion toast. */
         let failedCount = 0;
         let wasCancelled = false;
         if (fetchNames.length > 0) {
@@ -1094,15 +1167,17 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           // reported on the cancelled shape as well as the ok one, so a
           // stopped grab still records where its survivors landed.
           grabDestDir = (out as { destDir?: string }).destDir || undefined;
-          // a cancelled grab is reported BEFORE the failure
-          // branch, and never through it.
-          //
-          // `engineDownload` returns `ok: true` with `cancelled: true` and
-          // whatever finished first — which for an early cancel is legitimately
-          // zero files. The old condition treats "ok but no files" as a
-          // failure and raises "Couldn't grab those files — give it another
-          // go?", which is both an error the user did not have and an
-          // invitation to retry the thing they just stopped.
+          // A cancel is reported before the failure branch: it returns ok with zero files, and treating that as a
+          // failure raised an error the user never had and invited them to retry what they just stopped.
+          if (isLiveSessionRefusal(out)) {
+            debugLog(
+              "info",
+              "rn.grab",
+              `grab skipped drive=${sessionDriveId} - a session is already running for it`,
+            );
+            grabErrored = true;
+            return;
+          }
           wasCancelled = !!(out as { cancelled?: boolean }).cancelled;
           if (wasCancelled) {
             fetchedFiles = out.files ?? [];
@@ -1118,14 +1193,35 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
                 `grab failed drive=${sessionDriveId} ok=${out.ok} files=${out.files?.length ?? 0}`,
                 out.error,
               );
-              setLinkError(
-                linkNotice(
-                  "grab-failure",
-                  // A plain `||` here would always let the raw engine message
-                  // win over this fallback, because `||` can never reach the right
-                  // operand when a structured error always has a `message`.
-                  userFacingError(out.error, "Couldn't grab those files — give it another go?"),
+              // Found nobody is a wait, not an error: a grab whose files all stalled returns ok with no top-level error.
+              const grabKind = classifyGrabFailure({
+                cause: errorCause(out.error),
+                fileCauses: (out.failed ?? []).map(
+                  (f) => (f as { cause?: string }).cause,
                 ),
+                peersConnected: (out as { peersConnected?: number }).peersConnected ?? 0,
+              });
+              /** Every failure is a pause, and the classifier decides only which reason the row names, never whether the row survives. */
+              // A stall against a peer that is right there is not something waiting for a sender will fix, so it takes the short retry rather than the loop's cadence.
+              const peersAttached =
+                ((out as { peersConnected?: number }).peersConnected ?? 0) > 0;
+              if (grabKeyAtTap) {
+                await applyRowEvent(grabKeyAtTap, {
+                  type: "STALLED",
+                  peersAttached,
+                });
+                debugLog(
+                  "info",
+                  "rn.waiting",
+                  `grab paused - ${errorCause(out.error) ?? "no-peer"} kind=${grabKind} ` +
+                    `peers=${peersAttached ? "yes" : "no"}`,
+                );
+              }
+              haptics.warning();
+              // Kept so reopening the picker shows what was asked for.
+              grabErrored = true;
+              setPendingPreselectionState(
+                targetNames.length > 0 ? [...targetNames] : null,
               );
               return;
             }
@@ -1145,34 +1241,8 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         }
 
         if (fetchedFiles.length > 0) {
-          /**
-           * THE ORDER IS THE FIX.
-           *
-           * These two writes cannot be made atomic with each other: they are
-           * two files, and the engine has *already* durably merged
-           * `meta.localFiles` and saved its manifest before `startDownload`
-           * even returns (`engineDownload`, after the download loop). **The
-           * window is a whole transfer, not the ~100 ms RN-to-RN gap** that
-           * would make this a race.
-           *
-           * What can be fixed is which store is left stale when the process
-           * dies between them. `markFilesDownloaded` writes
-           * `receivedSharesStorage` — **the store the rendered list is built
-           * from**. `appendDownloadResults` writes `receivedFilesStorage`,
-           * which is read only by the dedup probe and the reconcile diff, and
-           * which `runReceivedReconcile` can rebuild from the engine's
-           * manifest on the next foreground.
-           *
-           * So the visible store goes first. A kill between them leaves a
-           * row that correctly shows what the user has, plus an index the
-           * reconcile repairs. The reverse order would produce files on disk
-           * and a row saying nothing was downloaded.
-           *
-           * The `try/catch` stays on the share write and stays off
-           * `appendDownloadResults` — that throw must escape
-           * into the outer handler; swallowing it here would erase the
-           * signal it carries.
-           */
+          /** The order is the fix: two files cannot be written atomically, so the store the rendered list is built from goes first. */
+          // The try/catch stays off the results append, because that throw must escape into the outer handler rather than be swallowed here.
           const sharedKey = lastResolvedLink ? extractKey(lastResolvedLink) : null;
           if (sharedKey) {
             try {
@@ -1187,20 +1257,8 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
             } catch {
               /* persistence is best-effort */
             }
-            /**
-             * THE call the contracts are written for.
-             *
-             * Deliberately AFTER `markFilesDownloaded` and deliberately its own
-             * call: the two have different failure modes, and folding the
-             * session facts into a reconstructed `ReceivedShare` is exactly how
-             * `upsertShare`'s spread erases fields (see the comment on that spread).
-             * `rememberDriveSession` writes nothing when it has nothing new to
-             * say, so it cannot re-sort the user's list on a repeat grab.
-             *
-             * The demo drive is excluded: `DEMO_DRIVE_ID` is not an engine
-             * drive, and recording it would make a record claim it can be
-             * reopened by an id the engine has never heard of.
-             */
+            /** Its own call, after the record write: folding session facts into a reconstructed record is how the
+             *  spread erases fields. The demo drive is excluded, having no engine id to be reopened by. */
             try {
               await rememberDriveSession(sharedKey, {
                 driveId: isDemo ? null : sessionDriveId,
@@ -1218,6 +1276,23 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           if (bytes > 0) void addReceived(bytes);
         }
 
+        /** Where the row lands once the grab is over. A cancel clears the selection; per-file casualties are a pause. */
+        // The engine carries on past a stalled file and returns success with the survivors, so a non-empty failure list is the only in-band signal the sender went away.
+        const terminalKey = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+        if (terminalKey) {
+          // A cancel drops the selection and leaves the after-grab cycle.
+          if (wasCancelled) {
+            // A user stop keeps the selection and the percentage so the picker can offer Resume.
+            await applyRowEvent(terminalKey, { type: "USER_STOP" });
+          } else if (failedCount > 0) {
+            // Per-file casualties are the only in-band signal that the sender went away mid-transfer.
+            await applyRowEvent(terminalKey, { type: "PEER_LOST" });
+          } else {
+            // `done` is claimed from the record, never from the request, and through the one terminal both grab paths share.
+            await settleGrabTerminal(terminalKey, targetNames);
+          }
+        }
+
         if (keepNames.length > 0) {
           const labels = keepNames.map((n) => baseName(n));
           const msg =
@@ -1227,23 +1302,13 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           showToast(msg);
         }
 
-        // one completion signal per grab, regardless of whether
-        // any bytes actually moved over the wire. The user's act of tapping
-        // Grab is the trigger — the routing effect in MainScreen expands
-        // the bundle if needed and blinks the selected rows. This covers
-        // both "downloaded new files" and "re-grabbed already-downloaded
-        // files" with one signal.
+        // One completion signal per grab whether or not bytes moved, so re-grabbing held files still answers the tap.
         const sharedKeyAny = lastResolvedLink ? extractKey(lastResolvedLink) : null;
         const acknowledgedNames = [
           ...fetchedFiles.map((f) => baseName(f.name)),
           ...keepNames.map((n) => baseName(n)),
         ];
-        // `|| wasCancelled` so a cancel that kept nothing still
-        // produces a signal. The `length > 0` guard is right for the normal
-        // path — a grab that acknowledged nothing has nothing to say — but a
-        // cancel is a user action that must always be answered, and
-        // "Stopped — nothing saved." is the answer when the cancel beat the
-        // first file.
+        // A cancel must always be answered, even when it beat the first file, so it bypasses the length guard.
         if (sharedKeyAny && (acknowledgedNames.length > 0 || wasCancelled)) {
           setLastCompletedDownload({
             shareKey: sharedKeyAny.toLowerCase(),
@@ -1255,12 +1320,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           });
         }
 
-        // Modal was already closed at the start of this function.
-        // Real downloads get their success toast via the Receive
-        // tab's completion effect (which watches the transfer card). The
-        // demo path never produces a real transfer, so surface a friendly
-        // toast here for the demo. If we only kept existing copies (no
-        // actual fetch), the kept-copy toast above is the success signal.
+        // Real grabs get their toast from the completion effect; the demo never produces a transfer, so it toasts here.
         if (isDemo && fetchedFiles.length > 0) {
           haptics.success();
           showToast("Got it — demo files saved", { kind: "success" });
@@ -1275,8 +1335,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         );
       } finally {
         setDownloadAllBusy(false);
-        // The smart-regrab hint has served its purpose once a grab fires.
-        setPendingPreselectionState(null);
+        if (busyKey) busyRowsRef.current.delete(busyKey);
+        // The regrab hint is spent once a grab fires, unless it failed and is still carrying the wanted selection.
+        if (!grabErrored) setPendingPreselectionState(null);
       }
     },
     [
@@ -1287,56 +1348,404 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       devMode,
       openResult,
       alreadyDownloadedNames,
+      applyRowEvent,
+      armGrabToast,
+      bindDriveToShare,
       // `linkError` was here solely for the no-session guard's `if (!linkError)`.
       // That read is gone, so the dep is too.
     ],
   );
 
-  /**
-   * Reopen a received share's picker from what is already on disk.
-   *
-   * `openResult` had exactly one producer, `applyDedupClassification`, reached
-   * only after a **live** `engineOpenDrive`. A share whose whole file list was
-   * already sitting in `peardrop-received-shares.json` could not show its
-   * picker again without the sender being found first.
-   *
-   * Two things happen here, and the split is the point.
-   *
-   * **The LIST is instant, from disk.** `storedShareToOpenResult` is the
-   * adapter; no engine call, no network, no wait.
-   *
-   * **The BYTES still come from the peer.** `engineDownload` answers
-   * `receive.no-session` without a live `activeDrives` entry, so a resolve is
-   * kicked off alongside the modal rather than in front of it. It goes through
-   * the ordinary `runResolve`, so the 30 s guard, the error copy and the
-   * classify-before-persist ordering all still apply, and when it lands
-   * `applyDedupClassification` upgrades this already-open modal in place.
-   *
-   * `closePreview` only calls `deactivateDrive` when `sessionDriveId` is set.
-   * Leaving it null means dismissing this picker cannot tear down a drive it
-   * never opened — the same seam `DEMO_DRIVE_ID` uses. **No new flag and no
-   * second close path.** Once the parallel resolve lands, `sessionDriveId` is
-   * a real id again and dismissal tears down correctly.
-   */
+  /** Reopens a received share's picker from what is already on disk, because the open result was only ever produced after a live resolve. */
+  // The bytes still come from the peer, so a resolve runs alongside and upgrades in place; the session id stays null so dismissing cannot tear down a drive it never opened.
   const openStoredSharePicker = useCallback(
     (share: ReceivedShare) => {
-      // `rowTapRoute` already refuses an empty record — `describeHoldings([])`
-      // answers `allHeld: false`, which is right for a label and wrong as a
-      // re-grab trigger. Repeated here because a guard that only holds while
-      // its one caller remembers it is not a guard.
+      // Repeated here because a guard that only holds while its one caller remembers it is not a guard.
       if (!share || share.files.length === 0) return;
       setAlreadyDownloadedNames(heldNames(share.files));
       setSessionDriveId(null);
+      // No session yet, so there is nothing reused to protect; the parallel
+      // resolve below sets this for real when it lands.
+      sessionReusedRef.current = null;
       setLastResolvedLink(share.shareLink);
       setOpenResult(storedShareToOpenResult(share));
+      // The stored list is not a sender signal - no announcer was reached to
+      // produce it. The parallel `runResolve` below stamps the real one.
+      setLastResolveAt(0);
       setLinkError(null);
-      setHighlightedDownloadedIds([]);
       setPreviewVisible(true);
       haptics.actionDone();
       void runResolve(share.shareLink);
     },
     [runResolve],
   );
+
+  /** A queued or paused row, resumed because the sender turned up. */
+  // It bypasses the picker's own resolve and download paths deliberately: those carry the picker's React state, and a loop-driven grab that wrote them would change what the user is looking at.
+  const resumeWaitingRow = useCallback(
+    async (share: ReceivedShare) => {
+      const selection = share.selection ?? [];
+      if (selection.length === 0) return;
+      const out = await openLink(share.shareLink);
+      if (!out?.ok || !out.driveId) {
+        debugLog("warn", "rn.waiting", `resume resolve failed for ${share.shareKey.slice(0, 8)}`);
+        return;
+      }
+      const latestPaths = (out.files ?? []).map((f) => f.name);
+      /** An empty manifest is inconclusive, never evidence the files went away: classifying against it drops the selection for good. */
+      // Returning leaves the row as it is; the loop tries again.
+      if (latestPaths.length === 0) {
+        debugLog(
+          "info",
+          "rn.waiting",
+          `resume inconclusive for ${share.shareKey.slice(0, 8)} - no file list, selection kept`,
+        );
+        return;
+      }
+      const { present, missing } = matchSelection(selection, latestPaths);
+      if (missing.length > 0) {
+        debugLog(
+          "info",
+          "rn.waiting",
+          `${missing.length} selected file(s) are gone from the latest version`,
+        );
+      }
+      if (present.length === 0) {
+        // Nothing left to fetch, so the status settles rather than staying queued against a selection it cannot meet.
+        await patchShare(share.shareKey, { status: "ready", selection: undefined, missing });
+        return;
+      }
+      // `downloading` is not written here. Written before a byte moved, the row fell through to a stale transfer carrying the previous attempt's failure.
+      // The row stays queued or paused until the progress bridge sees a byte, which is the reducer's rule and the honest one.
+      bindDriveToShare(out.driveId, share.shareKey);
+      await applyRowEvent(share.shareKey, { type: "LOOKUP_FOUND" });
+      if (missing.length > 0) await patchShare(share.shareKey, { missing });
+      showToast(resumedToast(out.shareName || share.shareName), { kind: "info" });
+
+      /** The same fetch-and-keep split the user-started grab does. */
+      // Handing the whole surviving selection over on every resumed round re-fetched files already on disk, which collide into suffixed names and a new record entry each time.
+      const { fetch: resumeFetch, keep: resumeKeep } = partitionGrabNames(
+        share.files,
+        present,
+      );
+      if (resumeFetch.length === 0) {
+        // Everything selected is held, so settle here rather than call the engine and re-fetch what is on disk.
+        await settleGrabTerminal(share.shareKey, present);
+        return;
+      }
+      const dl = await startDownload({ driveId: out.driveId, fileNames: resumeFetch });
+      /** The common case after a stall, and the one that was writing `paused` over a live download. */
+      // The previous session is still alive and waiting for blocks, so this download is refused; returning leaves the status exactly as it is.
+      if (isLiveSessionRefusal(dl)) {
+        debugLog(
+          "info",
+          "rn.waiting",
+          `resume skipped ${share.shareKey.slice(0, 8)} - its session is already live`,
+        );
+        return;
+      }
+      const got = dl?.files ?? [];
+      if (got.length > 0) {
+        try {
+          await markFilesDownloaded(
+            share.shareKey,
+            got.map((f) => ({ name: f.name, localPath: f.path, size: f.size })),
+          );
+          await rememberDriveSession(share.shareKey, {
+            driveId: out.driveId,
+            downloadFolder: (dl as { destDir?: string }).destDir ?? null,
+          });
+          await appendDownloadResults(got, share.shareLink);
+          const bytes = got.reduce((acc, f) => acc + (f.size ?? 0), 0);
+          if (bytes > 0) void addReceived(bytes);
+        } catch (err: unknown) {
+          logStructuredError("rn.waiting", "could not record a resumed grab", err);
+        }
+      }
+      /** The one terminal, measured against the whole selection rather than the engine's reply, which reports what was attempted and not what reached disk. */
+      // The kept files are part of the answer to "do I hold everything the user chose", even though this round did not request them.
+      await settleGrabTerminal(share.shareKey, present);
+    },
+    [
+      openLink,
+      showToast,
+      startDownload,
+      applyRowEvent,
+      settleGrabTerminal,
+      bindDriveToShare,
+    ],
+  );
+
+  /** The loop's per-row action: a row with no file list resolves and stops there, because choosing stays the user's move; a row carrying the decision resumes. */
+  const onSenderFound = useCallback(
+    async (row: WaitingRow) => {
+      const share = await loadShare(row.shareKey);
+      if (!share) return;
+      if (share.status === "waiting") {
+        const out = await openLink(share.shareLink);
+        if (!out?.ok) {
+          debugLog("warn", "rn.waiting", `lookup found a peer but the resolve did not land`);
+          return;
+        }
+        await reconcileShareRecord(out, share.shareLink);
+        showToast(senderAvailableToast(out.shareName || share.shareName), { kind: "info" });
+        haptics.actionDone();
+        return;
+      }
+      await resumeWaitingRow(share);
+    },
+    [openLink, reconcileShareRecord, resumeWaitingRow, showToast],
+  );
+
+  const onSenderFoundRef = useRef(onSenderFound);
+  onSenderFoundRef.current = onSenderFound;
+
+  const waitingLoopRef = useRef<WaitingLoop | null>(null);
+  if (!waitingLoopRef.current) {
+    waitingLoopRef.current = createWaitingLoop({
+      now: () => Date.now(),
+      loadRows: async () =>
+        (await loadShares()).map((s) => ({
+          shareKey: s.shareKey,
+          status: s.status,
+          lastUpdatedAt: s.lastUpdatedAt,
+          lastCheckedAt: s.lastCheckedAt,
+          emptyChecks: s.emptyChecks,
+          // The user's confirmed instruction, carried to the loop so a row
+          // holding one is never backed off. See COMMITTED_INTERVAL_MS.
+          committed: (s.selection?.length ?? 0) > 0,
+        })),
+      lookup: (keys) => lookupPeersRef.current(keys),
+      onFound: (row) => onSenderFoundRef.current(row),
+      // `touch: false` is the whole of "a lookup is not progress": bumping it here would stop anything ever expiring.
+      onChecked: async (shareKey, found, at) => {
+        const prev = await loadShare(shareKey);
+        await patchShare(shareKey, {
+          lastCheckedAt: at,
+          emptyChecks: found ? 0 : (prev?.emptyChecks ?? 0) + 1,
+          touch: false,
+        });
+      },
+      onExpired: async (row) => {
+        // Terminal, and the row's line comes from the expiry check, which reads `lastUpdatedAt` directly.
+        debugLog("info", "rn.waiting", `row ${row.shareKey.slice(0, 8)} stopped waiting`);
+        await applyRowEvent(row.shareKey, { type: "STOP_WAITING" });
+      },
+      onBackoffReset: async (shareKey) => {
+        await patchShare(shareKey, { emptyChecks: 0, lastCheckedAt: undefined, touch: false });
+      },
+      isBusy: (shareKey) => busyRowsRef.current.has(shareKey),
+      log: (level, msg) => debugLog(level, "rn.waiting", msg),
+    });
+  }
+
+  // The loop runs only while the app is visible — mode A. `releaseLookup` on
+  // the background transition is the engine half of the same rule.
+  useEffect(() => {
+    const loop = waitingLoopRef.current;
+    if (!loop) return;
+    if (ready && appActive) loop.start();
+    else loop.stop();
+    return () => loop.stop();
+  }, [ready, appActive]);
+
+  /** A record stored in flight when the process died is paused as a restart, not blamed on the sender. */
+  // Once per process, gated through a ref, or a second sweep re-pauses a row that had legitimately resumed.
+  const restartSweptRef = useRef(false);
+  useEffect(() => {
+    if (!ready || restartSweptRef.current) return;
+    restartSweptRef.current = true;
+    void (async () => {
+      try {
+        const rows = await loadShares();
+        const inFlight = rows.filter(
+          (s) => s.status === "downloading" || s.status === "queued",
+        );
+        if (inFlight.length === 0) return;
+        debugLog(
+          "info",
+          "rowstate",
+          `restart sweep: ${inFlight.length} row(s) were in flight`,
+        );
+        // Sequential, not parallel: these are read-modify-writes against one JSON file and concurrent writers lose updates.
+        for (const row of inFlight) {
+          await applyRowEvent(row.shareKey, { type: "APP_RESTARTED" });
+        }
+      } catch (err: unknown) {
+        logStructuredError("rowstate", "could not sweep rows after a restart", err);
+      }
+    })();
+  }, [ready, applyRowEvent]);
+
+  /** A row downloading with no live session for more than one loop tick is paused as reconnecting. */
+  // Two consecutive misses, not one: the gap between sessions is a normal part of a resume, and pausing inside it flaps.
+  const sessionMissRef = useRef<Map<string, number>>(new Map());
+  // The interval callback is created once and would otherwise close over the
+  // first render's `transfers`. Assigned every render, read inside the tick.
+  const transfersRef = useRef(transfers);
+  transfersRef.current = transfers;
+  useEffect(() => {
+    const id = setInterval(() => {
+      void (async () => {
+        try {
+          const rows = await loadShares();
+          const live = new Set<string>();
+          for (const t of transfersRef.current) {
+            if (t.origin !== "received") continue;
+            const key = driveToShareRef.current.get(t.driveId);
+            if (key) live.add(key);
+          }
+          const misses = sessionMissRef.current;
+          // A row that is not downloading must not keep a count, or a row that finishes and downloads again inherits the first run's misses and pauses on its first tick.
+          for (const key of [...misses.keys()]) {
+            if (!rows.some((s) => s.shareKey === key && s.status === "downloading")) {
+              misses.delete(key);
+            }
+          }
+          for (const row of rows) {
+            if (row.status !== "downloading") continue;
+            if (live.has(row.shareKey)) {
+              misses.delete(row.shareKey);
+              continue;
+            }
+            const n = (misses.get(row.shareKey) ?? 0) + 1;
+            misses.set(row.shareKey, n);
+            if (n < 2) continue;
+            misses.delete(row.shareKey);
+            debugLog(
+              "warn",
+              "rowstate",
+              `reconcile: ${row.shareKey} claims downloading with no engine session ` +
+                `for ${n} ticks - pausing as reconnecting`,
+            );
+            await applyRowEvent(row.shareKey, { type: "SESSION_LOST" });
+          }
+        } catch (err: unknown) {
+          logStructuredError("rowstate", "could not reconcile a stranded row", err);
+        }
+      })();
+      // The loop's own tick, imported not repeated, or "more than one tick" means whatever this file last guessed.
+    }, TICK_MS);
+    return () => clearInterval(id);
+  }, [applyRowEvent]);
+
+  const retryWaitingRow = useCallback(async (shareKey: string) => {
+    await waitingLoopRef.current?.retryNow(shareKey);
+  }, []);
+
+  // Closes the ref `scheduleStallRetry` reaches the loop through. Assigned on
+  // every render so it can never point at a torn-down loop.
+  retryNowRef.current = async (shareKey: string) =>
+    (await waitingLoopRef.current?.retryNow(shareKey)) ?? false;
+
+  /** Stop waiting. Downloaded files stay; a waiting row has nothing downloaded by construction, so it is removed rather than left as a row that does nothing. */
+  const stopWaitingRow = useCallback(async (shareKey: string) => {
+    const share = await loadShare(shareKey);
+    if (!share) return;
+    if (share.status === "waiting" && share.files.length === 0) {
+      await deleteShare(shareKey);
+      return;
+    }
+    await applyRowEvent(shareKey, { type: "STOP_WAITING" });
+  }, [applyRowEvent]);
+
+  /** Every surface reads one percentage, from held bytes, so the picker resolves the transfer exactly as the row does. */
+  // The index cannot see a received drive before its first completion, so the session id stays a live overlay.
+  const pickerTransfer = useMemo(() => {
+    const key = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+    if (!key) return null;
+    const byDriveId = new Map(transfers.map((t) => [t.driveId, t]));
+    const index = buildShareKeyDriveIndex(drives, {
+      shareKey: key,
+      driveId: sessionDriveId,
+    });
+    return resolveReceivedTransfer(key, index, byDriveId) ?? null;
+  }, [transfers, drives, sessionDriveId, lastResolvedLink]);
+
+  /** The record the model reads, synthesised when the share is not on disk yet. */
+  // Giving that case its own rendering path is how the picker acquired a second source of truth, so it gets a `ready` record and goes through the same model.
+  const pickerRecord = useMemo((): ShareRecordLike | null => {
+    if (pickerShare) return pickerShare;
+    if (!previewVisible || !openResult) return null;
+    /** Synthesised only for a share with no record on disk, because the stand-in says nothing is chosen and the draft seeds its ticks exactly once. */
+    // Without the guard a queued share opened with every box empty and the wrong button, since the real record arrives a frame later.
+    return {
+      status: "ready",
+      files: (openResult.files ?? []).map((f) => ({
+        name: f.name,
+        size: f.size ?? 0,
+        isDownloaded: alreadyDownloadedNames.includes(f.name),
+        // No record on disk yet, so no path to open. The real record carries
+        // one and replaces this the moment `loadShare` lands.
+        localPath: null,
+      })),
+      selection: undefined,
+      lastUpdatedAt: Date.now(),
+    };
+  }, [pickerShare, previewVisible, openResult, alreadyDownloadedNames]);
+
+  /** Is the real record still in flight? The picker holds its tick seeding until this is false, which stops a draft seeding off the synthesised record above. */
+  const pickerHydrating = previewVisible && pickerShare === null && !!lastResolvedLink;
+
+  /** The sender signal, from the same function the row uses. */
+  // Reading it off the mere presence of a file list was the disagreement: a list is also built from disk and reaches no announcer, so it never implied the sender was there.
+  const pickerLookup = useMemo(
+    () => senderLookupFor(pickerShare) ?? (lastResolveAt > 0 ? { found: true, at: lastResolveAt } : null),
+    [pickerShare, lastResolveAt],
+  );
+
+  /** The anti-flap hold, carried across renders in a ref and keyed by share so reopening on a different share starts clean. */
+  // A ref rather than state, because a hold that re-rendered on every decision would be a second clock.
+  const flapHoldsRef = useRef<Map<string, FlapHold>>(new Map());
+
+  const pickerView = useMemo(() => {
+    if (!pickerRecord) return null;
+    const key = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+    const view = shareView({
+      record: pickerRecord,
+      transfer: pickerTransfer,
+      lookup: pickerLookup,
+      now: nowTick,
+      hold: key ? (flapHoldsRef.current.get(key) ?? null) : null,
+    });
+    if (key) flapHoldsRef.current.set(key, view.hold);
+    return view;
+  }, [pickerRecord, pickerTransfer, pickerLookup, nowTick, lastResolvedLink]);
+
+  // The guessed active key is gone: inferring the first selected file not on disk is right only while the engine fetches in manifest order and skips nothing.
+
+  /** The one selection write, on confirm: writing a tick straight through stopped the in-flight file with no way back. */
+  // The draft arrives as a diff, because unticking the downloading file is a different instruction from dropping it.
+  const confirmSelection = useCallback(
+    async (diff: SelectionDiff) => {
+      const key = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+      if (!key) return;
+      const stop = diff.stop ?? [];
+      /** A user stop never deletes data; only deleting the row purges. The stopped file's blocks stay, which is what makes re-ticking a resume. */
+      // The non-purging handle: the purging one, called with no options, destroyed every other file in the share.
+      if (stop.length > 0 && sessionDriveId) {
+        try {
+          await cancelInFlight(sessionDriveId);
+        } catch (err: unknown) {
+          logStructuredError("rowstate", "could not stop the in-flight file", err);
+        }
+      }
+      await applyRowEvent(key, { type: "SELECTION_CONFIRMED", diff });
+      // Confirming re-arms the row; the single-flight guard is what keeps this from disturbing a running session.
+      const fresh = await loadShare(key);
+      /** The argument is mandatory: omitting it means "grab the whole share", which re-added every file just removed. */
+      // Passing the persisted selection makes the re-dispatch a no-op and still reaches the terminal that settles the row.
+      const remaining = fresh?.selection ?? [];
+      if (remaining.length > 0) void runDownloadRef.current?.([...remaining]);
+    },
+    [lastResolvedLink, sessionDriveId, cancelInFlight, applyRowEvent],
+  );
+
+  /** The download reached through a ref, because the callbacks declared above it need to start the engine and taking it as a dependency would be a cycle. */
+  const runDownloadRef = useRef<((fileNames?: string[]) => Promise<void>) | null>(
+    null,
+  );
+  runDownloadRef.current = runDownload;
 
   const downloadAllFromPreview = useCallback(() => runDownload(), [runDownload]);
   const downloadSelectedFromPreview = useCallback(
@@ -1352,6 +1761,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       linkError,
       resolveTimeoutTick,
       previewOpenedTick,
+      waitingSavedTick,
       sessionDriveId,
       lastResolvedLink,
       openResult,
@@ -1363,19 +1773,24 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       requestManualEntry,
       openStoredSharePicker,
       downloadAllBusy,
+      grabFailed,
       downloadAllFromPreview,
       downloadSelectedFromPreview,
       resolveFromScan,
       retryResolve,
       relookupPreview,
       abortResolving,
-      highlightedDownloadedIds,
-      clearHighlights,
       alreadyDownloadedNames,
       pendingPreselection,
       setPendingPreselection,
       lastCompletedDownload,
       consumeCompletedDownload,
+      retryWaitingRow,
+      stopWaitingRow,
+      pickerView,
+      pickerHydrating,
+      flapHolds: flapHoldsRef.current,
+      confirmSelection,
     }),
     [
       linkDraft,
@@ -1384,6 +1799,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       linkError,
       resolveTimeoutTick,
       previewOpenedTick,
+      waitingSavedTick,
       sessionDriveId,
       lastResolvedLink,
       openResult,
@@ -1394,19 +1810,26 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       requestManualEntry,
       openStoredSharePicker,
       downloadAllBusy,
+      grabFailed,
       downloadAllFromPreview,
       downloadSelectedFromPreview,
       resolveFromScan,
       retryResolve,
       relookupPreview,
       abortResolving,
-      highlightedDownloadedIds,
-      clearHighlights,
       alreadyDownloadedNames,
       pendingPreselection,
       setPendingPreselection,
       lastCompletedDownload,
       consumeCompletedDownload,
+      retryWaitingRow,
+      stopWaitingRow,
+      pickerView,
+      pickerHydrating,
+      // The Map identity is stable for the provider's lifetime, so it never
+      // re-triggers this memo; listed for completeness.
+      flapHoldsRef,
+      confirmSelection,
     ]
   );
 

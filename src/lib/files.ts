@@ -1,3 +1,7 @@
+// `fileKind` imports `fileExt` back from here. The cycle is safe: `fileExt` is
+// a hoisted declaration, and nothing below runs at module init.
+import { fileKindFor, ICON_BY_KIND } from "./fileKind";
+
 export function fileExt(name: string): string {
   const clean = String(name || "").toLowerCase();
   const dot = clean.lastIndexOf(".");
@@ -12,25 +16,13 @@ export function baseName(pathOrName: string): string {
 }
 
 const IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "svg"];
-// An extension missing from this list falls through to previewModeFor →
-// "unsupported" and mimeFromName → "*/*": neither previews nor opens.
+// An extension missing here falls through to "unsupported" and `*/*`: a video that neither previews nor opens.
 const VIDEO_EXTS = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "3gp", "3g2"];
 const AUDIO_EXTS = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus"];
 const DOC_EXTS = ["pdf", "doc", "docx", "txt", "md", "rtf", "odt"];
-const TEXT_CODE_EXTS = [
-  "txt", "md", "json", "csv", "log", "xml", "yaml", "yml",
-  "js", "ts", "tsx", "jsx", "py", "rb", "go", "rs", "java",
-  "kt", "swift", "c", "h", "cpp", "hpp", "cs", "sh", "html", "css",
-];
 const ARCHIVE_EXTS = ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"];
-const EXEC_EXTS = ["exe", "dmg", "apk", "deb", "app", "msi"];
-/** `.apk` is the one entry in `EXEC_EXTS` that means something on the device
- *  the user is holding. It stays in `EXEC_EXTS`, because `mimeFromName` and
- *  every other consumer still want it classified as an executable; it is
- *  split out only for the icon. */
-const ANDROID_PACKAGE_EXTS = ["apk"];
+// What the app can render, which is a narrower question than what a file is; the icon's answer comes from the kind module.
 const TEXT_PREVIEW_EXTS = ["txt", "md", "json", "csv", "log", "xml", "yaml", "yml"];
-const PDF_EXTS = ["pdf"];
 
 export type PreviewMode = "image" | "text" | "video" | "audio" | "unsupported";
 
@@ -41,14 +33,14 @@ export type IconName =
   | "document-text-outline"
   | "document-outline"
   | "archive-outline"
+  | "grid-outline"
+  | "easel-outline"
   | "cog-outline"
-  // The one glyph here without an `-outline` twin: Ionicons ships
-  // `logo-android` and no `logo-android-outline`.
+  // The one glyph with no `-outline` twin, verified against the installed glyphmap rather than assumed from the naming.
   | "logo-android"
   | "folder-outline";
 
-/** Emoji-based icon kept for any code path that still wants a glyph. Prefer
- *  `fileIconName` for new rendering. */
+/** Emoji-based icon kept for any code path that still wants a glyph; prefer the icon-name lookup for new rendering. */
 export function fileIcon(name: string): string {
   const ext = fileExt(name);
   if (IMAGE_EXTS.includes(ext)) return "🖼️";
@@ -59,21 +51,10 @@ export function fileIcon(name: string): string {
   return "📦";
 }
 
-/** Ionicons-based content-aware icon, and the single source of truth for what
- *  icon a file gets across the app. Multi-file bundles call
- *  `bundleIconName()` instead. */
+/** One icon per file, by kind, and the single source of truth for every surface; multi-file bundles have their own. */
+// Delegates to the kind module rather than keeping a second copy of the table, which is how a document landed on the generic glyph.
 export function fileIconName(name: string): IconName {
-  const ext = fileExt(name);
-  if (IMAGE_EXTS.includes(ext)) return "image-outline";
-  if (VIDEO_EXTS.includes(ext)) return "videocam-outline";
-  if (AUDIO_EXTS.includes(ext)) return "musical-notes-outline";
-  if (PDF_EXTS.includes(ext)) return "document-outline";
-  if (TEXT_CODE_EXTS.includes(ext)) return "document-text-outline";
-  if (ARCHIVE_EXTS.includes(ext)) return "archive-outline";
-  // Before EXEC_EXTS, which also contains "apk".
-  if (ANDROID_PACKAGE_EXTS.includes(ext)) return "logo-android";
-  if (EXEC_EXTS.includes(ext)) return "cog-outline";
-  return "document-outline";
+  return ICON_BY_KIND[fileKindFor(name)];
 }
 
 export function bundleIconName(): IconName {
@@ -89,10 +70,8 @@ export function previewModeFor(name: string): PreviewMode {
   return "unsupported";
 }
 
-/** Truncate a filename for display without losing the extension, cutting just
- *  before it so file-type recognition survives. With no extension the ellipsis
- *  goes at the end, and a `maxLen` too short to truncate sensibly returns the
- *  name unchanged. */
+/** Truncate a filename for display without losing the extension, cutting from just before it so file-type recognition survives. */
+// With no extension the ellipsis goes at the end, and a limit too short to leave room returns the name unchanged.
 export function truncateMiddle(name: string, maxLen: number = 28): string {
   const s = String(name || "");
   if (s.length <= maxLen) return s;
@@ -113,9 +92,7 @@ export function truncateMiddle(name: string, maxLen: number = 28): string {
   return s.slice(0, stemBudget) + ELLIPSIS + ext;
 }
 
-/** Human-readable type label combining the file's extension with its
- *  category. Falls back to just the category when the name has no extension,
- *  or "File" when nothing is known. */
+/** A human-readable type label combining the extension with its category, falling back to the category alone when there is no extension. */
 export function humanFileType(name: string): string {
   const ext = fileExt(name);
   const extLabel = ext ? ext.charAt(0).toUpperCase() + ext.slice(1) : "";
@@ -133,10 +110,7 @@ export function humanFileType(name: string): string {
   return extLabel ? `${extLabel} ${kind}` : kind;
 }
 
-/** Android package archive. Its own constant because it is the one MIME here
- *  with behaviour attached rather than just a label: it is what makes an
- *  `ACTION_VIEW` resolve to the system package installer instead of to
- *  nothing. */
+/** The package-archive type, its own constant because it is the one here with behaviour attached: it is what makes a view intent resolve to the system installer instead of to nothing. */
 export const APK_MIME = "application/vnd.android.package-archive";
 
 export function mimeFromName(name: string): string {
@@ -147,8 +121,8 @@ export function mimeFromName(name: string): string {
   if (ext === "webp") return "image/webp";
   if (ext === "pdf") return "application/pdf";
   if (["txt", "md"].includes(ext)) return "text/plain";
-  // An ACTION_VIEW carrying "*/*" resolves to nothing useful. Naming the type
-  // installs nothing; it lets a package-installer offer itself as a target.
+  // A package archive fell through to a wildcard, which resolves to nothing useful, and that is why a received one read as an unrecognised format.
+  // Naming the type installs nothing — that needs a permission this app deliberately does not request — it only lets the share sheet and any installer offer themselves as targets.
   if (ext === "apk") return APK_MIME;
   if (ext === "zip") return "application/zip";
   if (AUDIO_EXTS.includes(ext)) return "audio/*";

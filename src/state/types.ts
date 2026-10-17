@@ -27,6 +27,36 @@ export type BackendEvent =
       totalBytes?: number;
       driveSize?: number;
       totalSentBytes?: number;
+      // Receive side only: bytes a peer actually sent, each block counted once.
+      // Smaller than `bytesTransferred` on a resume, and that is the point.
+      bytesFromPeers?: number;
+      /** Receive side only: the file being piped now and its own bytes, the one per-file byte source. */
+      // Share-wide figures cannot serve: one read zero on a part-done share, the other double-counts. Null between files.
+      activeKey?: string | null;
+      activeBytes?: number;
+      activeTotal?: number;
+    }
+  /** The download has heard nothing for the silence window, whether or not a peer still looks connected. */
+  // The socket could not be asked in time: a disconnect arrives about ten seconds after the silence is observable.
+  | {
+      type: "transfer-stalled";
+      driveId?: string;
+      /** How long the byte counter stood still. */
+      silenceMs?: number;
+      /** Peers the engine still had on its books when it gave up on them. */
+      peers?: number;
+      /** Connections destroyed to clear the way for a reconnect. */
+      destroyed?: number;
+      /** Bytes held at the moment of the stall. The row's percentage floor. */
+      heldBytes?: number;
+    }
+  /** Bytes are moving again after a stall. Carries what is held, so a resumed
+   *  row's percentage cannot go backwards. */
+  | {
+      type: "transfer-resumed";
+      driveId?: string;
+      heldBytes?: number;
+      percent?: number;
     }
   | {
       type: "upload-complete";
@@ -71,6 +101,20 @@ export type BackendEvent =
       filesFailed?: number;
       totalBytes?: number;
       duration?: number;
+    }
+  /** One file of a grab is on disk, emitted once per file from the success path only. */
+  // The rendered count comes from the record, so one dropped event cannot leave the counter permanently wrong.
+  | {
+      type: "download-file-done";
+      driveId?: string;
+      /** The drive key, as the engine addresses it. */
+      key?: string;
+      /** The basename actually written, after any collision rename. */
+      name?: string;
+      localPath?: string;
+      size?: number;
+      filesDone?: number;
+      filesTotal?: number;
     }
   | { type: "drive-created"; driveId?: string; shareLink?: string }
   | {
@@ -316,6 +360,9 @@ export type OpenLinkResult = {
    */
   files?: { name: string; displayName?: string; size?: number; key?: string }[];
   shareName?: string | null;
+  /** Set when the resolve adopted an existing drive rather than minting one. */
+  // A live session may have been handed back, possibly one announcing as a server, so the caller must not tear it down on dismissal; absent means a fresh drive.
+  reused?: "session" | "storage";
   totalBytes?: number;
   /**
    * True only when the engine parsed the share's manifest off the drive: the
@@ -360,9 +407,26 @@ export type TransferSummary = {
   direction: TransferDirection;
   percent: number | null;
   bytesTransferred: number;
+  /** Receive side only: bytes a peer actually sent, each block counted once. */
+  // Absence means not known and must never default to the per-attempt total, which resets and restarts a resume near zero.
+  bytesFromPeers?: number | null;
+  /** The engine says this download is silent, with the silence it measured. */
+  // Distinct from the app-side watchdog's verdict, which is gated on having been foregrounded long enough to rule; this one is computed in the worklet, so backgrounding cannot affect it and it arrives far sooner.
+  engineStalled?: boolean;
+  engineSilenceMs?: number | null;
+  /** The file the engine is piping now, and its own byte counts. Absent means not known, and is never defaulted from the share-wide figures. */
+  activeKey?: string | null;
+  activeBytes?: number | null;
+  activeTotal?: number | null;
   totalBytes: number | null;
   driveSize: number | null;
   totalSentBytes: number;
+  /** When a byte figure last rose. `lastEventAt` cannot stand in: the engine re-emits
+   * every second, so it stays fresh on an attached peer that has stopped pulling. */
+  lastBytesAt: number | null;
+  /** The keys this grab asked for, or null when it took the whole share. The
+   * drives manifest knows the share and never the selection. */
+  selectedFileNames: string[] | null;
   peersConnected: number;
   peerIds: string[];
   /** True only on explicit upload-complete (never implied by percent ≥ 100). */
@@ -399,20 +463,14 @@ export type TransferSummary = {
     /** Files that were asked for and did not arrive. */
     failed: number;
   };
-  /**
-   * True once at least one progress event has been processed, which
-   * separates "connected but nothing flowing" from "data is moving"
-   * without trusting the engine's unreliable percent. It also gates the
-   * stall detector, so a slow start is not read as a stall.
-   */
+  /** Files this grab has landed, keyed by a path the engine already made unique, so a re-delivered event cannot double one. */
+  // A carrier, not a source of truth: each entry is copied into the record, so losing this on a restart costs nothing.
+  filesLanded?: { name: string; localPath: string; size: number }[];
+  /** True once at least one progress event has been processed, which separates "connected but nothing flowing" from "data is moving" without trusting the engine's percentage. */
+  // It also gates the stall detector, so a slow start is not read as a stall.
   progressEverReceived: boolean;
-  /**
-   * True when a received transfer that had been progressing has gone quiet
-   * past the stall threshold. It fires the could-not-finish toast once and
-   * then stays true, so lingering on the same stuck card does not re-fire
-   * it. Hosted transfers do not use this flag: the same detector flips
-   * them straight to `completed: true`.
-   */
+  /** True when a progressing received transfer has gone quiet past the stall threshold; it latches. */
+  // Hosted transfers do not use it: the same detector flips them straight to completed.
   stalled: boolean;
   lastEventAt: number;
   /**

@@ -1,5 +1,5 @@
 import type { OpenLinkResult } from "./types";
-import { errorMessage, userFacingError } from "../lib/errorMessage";
+import { errorCause, errorMessage, userFacingError } from "../lib/errorMessage";
 
 export type ResolveGenRef = { current: number };
 
@@ -17,7 +17,8 @@ export type ResolveDeps = {
   abortOpen: () => Promise<unknown> | void;
   onBegin?: () => void;
   onSuccess: (out: OpenLinkResult) => void;
-  onFailure: (errorMessage: string) => void;
+  /** The engine's machine-readable cause when there is one, passed alongside the message rather than re-derived: by the time a caller has only a sentence, what distinguishes "nobody answered" from "that link is malformed" has been thrown away. */
+  onFailure: (errorMessage: string, cause?: string | null) => void;
   onTimeout: () => void;
   onFinally?: () => void;
   timeoutMs?: number;
@@ -89,7 +90,7 @@ export async function runGuardedResolve(
       deps.onSuccess(out);
     } else {
       log("warn", `resolve gen=${myGen} failed in ${Date.now() - startedAt}ms`);
-      deps.onFailure(errorMessage(out.error) || "Could not open link.");
+      deps.onFailure(errorMessage(out.error) || "Could not open link.", errorCause(out.error));
     }
   } catch (e: unknown) {
     if (myGen !== gen.current) {
@@ -106,7 +107,7 @@ export async function runGuardedResolve(
         deps.onTimeout();
       } else {
         log("warn", `resolve gen=${myGen} error after ${Date.now() - startedAt}ms: ${msg}`);
-        deps.onFailure(userFacingError(e, "Could not open link."));
+        deps.onFailure(userFacingError(e, "Could not open link."), errorCause(e));
       }
     }
   } finally {

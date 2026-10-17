@@ -37,3 +37,7 @@ export const RPC_TEST_FAKE_DOWNLOAD = 34;
  * delete is one `purge` flag away from being a delete again.
  */
 export const RPC_HYPERDRIVE_CANCEL = 35;
+/** Is anyone announcing these shares right now? Takes share keys, not discovery keys, because the sender's half of the app has no crypto and the engine derives them. */
+// An empty key list is not a no-op: it destroys the shared node and reports it released, which is how the waiting loop stops paying for a list that has emptied.
+export const RPC_PEERS_LOOKUP = 36;
+export const RPC_LOOKUP_RELEASE = 37;

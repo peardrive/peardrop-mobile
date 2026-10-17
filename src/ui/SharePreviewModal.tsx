@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Modal,
   Pressable,
   ScrollView,
@@ -11,26 +12,55 @@ import {
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
-import { useBackend } from "../state/backend";
 import type { AppTheme } from "./themes";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { formatBytes } from "../lib/format";
-import { baseName, fileIconName } from "../lib/files";
+import { baseName } from "../lib/files";
+import FileTypeIcon from "./FileTypeIcon";
+// Nine modules this picker once imported are gone, among them `pickerStatus`, `pickerGrabGate` and `PearSonarLite`: each was a surface that could contradict another, and the model answers for the row as well, so the two cannot drift.
 import {
-  pickerLookupStatus,
-  type PickerLookupState,
-} from "../lib/pickerLookupStatus";
-import { pickerGrabGate } from "../lib/pickerGrabGate";
-import {
-  previewHint,
-  previewPrimaryLabel,
-  previewSubtitle,
-} from "../lib/sharePreviewCopy";
+  DRAFT_HINT,
+  draftButton,
+  draftDiff,
+  isMarkedToStop,
+  type DraftInput,
+} from "../lib/pickerDraft";
+import { previewSubtitle } from "../lib/sharePreviewCopy";
 import { haptics } from "../lib/haptics";
-import { indicatorColor } from "../lib/indicatorColor";
-import { RESOLVE_LOOKING_LABEL } from "../lib/resolveHint";
-import PearSonarLite from "./PearSonarLite";
-import { ToastOutlet } from "./Toast";
+import { ToastOutlet, useToast } from "./Toast";
+import { openSavedFile } from "../lib/openSavedFile";
+import { previewModeFor } from "../lib/files";
+import { useVideoThumbnail } from "../lib/videoThumbnail";
+
+/** A saved file's own frame, or its type icon, from the same two pieces the folder sheet uses so both show the same tile for the same file. */
+// Its own component because the frame hook cannot run inside the file rows' map.
+function SavedFileThumb({
+  name,
+  localPath,
+  theme,
+  styles,
+}: {
+  name: string;
+  localPath: string | null;
+  theme: AppTheme;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const uri = localPath
+    ? localPath.startsWith("file://")
+      ? localPath
+      : `file://${localPath}`
+    : null;
+  const mode = previewModeFor(name);
+  const imageUri = mode === "image" ? uri : null;
+  const videoThumb = useVideoThumbnail(mode === "video" ? uri : null);
+  const thumbUri = imageUri ?? videoThumb;
+  if (thumbUri) {
+    return (
+      <Image source={{ uri: thumbUri }} style={styles.thumbImage} resizeMode="cover" />
+    );
+  }
+  return <FileTypeIcon name={name} size={28} color={theme.text} />;
+}
 
 function createStyles(theme: AppTheme, bottomInset: number) {
   return StyleSheet.create({
@@ -132,6 +162,71 @@ function createStyles(theme: AppTheme, bottomInset: number) {
       fontSize: 11,
       fontWeight: "700",
     },
+    // Same footprint as the checkbox it replaces, so a file reaching saved shifts nothing beside it.
+    // The sender dot replaces the sonar and the Look again card, which animated about a wait the app cannot observe ending.
+    senderDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+    },
+    // The after-grab hint, under the one status line.
+    hintLine: {
+      color: theme.muted,
+      fontSize: 12,
+      marginTop: 4,
+      marginBottom: 2,
+    },
+    // Same footprint as the checkbox it stands in for; filled once marked, so "will stop on confirm" is visible at a glance.
+    cancelMarkActive: {
+      backgroundColor: theme.danger,
+      borderColor: theme.danger,
+    },
+    // A file marked to stop. Struck through, because Confirm is what performs
+    // it and the user has to be able to see what they are about to agree to.
+    fileNameStruck: {
+      textDecorationLine: "line-through",
+    },
+    cancelMark: {
+      width: 22,
+      height: 22,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 11,
+      borderWidth: 1,
+      borderColor: theme.danger,
+    },
+    savedMark: {
+      width: 22,
+      height: 22,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    // The in-progress file's thin bar, inside the file's own meta column.
+    fileBarTrack: {
+      height: 3,
+      borderRadius: 2,
+      backgroundColor: theme.border,
+      marginTop: 6,
+      overflow: "hidden",
+    },
+    fileBarFill: {
+      height: 3,
+      borderRadius: 2,
+      backgroundColor: theme.primary,
+    },
+    filePct: {
+      color: theme.muted,
+      fontSize: 11,
+      fontWeight: "700",
+      marginLeft: 8,
+    },
+    // Neutral, deliberately: a per-file problem is a fact about one file, not
+    // an error the share is in. `theme.muted`, never `theme.danger`.
+    fileNote: {
+      color: theme.muted,
+      fontSize: 11,
+      marginTop: 4,
+    },
     checkbox: {
       width: 22,
       height: 22,
@@ -149,6 +244,8 @@ function createStyles(theme: AppTheme, bottomInset: number) {
     // A 28-wide centring View, so the row gap stays at 10 now that the glyph
     // is an Ionicon rather than an emoji in a Text.
     iconSlot: { width: 28, alignItems: "center", justifyContent: "center" },
+    /** Fills the icon slot exactly, so a thumbnail never reflows the row. */
+    thumbImage: { width: 28, height: 28, borderRadius: 4 },
     fileMain: { flex: 1, minWidth: 0 },
     fileName: { color: theme.text, fontSize: 14, fontWeight: "500" },
     fileMeta: { color: theme.muted, fontSize: 12, marginTop: 2 },
@@ -162,7 +259,6 @@ function createStyles(theme: AppTheme, bottomInset: number) {
     },
     primaryText: { color: theme.onPrimary, fontWeight: "700", fontSize: 15 },
     disabled: { opacity: 0.55 },
-    errBanner: { color: theme.danger, fontSize: 13, marginBottom: 12, lineHeight: 18 },
     // The one status line. The sonar mounts inside it while looking, so the
     // row has no fixed height and must not clip.
     lookupRow: {
@@ -177,9 +273,7 @@ function createStyles(theme: AppTheme, bottomInset: number) {
       fontSize: 12,
       lineHeight: 16,
     },
-    // the "wait"-tone notice banner. Muted, with an info
-    // icon — a resolve still waiting on the sender has not failed, so it must
-    // not render in the red errBanner style.
+    // Muted with an info icon: a resolve still waiting on the sender has not failed, so it must not render as one.
     waitBanner: {
       flexDirection: "row",
       alignItems: "center",
@@ -191,27 +285,6 @@ function createStyles(theme: AppTheme, bottomInset: number) {
       color: theme.muted,
       fontSize: 13,
       lineHeight: 18,
-    },
-    // Amber-tinted advisory banner. Distinct from errBanner
-    // (red) because the share might still work; we just want to warn the
-    // user that the other side appears to be offline.
-    offlineBanner: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      paddingHorizontal: 10,
-      paddingVertical: 8,
-      borderRadius: 10,
-      borderWidth: 1,
-      borderColor: theme.primaryMuted,
-      backgroundColor: theme.surfaceSubtle,
-      marginBottom: 12,
-    },
-    offlineBannerText: {
-      flex: 1,
-      color: theme.muted,
-      fontSize: 12,
-      lineHeight: 16,
     },
     // flexShrink matters: the sheet caps at 88% of the screen while this caps
     // at 360 dp, and RN's default flexShrink of 0 meant that on a short
@@ -228,188 +301,131 @@ export default function SharePreviewModal() {
     () => createStyles(theme, insets.bottom),
     [theme, insets.bottom],
   );
+  /** One source: the view carries every string, tick, percentage, control and button this modal draws. */
+  // A local selection set made checkbox and label disagree; a share-wide percentage made header and file disagree.
   const {
     previewVisible,
     closePreview,
     openResult,
     linkError,
     downloadAllBusy,
-    downloadAllFromPreview,
     downloadSelectedFromPreview,
-    alreadyDownloadedNames,
-    sessionDriveId,
-    pendingPreselection,
-    relookupPreview,
-    resolving,
+    pickerView,
+    pickerHydrating,
+    confirmSelection,
   } = useShareLinkFlow();
-  const { transfers } = useBackend();
+  const { show: showToast } = useToast();
 
-  const files = useMemo(() => openResult?.files ?? [], [openResult]);
-  const alreadySet = useMemo(
-    () => new Set(alreadyDownloadedNames),
-    [alreadyDownloadedNames],
+  const view = pickerView;
+  // Its own memo for a stable dependency: a bare `?? []` allocates each render and re-seeds the draft on every progress event.
+  const files = useMemo(() => view?.files ?? [], [view?.files]);
+
+  /** The draft: ticks, unticks and the x change nothing until confirm, and the corner close throws it away. */
+  // Null means not opened or just discarded; the draft is seeded from the model on open rather than kept across opens.
+  const [ticked, setTicked] = useState<string[] | null>(null);
+  const [willStop, setWillStop] = useState<string[]>([]);
+
+  /** What the record has saved, straight off the model. */
+  const saved = useMemo(
+    () =>
+      files
+        .filter((f) => f.state === "selected" || f.state === "inProgress")
+        .map((f) => f.name),
+    [files],
   );
-  const isPartialMatch = alreadySet.size > 0;
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Offline detection while the preview is open. After the
-  // resolve succeeds and the modal opens, the receiver's drive stays
-  // joined to the swarm — its peer-connected / peer-disconnected events
-  // reflect whether the sender is still reachable. If we have zero
-  // connected peers >10 s after the modal opened, surface a warning
-  // banner. We don't auto-close — the user might want to dismiss
-  // manually or wait it out — this is purely advisory.
-  const modalOpenedAtRef = useRef<number | null>(null);
-  const [tickNow, setTickNow] = useState<number>(() => Date.now());
+  // Seeded on open and on discard only: re-seeding mid-edit would wipe the draft whenever a progress event landed.
   useEffect(() => {
-    if (previewVisible) {
-      modalOpenedAtRef.current = Date.now();
-      setTickNow(Date.now());
-      const id = setInterval(() => setTickNow(Date.now()), 1000);
-      return () => clearInterval(id);
+    if (!previewVisible) {
+      setTicked(null);
+      setWillStop([]);
     }
-    modalOpenedAtRef.current = null;
-    return undefined;
   }, [previewVisible]);
-  // The picker resolves underneath itself, so say so. Reuses the tick above
-  // rather than adding a second timer.
-  const lookup = useMemo(
-    () =>
-      pickerLookupStatus({
-        resolving,
-        sessionDriveId,
-        noticeTone: linkError?.tone ?? null,
-        elapsedMs: modalOpenedAtRef.current ? tickNow - modalOpenedAtRef.current : 0,
-      }),
-    [resolving, sessionDriveId, linkError, tickNow],
-  );
-  /**
-   * One buzz, on the edge into `found`.
-   *
-   * `lookup` is recomputed by the 1 Hz tick above, so anything that fires in
-   * render or off the whole object would buzz every second — hence the
-   * dependency on `lookup.state` (a string) rather than `lookup`, plus the
-   * explicit edge check.
-   *
-   * `null` seeds from the FIRST computed state rather than from "looking":
-   * on the paste/scan path `sessionDriveId` is already set in the commit that
-   * opens this modal, so the first render is `found`. A hardcoded seed would
-   * add a second buzz to every paste, on top of the provider's own.
-   */
-  const prevLookupRef = useRef<PickerLookupState | null>(null);
+  /** Seeded once the real record is in hand, never off the synthesised stand-in. */
+  // The stand-in says nothing is chosen, and the draft is one-shot, so seeding against it left an already-queued row with empty boxes that the real selection could never re-seed.
   useEffect(() => {
-    if (!previewVisible) {
-      prevLookupRef.current = null;
-      return;
+    if (previewVisible && !pickerHydrating && ticked === null && files.length > 0) {
+      setTicked(saved);
     }
-    const prev = prevLookupRef.current;
-    prevLookupRef.current = lookup.state;
-    if (prev === null) return;
-    if (prev !== "found" && lookup.state === "found") haptics.success();
-  }, [previewVisible, lookup.state]);
-  const sessionTransfer = useMemo(
-    () =>
-      sessionDriveId
-        ? transfers.find((t) => t.driveId === sessionDriveId)
-        : undefined,
-    [transfers, sessionDriveId],
+  }, [previewVisible, pickerHydrating, ticked, files.length, saved]);
+
+  const draft: DraftInput = useMemo(
+    () => ({
+      status: view?.status ?? "ready",
+      saved,
+      ticked: ticked ?? saved,
+      willStop,
+      // The sizes, not a pre-made label: the model's label is computed from the saved selection, which is empty before a first grab while the draft is not.
+      files: files.map((f) => ({ name: f.name, size: f.size })),
+      // Straight off the model: a share holding any saved file is past its
+      // first grab, whatever the status says. See `DraftInput.hasGrabbed`.
+      hasGrabbed: files.some((f) => f.state === "done"),
+      // What is actually on disk, so `Looks good` can never appear over a file
+      // that is still outstanding. See `DraftInput.held`.
+      held: files.filter((f) => f.state === "done").map((f) => f.name),
+    }),
+    [view?.status, files, saved, ticked, willStop],
   );
-  const offlineBannerVisible =
-    previewVisible &&
-    !!sessionDriveId &&
-    !!modalOpenedAtRef.current &&
-    tickNow - modalOpenedAtRef.current > 10_000 &&
-    (!sessionTransfer || sessionTransfer.peersConnected === 0);
+  const button = draftButton(draft);
 
-  // When the modal opens, default selection state depends on
-  // whether we're in a partial-match scenario.
-  // - Partial match (some files already downloaded): pre-select only the
-  //   NEW files. Already-downloaded files are unchecked + badged + dim.
-  //   Tapping the primary action ("Grab N") then defaults to fetching
-  //   exactly the missing files.
-  // - No match: keep previous behavior — nothing selected, primary action
-  //   reads "Grab everything".
-  // Closing the modal clears selection so the next open starts fresh.
-  useEffect(() => {
-    if (!previewVisible) {
-      setSelected(new Set());
-      return;
-    }
-    // smart-regrab pre-selection wins. The hint comes from tapping
-    // a missing child row in an expanded bundle; it tells the modal exactly
-    // which file to pre-check. Already-downloaded files are still rendered
-    // dimmed + badged via alreadySet — preselected names that happen to
-    // already be downloaded are skipped (no reason to pre-check an existing
-    // file).
-    if (pendingPreselection && pendingPreselection.length > 0) {
-      const manifestNames = new Set(files.map((f) => f.name));
-      const initial = pendingPreselection.filter(
-        (n) => manifestNames.has(n) && !alreadySet.has(n),
-      );
-      setSelected(new Set(initial));
-      return;
-    }
-    if (isPartialMatch) {
-      const newOnes = files
-        .map((f) => f.name)
-        .filter((n) => !alreadySet.has(n));
-      setSelected(new Set(newOnes));
-    } else {
-      setSelected(new Set());
-    }
-  }, [previewVisible, openResult, isPartialMatch, files, alreadySet, pendingPreselection]);
+  /** Clause 6: open a saved file, through the one shared open path. */
+  async function onOpenSavedFile(path: string) {
+    await openSavedFile(path, (msg) => showToast(msg, { kind: "error" }));
+  }
 
-  const allKeys = useMemo(() => files.map((f) => f.name), [files]);
-  const selectedKeys = useMemo(() => allKeys.filter((k) => selected.has(k)), [allKeys, selected]);
-  const selectedBytes = useMemo(
-    () => files.filter((f) => selected.has(f.name)).reduce((acc, f) => acc + (f.size ?? 0), 0),
-    [files, selected]
-  );
-  const someSelected = selectedKeys.length > 0;
-  const allSelected = selectedKeys.length > 0 && selectedKeys.length === allKeys.length;
-
-  function toggle(key: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+  /** A tick. Draft only — nothing is written and no engine call is made. */
+  function onToggle(key: string) {
+    setTicked((prev) => {
+      const base = prev ?? saved;
+      return base.includes(key) ? base.filter((k) => k !== key) : [...base, key];
     });
   }
 
-  function toggleAll() {
-    if (allSelected) setSelected(new Set());
-    else setSelected(new Set(allKeys));
+  /** The x on the in-progress file marks a stop; it does not perform one. */
+  // The file stays listed, ticked and struck through with the x active, so the user can see what confirming will do and still change their mind.
+  function onMarkStop(key: string) {
+    setWillStop((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }
 
-  // "Grab everything" for a one-file share came from a label that never
-  // branched on the count. Both the label and the subtitle are functions now.
-  const gate = pickerGrabGate({
-    lookupState: lookup.state,
-    downloadAllBusy,
-    grabLabel: previewPrimaryLabel({
-      fileCount: files.length,
-      selectedCount: selectedKeys.length,
-      selectedBytes,
-    }),
-  });
-  const hint = previewHint(files.length, gate.grabAllowed);
+  /** The corner X discards the draft. `closePreview` clears it via the effect
+   *  above, so this only has to close. */
+  function onDiscard() {
+    setTicked(null);
+    setWillStop([]);
+    closePreview();
+  }
 
-  // the in-modal Grab blink is gone — the "Got it" badge already
-  // tells the user which files are downloaded. The acknowledging blink now
-  // lives on the main list's bundle row (auto-expanded if needed).
-  const onPressGrab = () => {
-    // Belt and braces. The button is already disabled unless the gate allows
-    // it; a handler that silently returns is the defect this item removed.
-    if (!gate.grabAllowed) return;
-    if (someSelected) void downloadSelectedFromPreview(selectedKeys);
-    else void downloadAllFromPreview();
-  };
+  function onPressButton() {
+    if (!button.enabled) return;
+    if (button.kind === "grab") {
+      void downloadSelectedFromPreview(ticked ?? saved);
+      return;
+    }
+    if (button.kind === "confirm" || button.kind === "resume") {
+      void confirmSelection(draftDiff(draft));
+    }
+    onDiscard();
+  }
+
+  /** The success pulse, on the model's own sender signal rather than on a removed status module. */
+  const prevOnlineRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!previewVisible) {
+      prevOnlineRef.current = null;
+      return;
+    }
+    const prev = prevOnlineRef.current;
+    prevOnlineRef.current = view?.senderOnline ?? false;
+    if (prev === null) return;
+    if (!prev && view?.senderOnline) haptics.success();
+  }, [previewVisible, view?.senderOnline]);
+
+  /** Grab, for the first grab only. The selection is already on the record, so this passes the model's ticked list rather than a local set. */
 
   return (
     <Modal visible={previewVisible} transparent animationType="fade" onRequestClose={closePreview}>
       <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={closePreview} />
+        <Pressable style={StyleSheet.absoluteFill} onPress={onDiscard} />
         <View style={styles.sheet}>
           <View style={styles.titleRow}>
             <View style={styles.titleSlot} />
@@ -418,12 +434,14 @@ export default function SharePreviewModal() {
             <Text style={styles.title} numberOfLines={1} ellipsizeMode="middle">
               {openResult?.shareName || "Share"}
             </Text>
+            {/* Discards the draft, by instruction. `closePreview` alone would
+                leave the ticks in state for the next open. */}
             <Pressable
-              onPress={closePreview}
+              onPress={onDiscard}
               style={styles.closeCircle}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Close"
+              accessibilityLabel="Close without changing anything"
             >
               <Ionicons name="close" size={16} color={theme.muted} />
             </Pressable>
@@ -431,60 +449,38 @@ export default function SharePreviewModal() {
           <Text style={styles.meta}>
             {previewSubtitle(files.length, openResult?.totalBytes)}
           </Text>
-          {/* The status row moved ABOVE the pick controls: it is the thing the
-              user is waiting on, and the controls below it depend on it.
-              Polite — it changes on a timer with no user action. */}
+          {/* One status line and no second surface: the message says what is happening and the dot says whether the sender is reachable. */}
           <View style={styles.lookupRow} accessibilityLiveRegion="polite">
-            {lookup.state === "looking" ? (
-              /* Gated on `looking`, and ReceiveSheet's own arm is gated on
-                 `visible && resolving`, so only one sonar is ever mounted. */
-              <PearSonarLite
-                size={30}
-                color={indicatorColor(theme)}
-                label={RESOLVE_LOOKING_LABEL}
-              />
-            ) : (
-              <Ionicons
-                name={
-                  lookup.state === "found"
-                    ? "checkmark-circle-outline"
-                    : "search-outline"
-                }
-                size={14}
-                color={lookup.state === "found" ? theme.primaryMuted : theme.muted}
-              />
-            )}
+            <View
+              style={[
+                styles.senderDot,
+                {
+                  backgroundColor: view?.senderOnline
+                    ? theme.primary
+                    : theme.muted,
+                },
+              ]}
+              accessibilityLabel={view?.senderOnline ? "Sender online" : "Sender offline"}
+            />
             <Text
               style={[
                 styles.lookupText,
-                lookup.state === "found" && { color: theme.primaryMuted },
+                view?.senderOnline === true && { color: theme.primaryMuted },
               ]}
             >
-              {lookup.text}
+              {view?.header ?? ""}
             </Text>
           </View>
-          {/* One status line, not two. `no-manifest` is now carried by the row
-              above, so its banner would repeat it verbatim.
-
-              Suppressed by TRIGGER, not by tone. Four triggers share the
-              `wait` tone and three reach `linkError`; dropping the whole
-              `wait` arm would leave `still-resolving` and `already-held` with
-              no arm at all, and the `else` arm would then render both of
-              them red — the exact defect this banner removed.
-
-              Known gap, PRE-EXISTING and deliberately not fixed here:
-              `already-held` keeps this arm but is wiped about one frame after
-              it appears on the paste/scan path. `applyDedupClassification`
-              sets the notice and calls `clearOnSuccess()` in the same batch;
-              the emptied draft re-runs the debounce effect, whose
-              `!linkDraft.trim()` branch calls `setLinkError(null)`. So the
-              acknowledgement survives only on the reopen-picker path, where
-              the draft is already empty. The fix is in that shared effect, not
-              here — out of this round's scope. Do not read this arm as proof
-              the message is visible. */}
-          {!!linkError &&
-            linkError.trigger !== "no-manifest" &&
-            (linkError.tone === "wait" ? (
+          {/* The after-grab hint: one line, and the only second line the header is allowed. */}
+          {!!view?.hint && (
+            <Text style={styles.hintLine}>
+              {view.status === "ready" ? view.hint : DRAFT_HINT}
+            </Text>
+          )}
+          {/* The partial-dedup acknowledgement, and only before a grab, because afterwards the per-file marks already say what is held. */}
+          {view?.status === "ready" &&
+            !!linkError &&
+            linkError.trigger === "already-held" && (
               <View style={styles.waitBanner}>
                 <Ionicons
                   name="information-circle-outline"
@@ -493,143 +489,151 @@ export default function SharePreviewModal() {
                 />
                 <Text style={styles.waitBannerText}>{linkError.text}</Text>
               </View>
-            ) : (
-              <Text style={styles.errBanner}>{linkError.text}</Text>
-            ))}
-          {/*
-            PearDrop has **no connectivity detection at all**. The only thing
-            the condition at `:192-197` establishes is that ten seconds passed
-            with no peer attached, which is equally the signature of DHT
-            discovery still running normally. The copy below must not assert
-            a cause it cannot observe (an "offline" state, a Wi-Fi problem) —
-            it says only what is true at that moment: still looking, it can
-            take a moment, plus the one thing the user can actually act on,
-            which is the sender's phone being awake with PearDrop open. Links
-            never expire, so nothing here may imply they do.
-            `scripts/check-copy.mjs` (`npm run check:copy`) fails the build on
-            "offline", "network", "check your" and "expire" in user-facing
-            copy, and scans JSX text, not just string literals, to catch
-            exactly this kind of banner.
-
-            The `offlineBanner*` style/state names do not match this
-            constraint and are left alone here as out of scope — they are not
-            user-facing, and the check cannot see identifiers. Do not let the
-            name talk you into asserting an offline cause.
-          */}
-          {offlineBannerVisible && (
-            <View style={styles.offlineBanner} accessibilityLiveRegion="polite">
-              <Ionicons name="search-outline" size={16} color={theme.muted} />
-              <Text style={styles.offlineBannerText}>
-                Still looking for the sender — this can take a moment. Their phone
-                needs to be awake with PearDrop open.
-              </Text>
-            </View>
-          )}
-          {/* Only for 2+ files: with one file the checkbox, the hint and
-              "Pick all" are three controls answering a one-answer question. */}
-          {files.length > 1 && (
-            <View style={styles.topRow}>
-              <Text style={styles.hintText}>
-                {someSelected ? `${selectedKeys.length} picked` : (hint ?? "")}
-              </Text>
-              <Pressable
-                onPress={toggleAll}
-                accessibilityRole="button"
-                accessibilityLabel="Toggle select all"
-              >
-                <Text style={styles.selectAll}>
-                  {allSelected ? "Clear all" : "Pick all"}
-                </Text>
-              </Pressable>
-            </View>
-          )}
+            )}
           <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
             {files.map((f, index) => {
-              const name = baseName(f.displayName || f.name);
-              const checked = selected.has(f.name);
-              const alreadyHave = alreadySet.has(f.name);
+              const name = baseName(f.name);
+              // A saved file with a path joins the tappable set — opening it is
+              // clause 6, and `doneMark` stays a mark rather than a control.
+              const tappable =
+                f.control === "checkbox" ||
+                f.control === "cancel" ||
+                (f.state === "done" && !!f.localPath);
+              // The draft decides the tick and the strike-through; the record's saved state is only the seed.
+              const isTicked = (ticked ?? saved).includes(f.name);
+              const marked = isMarkedToStop(draft, f.name);
               return (
                 <Pressable
                   key={`${f.name}_${index}`}
                   style={[
                     styles.fileRow,
                     index === 0 && styles.fileRowFirst,
-                    alreadyHave && styles.fileRowAlreadyHave,
+                    f.state === "done" && styles.fileRowAlreadyHave,
+                    f.state === "gone" && styles.fileRowAlreadyHave,
                   ]}
-                  onPress={() => toggle(f.name)}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked }}
+                  onPress={() => {
+                    if (f.control === "cancel") onMarkStop(f.name);
+                    else if (f.control === "checkbox") onToggle(f.name);
+                    // A saved file opens from the picker: the tick beside it is not tappable, so the row press means this.
+                    else if (f.state === "done" && f.localPath) {
+                      void onOpenSavedFile(f.localPath);
+                    }
+                  }}
+                  disabled={!tappable}
+                  accessibilityRole={f.control === "cancel" ? "button" : "checkbox"}
+                  accessibilityState={
+                    f.control === "cancel"
+                      ? { selected: marked }
+                      : { checked: isTicked, disabled: !tappable }
+                  }
                   accessibilityLabel={
-                    alreadyHave
-                      ? `${name}, already downloaded`
-                      : `Pick ${name}`
+                    f.control === "cancel"
+                      ? marked
+                        ? `${name}, will stop on confirm`
+                        : `Stop this file`
+                      : f.state === "done"
+                        ? `${name}, saved`
+                        : f.state === "gone"
+                          ? `${name}, no longer shared`
+                          : `Pick ${name}`
                   }
                 >
-                  <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
-                    {checked ? <Ionicons name="checkmark" size={14} color={theme.onPrimary} /> : null}
-                  </View>
+                  {/* The control column, straight off the model. No surface
+                      decides this any more. */}
+                  {f.control === "doneMark" ? (
+                    <View style={styles.savedMark}>
+                      <Ionicons name="checkmark" size={16} color={theme.primary} />
+                    </View>
+                  ) : f.control === "cancel" ? (
+                    /* The red x marks a stop and confirming performs it; the cancel leaves the store alone, so the blocks stay and re-ticking resumes from them. */
+                    <View style={[styles.cancelMark, marked && styles.cancelMarkActive]}>
+                      <Ionicons
+                        name="close"
+                        size={16}
+                        color={marked ? theme.onPrimary : theme.danger}
+                      />
+                    </View>
+                  ) : f.control === "checkbox" ? (
+                    <View style={[styles.checkbox, isTicked && styles.checkboxChecked]}>
+                      {isTicked ? (
+                        <Ionicons name="checkmark" size={14} color={theme.onPrimary} />
+                      ) : null}
+                    </View>
+                  ) : (
+                    <View style={styles.savedMark} />
+                  )}
+                  {/* A saved image or video shows its own frame, and the path comes through the model with the file so the thumbnail and the open action cannot point at different files. */}
                   <View style={styles.iconSlot}>
-                    {/* fileIcon's own header says to prefer fileIconName for
-                        new rendering. f.name, not the display name, matching
-                        the main list. */}
-                    <Ionicons
-                      name={fileIconName(f.name)}
-                      size={26}
-                      color={theme.text}
+                    <SavedFileThumb
+                      name={f.name}
+                      localPath={f.state === "done" ? f.localPath : null}
+                      theme={theme}
+                      styles={styles}
                     />
                   </View>
                   <View style={styles.fileMain}>
                     <Text
-                      style={styles.fileName}
+                      style={[styles.fileName, marked && styles.fileNameStruck]}
                       numberOfLines={1}
                       ellipsizeMode="middle"
                     >
                       {name}
                     </Text>
                     <Text style={styles.fileMeta}>{formatBytes(f.size)}</Text>
+                    {/* The in-progress file's own bar, at the model's
+                        percentage - the same number as the header. */}
+                    {f.state === "inProgress" && (
+                      <View style={styles.fileBarTrack}>
+                        <View
+                          style={[styles.fileBarFill, { width: `${f.pct ?? 0}%` }]}
+                        />
+                      </View>
+                    )}
                   </View>
-                  {alreadyHave && (
+                  {f.state === "inProgress" && (
+                    <Text style={styles.filePct}>{f.pct ?? 0}%</Text>
+                  )}
+                  {f.state === "done" && (
                     <View style={styles.gotItBadge}>
-                      <Ionicons
-                        name="checkmark"
-                        size={12}
-                        color={theme.primary}
-                      />
-                      <Text style={styles.gotItBadgeText}>Got it</Text>
+                      <Ionicons name="checkmark" size={12} color={theme.primary} />
+                      <Text style={styles.gotItBadgeText}>Saved</Text>
                     </View>
+                  )}
+                  {f.state === "gone" && (
+                    <Text style={styles.fileNote}>No longer shared</Text>
                   )}
                 </Pressable>
               );
             })}
           </ScrollView>
-          {/* One slot. "Look again" REPLACES Grab rather than joining it, so
-              nothing shifts when the lookup settles. */}
-          <View style={styles.actions}>
-            {gate.kind === "lookAgain" ? (
-              <Pressable
-                style={styles.primaryBtn}
-                onPress={() => void relookupPreview()}
-                accessibilityRole="button"
-                accessibilityLabel={gate.label}
-              >
-                <Text style={styles.primaryText}>{gate.label}</Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                style={[styles.primaryBtn, !gate.enabled && styles.disabled]}
-                onPress={onPressGrab}
-                disabled={!gate.enabled}
-                accessibilityRole="button"
-                accessibilityLabel={gate.label}
-              >
-                {gate.busy ? (
-                  <ActivityIndicator color={theme.onPrimary} />
-                ) : (
-                  <Text style={styles.primaryText}>{gate.label}</Text>
-                )}
-              </Pressable>
-            )}
-          </View>
+          {/* The button is present in every state: a first grab, then a confirm, and a resume for a row the user stopped. */}
+          {!!view && (
+            <View style={styles.actions}>
+              {/* The busy flag suppresses the first grab only: gating every kind made the button a spinner for the whole of a download, so a marked stop could not be committed and the control was decorative.
+                  Changing a selection mid-download is the ordinary case, not a conflicting one; only starting a fresh download while one is already starting is the genuine double-tap. */}
+              {(() => {
+                const busy = downloadAllBusy && button.kind === "grab";
+                return (
+                  <Pressable
+                    style={[
+                      styles.primaryBtn,
+                      (!button.enabled || busy) && styles.disabled,
+                    ]}
+                    onPress={onPressButton}
+                    disabled={!button.enabled || busy}
+                    accessibilityRole="button"
+                    accessibilityLabel={button.label}
+                  >
+                    {busy ? (
+                      <ActivityIndicator color={theme.onPrimary} />
+                    ) : (
+                      <Text style={styles.primaryText}>{button.label}</Text>
+                    )}
+                  </Pressable>
+                );
+              })()}
+            </View>
+          )}
         </View>
       </View>
       {/* last child on purpose: this Modal is its own Android window,

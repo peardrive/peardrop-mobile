@@ -42,7 +42,11 @@ import {
 import { useAppTheme } from "../state/ThemeContext";
 import { useBackend } from "../state/backend";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
-import type { DriveLocalFile, DriveRecord } from "../state/types";
+import type {
+  DriveLocalFile,
+  DriveRecord,
+  TransferSummary,
+} from "../state/types";
 import type { AppTheme } from "../ui/themes";
 import {
   baseName,
@@ -57,6 +61,7 @@ import {
   type PreviewMode,
 } from "../lib/files";
 import { describeOpenFailure } from "../lib/openFileResult";
+import { openSavedFile } from "../lib/openSavedFile";
 import {
   canConfirmShareName,
   checkShareName,
@@ -109,6 +114,14 @@ import {
 // three times, each time as one more ad-hoc branch. All four outcomes are named
 // and tested in this module now; a fifth belongs there, not here.
 import { rowTapRoute } from "../lib/receivedRowRoute";
+import { isLoopStatus, statusLines } from "../lib/waitingStatus";
+import {
+  rowLineTakesTypePrefix,
+  shareView,
+  type FlapHold,
+  type ShareView,
+} from "../lib/shareModel";
+import { senderLookupFor } from "../lib/senderLookup";
 // the re-share decision and its whole
 // vocabulary live here. `active` is not `announcing`, and this file is unreachable from
 // jest, so the decision lives where the suite can assert it.
@@ -148,7 +161,6 @@ import { describeDeleteConfirm } from "../lib/deleteReceivedPlan";
 import { folderRowControl } from "../lib/folderRowControl";
 import {
   buildShareKeyDriveIndex,
-  grabCompletionMessage,
   receiveRowStatus,
   resolveReceivedTransfer,
 } from "../lib/receiveProgress";
@@ -180,6 +192,8 @@ import ListToolbar, { type FilterId, type SortId } from "../ui/ListToolbar";
 import BottomToolbar from "../ui/BottomToolbar";
 import ReceiveSheet from "../ui/ReceiveSheet";
 import ShareRow, { type ShareRowStatus } from "../ui/ShareRow";
+import { badgeForName } from "../ui/FileTypeIcon";
+import { newlyReadyKeys, type ReadyRow } from "../lib/readyHighlight";
 import SendSheet, { type RecentShareItem } from "../ui/SendSheet";
 import FolderContentsModal, {
   type FolderContentsFile,
@@ -207,6 +221,44 @@ if (
  * is absent rather than present and broken.
  */
 const canSaveToDownloads = isSaveToDownloadsAvailable();
+
+/** The one line a waiting row shows, or null when the ordinary received chain answers. */
+/** The row's view comes from the model the picker renders, so nothing here decides a string, percentage or count. */
+function receivedRowView(
+  share: ReceivedShare | undefined,
+  transfer: TransferSummary | undefined,
+  now: number,
+  holds?: Map<string, FlapHold>,
+): ShareView | null {
+  if (!share) return null;
+  // One shared reading: two inline readings made the row say sender offline while the picker said Starting.
+  const view = shareView({
+    record: share,
+    transfer,
+    lookup: senderLookupFor(share),
+    now,
+    // The anti-flap hold, because both inputs are edge-triggered on a link that can reset several times a minute.
+    hold: holds?.get(share.shareKey) ?? null,
+  });
+  holds?.set(share.shareKey, view.hold);
+  return view;
+}
+
+function waitingLine(share: ReceivedShare | undefined): string | null {
+  if (!share) return null;
+  const lines = statusLines({
+    status: share.status,
+    files: share.files,
+    selection: share.selection,
+    missing: share.missing,
+    lastUpdatedAt: share.lastUpdatedAt,
+    now: Date.now(),
+  });
+  const parts = [lines.primary, lines.missing].filter(
+    (x): x is string => typeof x === "string" && x.length > 0,
+  );
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
 
 type DriveRow = DriveRecord & {
   /** Computed: the file used when tapping a single-file row opens a preview.
@@ -333,6 +385,10 @@ function totalBytesOf(d: DriveRecord): number {
 
 function isOpenableInOtherApp(d: DriveRecord): boolean {
   return Array.isArray(d.localFiles) && d.localFiles.length > 0;
+}
+
+function driveSingleFileName(d: DriveRecord): string {
+  return d.files?.[0]?.name ?? d.localFiles?.[0]?.name ?? d.name ?? "";
 }
 
 function driveIconName(d: DriveRecord): IconName {
@@ -754,6 +810,7 @@ export default function MainScreen() {
     // the Receive sheet and let the context's info toast do the talking.
     resolveTimeoutTick,
     previewOpenedTick,
+    waitingSavedTick,
     resolveFromScan,
     // the live resolve session is the ONLY source that knows
     // which engine driveId a share key maps to while the grab is still
@@ -762,6 +819,9 @@ export default function MainScreen() {
     // already finished. See lib/receiveProgress.ts.
     sessionDriveId,
     lastResolvedLink,
+    retryWaitingRow,
+    stopWaitingRow,
+    flapHolds,
   } = useShareLinkFlow();
 
   const { show: showToastRaw } = useToast();
@@ -891,6 +951,10 @@ export default function MainScreen() {
   >({});
   const [sharedPaths, setSharedPaths] = useState<SharedFilePathsEntry[]>([]);
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
+  /** One tick per row that has just become ready, plus the list ref that brings it on screen. The tick is a counter, not a flag, so a re-render cannot replay the tint. */
+  const listRef = useRef<FlatList<ListItem> | null>(null);
+  const [readyTicks, setReadyTicks] = useState<Record<string, number>>({});
+  const prevReadyRef = useRef<ReadyRow[] | null>(null);
   const [hostedFlags, setHostedFlags] = useState<HostedShareFlags[]>([]);
   // view-mode toggle. Always resets to "all" on mount — intentional;
   // no persistence to AsyncStorage. Favorites is a filterable subset.
@@ -955,6 +1019,12 @@ export default function MainScreen() {
     setReceiveSheetVisible(false);
     setReceiveFocusPaste(false);
   }, [previewOpenedTick]);
+  // A link nobody answered is saved as a waiting row; close the sheet so that
+  // row is visible. A full dismiss: the draft is spent and the resolve is over.
+  useEffect(() => {
+    if (waitingSavedTick <= 0) return;
+    dismissReceiveSheet();
+  }, [waitingSavedTick, dismissReceiveSheet]);
   // Target set for the post-grab child-row blink. Populated
   // by an effect that watches `lastCompletedDownload`. If the folder
   // modal isn't already open for the completed share, the effect opens
@@ -1014,26 +1084,10 @@ export default function MainScreen() {
     const alreadyOpen = folderModalId === synthId;
     if (blinkStartTimerRef.current) clearTimeout(blinkStartTimerRef.current);
     if (blinkClearTimerRef.current) clearTimeout(blinkClearTimerRef.current);
-    // say out loud that the grab finished, and say how much of
-    // it finished.
-    //
-    // Until now a completed download produced a haptic pulse and a 900 ms
-    // row blink and nothing else. `notifyTransferComplete` cannot cover
-    // this — notifications.ts:129 returns early while the app is
-    // foregrounded, by design — so the foreground case had no readable
-    // completion signal at all. That is why a truncated grab and a whole
-    // one were indistinguishable.
-    const completion = grabCompletionMessage({
-      saved: lastCompletedDownload.saved,
-      failed: lastCompletedDownload.failed,
-      // "Stopped — 3 files saved." rather than the partial-grab
-      // wording, which would read as a transfer that broke.
-      cancelled: lastCompletedDownload.cancelled,
-    });
-    showToast(completion.text, completion.kind);
+    /** No completion toast and no auto-opened sheet: a file that has not arrived is waiting, so there is no terminal moment. */
+    // The blink stays, because it points at rows that really did change.
     consumeCompletedDownload();
-    if (!alreadyOpen) setFolderModalId(synthId);
-    // Small delay so the modal has mounted before the blink fires.
+    // Small delay so the list has settled before the blink fires.
     const blinkDelay = alreadyOpen ? 0 : 240;
     blinkStartTimerRef.current = setTimeout(() => {
       setChildBlinkTarget({ shareKey, names });
@@ -1042,7 +1096,7 @@ export default function MainScreen() {
       () => setChildBlinkTarget(null),
       blinkDelay + 900,
     );
-  }, [lastCompletedDownload, folderModalId, consumeCompletedDownload, showToast]);
+  }, [lastCompletedDownload, folderModalId, consumeCompletedDownload]);
 
   const sharedPathsByDriveId = useMemo(() => {
     const m = new Map<string, SharedFilePath[]>();
@@ -1176,11 +1230,18 @@ export default function MainScreen() {
     [drives, lastResolvedLink, sessionDriveId],
   );
 
-  /**
-   * The transfer for a row, whichever origin it has. Hosted rows key off
-   * the engine driveId directly; received rows go through the share-key
-   * index above.
-   */
+  /** The transfer for a row: hosted rows key off the engine id, received rows go through the share-key index. */
+  /** A one-second clock, because two of the model's rules turn on elapsed time and a departed peer emits nothing further. */
+  const [listNow, setListNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setListNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  /** The anti-flap hold, taken from the flow context so the row and the picker share one per share key. */
+  // A ref local to this screen was a second source of truth: the picker's hold initialised fresh on open while this one still held a value a window old.
+  const rowHolds = flapHolds;
+
   const transferForRow = useCallback(
     (row: DriveRow) =>
       row.origin === "received"
@@ -1344,6 +1405,38 @@ export default function MainScreen() {
     () => visibleDrives.map((d) => ({ kind: "drive", drive: d })),
     [visibleDrives],
   );
+
+  /** A row the waiting loop just turned to ready is the one change the user did not ask for, so it is brought on screen and tinted once. */
+  // The key set refuses a key it has not seen before, which is what keeps a rehydrated store from replaying every highlight on launch.
+  useEffect(() => {
+    const snapshot: ReadyRow[] = receivedShares.map((s) => ({
+      shareKey: s.shareKey,
+      status: s.status,
+    }));
+    const fresh = newlyReadyKeys(prevReadyRef.current, snapshot);
+    prevReadyRef.current = snapshot;
+    if (fresh.length === 0) return;
+    setReadyTicks((prev) => {
+      const next = { ...prev };
+      for (const k of fresh) next[k] = (next[k] ?? 0) + 1;
+      return next;
+    });
+    // Scroll the first of them into view before it tints, or the tint plays
+    // somewhere the user cannot see.
+    const firstKey = fresh[0];
+    const index = flattenedList.findIndex(
+      (it) => it.drive.share?.shareKey === firstKey,
+    );
+    if (index >= 0) {
+      // `viewPosition: 0.5` centres it, and the failure handler is required:
+      // `scrollToIndex` throws on a row it has not measured yet.
+      try {
+        listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+      } catch {
+        // An unmeasured row is not worth an exception; the tint still plays.
+      }
+    }
+  }, [receivedShares, flattenedList]);
 
   // Build the file list for a given bundle drive (used by the folder-
   // contents modal). Same join semantics as the prior inline expansion:
@@ -1604,41 +1697,11 @@ export default function MainScreen() {
     [videoPlayer, videoDuration, showChrome],
   );
 
+  // The body moved to `src/lib/openSavedFile.ts` when the picker gained the
+  // same duty (contract clause 6). One open path, two callers.
   const onOpenFile = useCallback(
     async (path: string) => {
-      try {
-        const fileUri = path.startsWith("file://") ? path : `file://${path}`;
-        if (Platform.OS === "android") {
-          const contentUri = await FileSystemLegacy.getContentUriAsync(fileUri);
-          // the resolved result is READ, not discarded. A launch
-          // that starts an activity which refuses and finishes immediately
-          // resolves successfully — that silent path is what made a received
-          // APK look like nothing happened at all.
-          const startedAt = Date.now();
-          const result = await IntentLauncher.startActivityAsync(
-            "android.intent.action.VIEW",
-            {
-              data: contentUri,
-              flags: 1,
-              type: mimeFromName(baseName(path)),
-            },
-          );
-          const failure = describeOpenFailure({
-            resultCode: Number(result?.resultCode),
-            elapsedMs: Date.now() - startedAt,
-            ext: fileExt(baseName(path)),
-          });
-          if (failure) showToast(failure, "error");
-          return;
-        }
-        await Linking.openURL(fileUri);
-      } catch (e: unknown) {
-        // The raw native message is not pasted
-        // into the toast. It goes to the log, where a diagnosis
-        // belongs, and the user gets a line that is true.
-        logStructuredError("rn.open", "openURL failed", e);
-        showToast("Can't open that one. Try another app?", "error");
-      }
+      await openSavedFile(path, (msg) => showToast(msg, "error"));
     },
     [showToast],
   );
@@ -1766,6 +1829,12 @@ export default function MainScreen() {
   const onTapRow = useCallback(
     async (drive: DriveRow) => {
       const share = drive.share;
+      // `ready` means the list arrived and nothing is chosen, so the tap goes to the picker regardless of what the tap route would say about holdings.
+      // Checked before the route for the same reason the waiting line is: the route reasons about files on disk, and a freshly-resolved row has none.
+      if (share && share.status === "ready" && share.files.length > 0) {
+        openStoredSharePicker(share);
+        return;
+      }
       const route = rowTapRoute({
         origin: drive.origin,
         isBundle: drive.isBundle,
@@ -2537,6 +2606,9 @@ export default function MainScreen() {
       // reader, and leaving it behind would have left two definitions of
       // "is this share in flight" to drift apart.
       const iconName = driveIconName(drive);
+      // A multi-file bundle takes the folder glyph and earns no type badge.
+      const iconBadge =
+        (drive.files?.length ?? 0) > 1 ? null : badgeForName(driveSingleFileName(drive));
       const isBundle = !!drive.isBundle;
       const peers = t?.peersConnected ?? 0;
       const indicatorState: ActiveIndicatorState = isActive
@@ -2564,8 +2636,26 @@ export default function MainScreen() {
         return "File";
       })();
       let status: ShareRowStatus | null = null;
+      /** Every received row's line comes from the one model. */
+      // The transfer-derived status is kept only for a received engine drive with no record at all.
+      const rowView = isReceived
+        ? receivedRowView(drive.share, t, listNow, rowHolds)
+        : null;
       if (isFailed) {
         status = { label: `${typePrefix} · Couldn't restore`, tone: "danger" };
+      } else if (rowView) {
+        status = {
+          label: rowLineTakesTypePrefix(rowView)
+            ? `${typePrefix} · ${rowView.rowLine}`
+            : rowView.rowLine,
+          // `done` is the one status that is good news. Nothing else is an
+          // error - the model has no danger tone to return.
+          tone: rowView.status === "done" ? "primary" : "muted",
+        };
+      } else if (isReceived && waitingLine(drive.share)) {
+        // The waiting states come first, ahead of the transfer-derived line: a row waiting for a sender has no transfer, so that line would answer idle and the row would say nothing.
+        // No type prefix either, because a link-only row has no files to take a type from and would claim a file that has never been seen.
+        status = { label: waitingLine(drive.share) as string, tone: "muted" };
       } else if (isReceived) {
         // received rows get their own state machine. The hosted
         // branch below says "Sharing", which is wrong wording for a grab,
@@ -2626,6 +2716,10 @@ export default function MainScreen() {
         >
           <ShareRow
             iconName={iconName}
+            iconBadge={iconBadge}
+            highlightTick={
+              drive.share?.shareKey ? (readyTicks[drive.share.shareKey] ?? 0) : 0
+            }
             previewUri={previewUri}
             videoUri={videoUri}
             name={name}
@@ -2650,7 +2744,10 @@ export default function MainScreen() {
       );
     },
     [
+      // The model is a function of `now`, so without this the pause and sender windows re-evaluate only by accident.
+      listNow,
       activeDriveIds,
+      readyTicks,
       failedHydrationIds,
       onDelete,
       onTapRow,
@@ -2804,7 +2901,9 @@ export default function MainScreen() {
       } else if (folderModalIsReceived && folderModalReceiveStatus.state !== "idle") {
         statusLabel = folderModalReceiveStatus.label;
         statusTone = folderModalReceiveStatus.tone;
-      } else if (folderModalTransferring) {
+      } else if (!folderModalIsReceived && folderModalTransferring) {
+        // The received test is structural, not defensive: the percentage here is the engine's per-attempt figure, and a received surface takes its percentage from held bytes.
+        // The branch was already unreachable for a received drive, but only by an argument, and an argued guard is the kind that goes stale.
         statusLabel = `Sharing (${pct}%)`;
         statusTone = "warning";
       } else if (folderModalIsActive) {
@@ -2921,8 +3020,10 @@ export default function MainScreen() {
           label: folderModalReceiveStatus.label,
           tone: folderModalReceiveStatus.tone,
         }
-      : folderModalTransferring
+      : !folderModalIsReceived && folderModalTransferring
         ? {
+            // Hosted only, structurally - see the same guard in
+            // `folderModalFiles` above.
             label: `Sharing (${Math.round(
               Math.max(0, Math.min(100, folderModalTransfer?.percent ?? 0)),
             )}%)`,
@@ -2938,6 +3039,7 @@ export default function MainScreen() {
   // still refuse them — those route by row id — and the re-share pair
   // routes by the engine driveId instead.
   const kebabIsReceivedShare = !!kebabDrive?.share;
+  const kebabWaitingStatus = kebabDrive?.share?.status ?? null;
   /**
    * The received row's Share / Stop control,
    * and the announcing flag the link surfaces are gated on.
@@ -3066,6 +3168,7 @@ export default function MainScreen() {
       >
         <View style={styles.listFlex}>
           <FlatList
+            ref={listRef}
             data={flattenedList}
             keyExtractor={(it) => it.drive.id}
             renderItem={renderRow}
@@ -3347,6 +3450,50 @@ export default function MainScreen() {
                 }
               },
             });
+          }
+          /** The three waiting actions, offered only while the row is in the loop, gated on the status predicate rather than a hand-written list so a new status cannot silently leave them behind. */
+          // Changing the selection is the exception, also offered when the row is ready, because that is exactly when the user has a list and no selection yet.
+          if (kebabIsReceivedShare && kebabWaitingStatus) {
+            if (isLoopStatus(kebabWaitingStatus)) {
+              const key = kebabDrive.share?.shareKey ?? "";
+              list.push({
+                key: "retry-waiting",
+                icon: "refresh-outline",
+                label: "Retry now",
+                onPress: () => {
+                  setKebabSheet(null);
+                  void retryWaitingRow(key);
+                },
+              });
+              list.push({
+                key: "stop-waiting",
+                icon: "close-circle-outline",
+                label: "Stop waiting",
+                tone: "danger",
+                onPress: () => {
+                  setKebabSheet(null);
+                  void stopWaitingRow(key);
+                },
+              });
+                }
+            if (
+              kebabDrive.share &&
+              kebabDrive.share.files.length > 0 &&
+              (kebabWaitingStatus === "ready" ||
+                kebabWaitingStatus === "queued" ||
+                kebabWaitingStatus === "paused")
+            ) {
+              const share = kebabDrive.share;
+              list.push({
+                key: "change-selection",
+                icon: "list-outline",
+                label: "Change selection",
+                onPress: () => {
+                  setKebabSheet(null);
+                  openStoredSharePicker(share);
+              },
+            });
+            }
           }
           // The pin row is not offered while the switch is off. Kept whole
           // rather than deleted so flipping `PINNING_ENABLED` restores it.

@@ -1,24 +1,6 @@
-/**
- * Whether the picker may grab yet, and what its one action slot says.
- *
- * The reopen picker opens from disk with `sessionDriveId === null` on purpose
- * and resolves underneath itself. Grab was live in that window and the tap was
- * a **silent no-op**: `runDownload` returned at `if (!sessionDriveId)`, and
- * because a `wait` notice is normally already set by then, the inner
- * `if (!linkError)` swallowed even the apology. Nothing reached the engine —
- * it answers `receive.no-session` without a live session anyway — so disabling
- * the button removes nothing functional and replaces an apology with
- * prevention.
- *
- * Gated on `lookupState`, not on `sessionDriveId` directly, so the demo
- * session (`DEMO_DRIVE_ID`) is handled in one place: `pickerLookupStatus`
- * matches any non-null id.
- *
- * Here rather than inline in `SharePreviewModal.tsx` because `npm test`
- * renders no `.tsx` — a decision left in the component is a decision no test
- * can observe. Same reason `receivedRowRoute.ts` exists.
- */
-import { PICKER_LOOKUP_COPY, type PickerLookupState } from "./pickerLookupStatus";
+/** Whether the picker may grab yet, and what its one action slot says. */
+// Gated on the lookup state, not the session id, so the disabled button prevents a tap the engine would refuse anyway.
+import { PICKER_STATUS_COPY, type PickerStatusState } from "./pickerStatus";
 
 /** One slot, one button. "Look again" replaces Grab rather than joining it. */
 export type PickerActionKind = "grab" | "lookAgain";
@@ -40,7 +22,7 @@ export type PickerGrabGate = {
 };
 
 export type PickerGrabGateInput = {
-  lookupState: PickerLookupState;
+  lookupState: PickerStatusState;
   downloadAllBusy: boolean;
   /** The found-state label, from `sharePreviewCopy.previewPrimaryLabel`. */
   grabLabel: string;
@@ -53,10 +35,34 @@ export function pickerGrabGate(input: PickerGrabGateInput): PickerGrabGate {
   if (input.lookupState === "notFoundYet" || input.lookupState === "unreadable") {
     return {
       kind: "lookAgain",
-      label: PICKER_LOOKUP_COPY.grabLabelLookAgain,
+      label: PICKER_STATUS_COPY.grabLabelLookAgain,
       enabled: true,
       busy: false,
       grabAllowed: false,
+    };
+  }
+
+  // A grab is in flight: the spinner is the whole message, so the label is
+  // irrelevant and a second tap must not reach the engine.
+  if (input.lookupState === "starting") {
+    return {
+      kind: "grab",
+      label: input.grabLabel,
+      enabled: false,
+      busy: true,
+      grabAllowed: false,
+    };
+  }
+
+  // A real failure keeps the selection and the live button: the whole point of
+  // the error state is that trying again is the next sensible act.
+  if (input.lookupState === "error") {
+    return {
+      kind: "grab",
+      label: input.grabLabel,
+      enabled: !input.downloadAllBusy,
+      busy: input.downloadAllBusy,
+      grabAllowed: !input.downloadAllBusy,
     };
   }
 
@@ -65,7 +71,7 @@ export function pickerGrabGate(input: PickerGrabGateInput): PickerGrabGate {
   if (input.lookupState !== "found") {
     return {
       kind: "grab",
-      label: PICKER_LOOKUP_COPY.grabLabelWaiting,
+      label: PICKER_STATUS_COPY.grabLabelWaiting,
       enabled: false,
       busy: false,
       grabAllowed: false,

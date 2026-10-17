@@ -5,6 +5,14 @@ import { planReceivedDelete } from "../lib/deleteReceivedPlan";
 import { demoteMissingFile } from "../lib/receivedFileHealth";
 import { baseName } from "../lib/files";
 import { extractKey, normalizeShareLink } from "../lib/links";
+import { waitingRowName } from "../lib/waitingDisposition";
+import {
+  deriveStatus,
+  isLoopStatus,
+  migrateStatus,
+  withConsistentStatus,
+  type WaitingStatus,
+} from "../lib/waitingStatus";
 import {
   applyReceivedDeletePlan,
   loadDownloaded,
@@ -60,6 +68,21 @@ export type ReceivedShare = {
    * that has never completed a grab; absence means not known.
    */
   downloadFolder?: string;
+  /** Where this row is in the wait-for-the-sender cycle. Required, so no path can create a statusless row; older records get one at the sanitize boundary. */
+  status: WaitingStatus;
+  /** The selected file paths, kept separate from the downloaded flags because the two answer different questions: what the user asked for, and what arrived. */
+  selection?: string[];
+  /** Selected paths the latest version of the share does not have. */
+  missing?: string[];
+  /** When the waiting loop last ran a lookup for this row. */
+  lastCheckedAt?: number;
+  /** Consecutive lookups that found no peer. Drives the loop's backoff. */
+  emptyChecks?: number;
+  /** Why a paused row is paused. Stored rather than derived, because the row has to say why the moment the list renders and the engine event that settled it is long gone. */
+  // Absent means not known and falls back to the one reason that needs no information an older record never carried. Meaningless on any other status and not read there.
+  pauseReason?: string;
+  /** Timed retries spent on the current stall, capped, after which the row takes the waiting loop's ordinary cadence. Reset by any byte. */
+  stallRetries?: number;
 };
 
 const STORAGE_FILE = `${RNFS.DocumentDirectoryPath}/peardrop-received-shares.json`;
@@ -87,6 +110,14 @@ function sanitizeFile(raw: unknown): ReceivedShareFile | null {
   };
 }
 
+// Absent stays absent: an empty array would read as "nothing is selected",
+// which is a different claim from "no selection was ever made".
+function sanitizeStringList(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw.filter((v): v is string => typeof v === "string" && v.length > 0);
+  return out.length > 0 ? out : undefined;
+}
+
 function sanitize(raw: unknown): ReceivedShare[] {
   if (!Array.isArray(raw)) return [];
   const out: ReceivedShare[] = [];
@@ -107,7 +138,9 @@ function sanitize(raw: unknown): ReceivedShare[] {
     const files = Array.isArray(r.files)
       ? (r.files.map(sanitizeFile).filter(Boolean) as ReceivedShareFile[])
       : [];
-    out.push({
+    // Applied on the way in as well as out, or a row already stored in the bad state holds it until some unrelated resolve.
+    out.push(withConsistentStatus({
+      ...migrateStatus({ status: r.status, files }),
       shareKey,
       shareLink,
       shareName: typeof r.shareName === "string" ? r.shareName : "Share",
@@ -118,13 +151,31 @@ function sanitize(raw: unknown): ReceivedShare[] {
       // persists, so emitting the key would put it straight back on disk.
       ...(PINNING_ENABLED ? { isPinned: r.isPinned === true } : {}),
       isFavorite: r.isFavorite === true,
+      selection: sanitizeStringList(r.selection),
+      missing: sanitizeStringList(r.missing),
+      lastCheckedAt:
+        typeof r.lastCheckedAt === "number" && Number.isFinite(r.lastCheckedAt)
+          ? r.lastCheckedAt
+          : undefined,
+      emptyChecks:
+        typeof r.emptyChecks === "number" && Number.isFinite(r.emptyChecks)
+          ? Math.max(0, Math.floor(r.emptyChecks))
+          : undefined,
       // Unlike the two flags above, these are not coerced to a default: an
       // older record has no value, and an empty one would be a lie about
       // which drive and which folder. Absent stays absent.
       driveId: typeof r.driveId === "string" && r.driveId ? r.driveId : undefined,
       downloadFolder:
         typeof r.downloadFolder === "string" && r.downloadFolder ? r.downloadFolder : undefined,
-    });
+      // Absent stays absent, on the same reasoning as `driveId` above: an
+      // empty reason would render as a short reason the app never observed.
+      pauseReason:
+        typeof r.pauseReason === "string" && r.pauseReason ? r.pauseReason : undefined,
+      stallRetries:
+        typeof r.stallRetries === "number" && Number.isFinite(r.stallRetries)
+          ? Math.max(0, Math.floor(r.stallRetries))
+          : undefined,
+    }));
   }
   return out;
 }
@@ -273,6 +324,7 @@ async function migrateFromLegacyIfNeeded(): Promise<void> {
         firstSeenAt: earliest,
         lastUpdatedAt: latest,
         files: downloadedFiles,
+        status: deriveStatus(downloadedFiles),
       });
     }
   }
@@ -316,29 +368,78 @@ export async function upsertShare(share: ReceivedShare): Promise<ReceivedShare[]
      * field — a re-resolve carries newer truth about the name and files.
      */
     const prev = list[idx];
-    next[idx] = {
+    next[idx] = withConsistentStatus({
       ...prev,
       ...share,
       driveId: share.driveId ?? prev?.driveId,
       downloadFolder: share.downloadFolder ?? prev?.downloadFolder,
-    };
+    });
   } else {
-    next = [share, ...list];
+    next = [withConsistentStatus(share), ...list];
   }
   await writeToDisk(next);
   emit(next);
   return next;
 }
 
-/**
- * Persist the engine session facts a re-grab needs, without disturbing the
- * file list. Separate from `upsertShare`, which runs on a resolve when the
- * manifest is the news; this runs after a grab, when the only new facts are
- * which drive served it and where the bytes landed. Folding them together
- * would force a caller holding one fact to rebuild a whole record, which is
- * how the spread above erases fields. A no-op when the share is not on
- * record; callers establish it with `upsertShare` first.
- */
+/** The ready-with-a-selection invariant is applied in the write above, which is the single place every record passes through on its way to disk, so validation happens where data enters. */
+
+/** A row that holds the link and nothing else, for a sender who was not there. */
+// The name carries the key's first few hex, because the list's own nameless fallback cannot tell two waiting rows apart; the real name replaces it as soon as the share resolves.
+export async function createWaitingShare(shareLink: string): Promise<ReceivedShare | null> {
+  const link = normalizeShareLink(shareLink);
+  const key = extractKey(link);
+  if (!key) return null;
+  const existing = await loadShare(key);
+  if (existing) {
+    // A row already in the loop is left alone: a second paste must not throw away its selection by demoting it.
+    if (isLoopStatus(existing.status)) return existing;
+    // A ready row whose sender has gone has a list and no selection, so it belongs back in the loop.
+    if (existing.status === "ready") {
+      return (await patchShare(key, { status: "waiting" })) ?? existing;
+    }
+    // `done` and `downloading` are left alone. The caller checks the status it
+    // gets back rather than assuming a row was enrolled.
+    return existing;
+  }
+  const now = Date.now();
+  const record: ReceivedShare = {
+    shareKey: key,
+    shareLink: link,
+    shareName: waitingRowName(key),
+    firstSeenAt: now,
+    lastUpdatedAt: now,
+    files: [],
+    status: "waiting",
+  };
+  await upsertShare(record);
+  return record;
+}
+
+/** Write a status, and whatever moves with it, as one record. */
+// Routed through the main write so the merge rule keeps applying: a status change must not be able to erase the two fields the re-grab path needs.
+export async function patchShare(
+  shareKey: string,
+  patch: Partial<Omit<ReceivedShare, "shareKey" | "shareLink">> & {
+    /** Leave `lastUpdatedAt` alone — a lookup that found nothing is not progress. */
+    touch?: boolean;
+  },
+): Promise<ReceivedShare | null> {
+  const k = String(shareKey || "").toLowerCase();
+  if (!k) return null;
+  const prev = await loadShare(k);
+  if (!prev) return null;
+  const { touch, ...fields } = patch;
+  const next: ReceivedShare = {
+    ...prev,
+    ...fields,
+    lastUpdatedAt: touch === false ? prev.lastUpdatedAt : Date.now(),
+  };
+  await upsertShare(next);
+  return next;
+}
+
+/** Persist the session facts a re-grab needs without disturbing the file list; a no-op when the share is not on record. */
 export async function rememberDriveSession(
   shareKey: string,
   facts: { driveId?: string | null; downloadFolder?: string | null },

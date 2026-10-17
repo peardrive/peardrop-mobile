@@ -2,7 +2,7 @@
   "expo": {
     "name": "PearDrop",
     "slug": "peardrop-mobile",
-    "version": "0.2.3",
+    "version": "0.3.0",
     "newArchEnabled": true,
     "orientation": "portrait",
     "scheme": ["peardrop.mobile", "peardrop"],
@@ -25,7 +25,7 @@
         "backgroundColor": "#201e1f"
       },
       "package": "com.anjouinc.peardrop",
-      "versionCode": 5
+      "versionCode": 7
     },
     "plugins": [
       [

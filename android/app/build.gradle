@@ -111,50 +111,18 @@ if (devInstrumentation) {
     logger.lifecycle("WARNING: -PdevInstrumentation=true - instrumentation gate armed in a RELEASE build. This artifact is for measurement only and MUST NOT be published.")
 }
 
-/**
- * section 1.2: the generated build stamp.
- *
- * Every build this project had ever produced called itself `0.1.0 (1)`, so no
- * tester report could be attached to a build and no fix could be proved to
- * have shipped. `versionCode` fixes "which drop"; this fixes "which build
- * within the drop", which is the part a version number cannot express.
- *
- * Shape: <sprint>.<yyyyMMdd-HHmmss>.<nonce>
- *   e.g. FIX-2026-09.20260925-143012.a3f19c
- *
- * The version is deliberately NOT repeated inside the stamp. It sits on the
- * line immediately above it in the export header and in the Settings row, and
- * a second copy here would be a second place to forget to bump.
- *
- * GENERATED, NEVER HAND-MAINTAINED. A stamp a human edits drifts, and a
- * drifted stamp is worse than none: it manufactures a false attribution.
- *
- * NO GIT. There is no `.git` in the development tree and git is forbidden in
- * all three trees, so there is no commit hash, no `describe` and no
- * dirty-tree check here. A wall-clock timestamp plus a random nonce is
- * sufficient: it needs to be DISTINCT per build, not meaningful.
- *
- * The sprint label is overridable so a measurement run can name itself:
- *
- *     ./gradlew -p android assembleRelease -PpeardropSprint=FIX-2026-09-B
- *
- * Non-alphanumerics are stripped from the label and the nonce before they
- * reach `buildConfigField`, which pastes its argument into generated Java
- * source verbatim - a quote or a backslash in there is a compile error.
- *
- * KNOWN COST, accepted deliberately: this value is computed at Gradle
- * CONFIGURATION time, so it changes on every invocation and
- * `generateBuildConfig` is therefore never UP-TO-DATE. That costs one small
- * Java/Kotlin recompile per build. The alternative - a stamp that only
- * changes sometimes - cannot satisfy "two builds must be distinguishable",
- * which is the whole requirement. The expensive part of this build is the
- * NDK/CMake step, which BuildConfig does not touch.
- */
-def buildStampSprint = (findProperty('peardropSprint') ?: 'FIX-2026-09')
+/* The build stamp, so two builds of one version stay distinguishable in a report. Generated, never hand-maintained: an edited stamp drifts and misattributes. */
+def buildStampSprint = (findProperty('peardropSprint') ?: 'local')
+    // Non-alphanumerics go, because `buildConfigField` pastes this into
+    // generated Java verbatim and a quote there is a compile error.
     .toString().replaceAll('[^A-Za-z0-9._-]', '')
+// No commit hash: git is forbidden in every tree here, and a wall-clock time
+// plus a random nonce only has to be distinct per build, not meaningful.
 def buildStampTime = new Date().format('yyyyMMdd-HHmmss')
 def buildStampNonce = String.format('%06x', (int) (Math.random() * 0x1000000))
 def buildStamp = "${buildStampSprint}.${buildStampTime}.${buildStampNonce}"
+// Computed at configuration time, so `generateBuildConfig` never reads up to
+// date; one small recompile per build is the price of being distinct.
 logger.lifecycle("PearDrop build stamp: ${buildStamp}")
 
 /**
@@ -171,34 +139,37 @@ logger.lifecycle("PearDrop build stamp: ${buildStamp}")
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
 /**
- * Release signing credentials, loaded from android/keystore.properties.
- *
- * That file is gitignored and the keystore it points at lives outside the
- * tree entirely, so a published clone has neither. The build MUST still
- * succeed there: a repo that cannot be compiled is a worse outcome than one
- * whose artifact is debug-signed, and the published tree's first successful
- * compile was recent enough that regressing it would go unnoticed.
- *
- * Blank passwords count as absent. The checked-in template ships with them
- * empty, so an unfilled template degrades exactly like a missing file rather
- * than failing the build with a Gradle stacktrace.
- */
-def keystorePropertiesFile = rootProject.file("keystore.properties")
+ * Release signing credentials, from a properties file that is gitignored and points outside the tree, so a published clone has neither and must still build. */
+def keystorePropertiesPathOverride = findProperty('keystorePropertiesPath')
+def keystorePropertiesFile = keystorePropertiesPathOverride
+    ? file(keystorePropertiesPathOverride.toString())
+    : rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
 def hasReleaseKeystore = false
+def releaseStoreFile = null
 if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+    def declaredStore = keystoreProperties['storeFile']
+    if (declaredStore) {
+        // A relative store path resolves against the properties file's own folder first, so one file signs a build in any tree.
+        // Project-relative resolution is kept as a fallback, or an existing file written for the app folder would stop resolving.
+        def declared = new File(declaredStore.toString())
+        def candidates = declared.isAbsolute()
+            ? [declared]
+            : [new File(keystorePropertiesFile.parentFile, declaredStore.toString()),
+               file(declaredStore)]
+        releaseStoreFile = candidates.find { it.exists() }
+    }
     hasReleaseKeystore =
-        keystoreProperties['storeFile'] &&
+        declaredStore &&
         keystoreProperties['storePassword'] &&
         keystoreProperties['keyAlias'] &&
         keystoreProperties['keyPassword'] &&
-        file(keystoreProperties['storeFile']).exists()
+        releaseStoreFile != null
 }
 if (!hasReleaseKeystore) {
-    // Plain ASCII: Gradle console output goes through the Windows OEM
-    // codepage, which renders an em-dash as mojibake.
-    logger.lifecycle("WARNING: no usable android/keystore.properties - release builds will be DEBUG-SIGNED. They cannot be published, and cannot update an installed release build.")
+    // Plain ASCII: Gradle console output goes through the Windows OEM codepage, which renders an em-dash as mojibake.
+    logger.lifecycle("WARNING: no usable keystore properties - release builds will be DEBUG-SIGNED. They cannot be published, and cannot update an installed release build.")
 }
 
 android {
@@ -212,14 +183,10 @@ android {
         applicationId 'com.anjouinc.peardrop'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // these two are PREBUILD OUTPUT. `app.json` is the source of
-        // truth - `expo.version` -> versionName, `expo.android.versionCode` ->
-        // versionCode - and `expo prebuild` regenerates these lines from it.
-        // Bumping them here and not there is reverted by the next prebuild
-        // without a word. Keep them literal and identical to what prebuild
-        // would emit, so a regeneration is a no-op on this pair.
-        versionCode 5
-        versionName "0.2.3"
+        // These two are prebuild output: the app manifest is the source of truth and a regeneration rewrites them from it.
+        // Bumping them here and not there is reverted by the next prebuild without a word, so keep them identical to what it would emit.
+        versionCode 7
+        versionName "0.3.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         buildConfigField "boolean", "DEV_INSTRUMENTATION", "${devInstrumentation}"
@@ -241,7 +208,9 @@ android {
         // blank".
         if (hasReleaseKeystore) {
             release {
-                storeFile file(keystoreProperties['storeFile'])
+                // The already-resolved File, not a re-resolve: the resolution
+                // above is the one that was validated.
+                storeFile releaseStoreFile
                 storePassword keystoreProperties['storePassword']
                 keyAlias keystoreProperties['keyAlias']
                 keyPassword keystoreProperties['keyPassword']

@@ -173,7 +173,8 @@ export function receiveRowStatus(
   }
 
   if (transfer.stalled) {
-    return { state: "stalled", label: "Stopped — tap to retry", tone: "danger" };
+      // A stall is a wait, not a stop: the app retries by itself, so the row does not ask the user to do anything about it.
+    return { state: "stalled", label: "Waiting for sender", tone: "muted" };
   }
 
   const pct = clampReceivePercent(transfer.percent);
@@ -183,7 +184,9 @@ export function receiveRowStatus(
   }
 
   if (pct > 0 || transfer.progressEverReceived) {
-    return { state: "receiving", label: `Receiving (${pct}%)`, tone: "warning" };
+    /** No number, deliberately: the engine's percentage is per-attempt and resets on a resume. */
+    // Every received surface takes its percentage from held bytes, or the same share reads two numbers.
+    return { state: "receiving", label: "Receiving", tone: "warning" };
   }
 
   return { state: "starting", label: "Starting…", tone: "muted" };
@@ -237,32 +240,30 @@ export function grabCompletionMessage(counts: {
     };
   }
 
+    /** A file that has not arrived is waiting, never failed. */
+    // The earlier wording announced a casualty about a file the app is still going to fetch, seen mid-retry against a sender that came back shortly after. The counts are kept because they are true; only the verdict changes.
   if (failed > 0 && saved === 0) {
     return {
-      text: failed === 1 ? "Couldn't grab that file." : `Couldn't grab ${failed} files.`,
-      kind: "error",
+      text: failed === 1 ? "Waiting for 1 file." : `Waiting for ${failed} files.`,
+      kind: "info",
     };
   }
 
   if (failed > 0) {
     return {
-      text: `Saved ${saved} of ${saved + failed} — ${failed} didn't make it.`,
-      kind: "error",
+      text: `Saved ${saved} of ${saved + failed} · waiting for ${failed}.`,
+      kind: "info",
     };
   }
 
   return {
-    text: saved === 1 ? "Got it — 1 file saved." : `Got it — ${saved} files saved.`,
+    text: saved === 1 ? "Saved 1 file." : `Saved ${saved} files.`,
     kind: "success",
   };
 }
 
-/**
- * The row's wording for "the user stopped this one". Derived from
- * `grabCompletionMessage` so the row and the toast cannot drift apart; the
- * trailing full stop is dropped because a row label is a fragment. An
- * unknown count is not coerced to zero, which would be a claim.
- */
+/** The row's wording for a grab the user stopped, derived from the toast's so the two cannot drift apart. */
+// The trailing full stop is dropped because a row label is a fragment, and an unknown count is not coerced to zero, which would be a claim.
 export function cancelledRowLabel(filesKept?: number | null): string {
   if (typeof filesKept !== "number" || !Number.isFinite(filesKept) || filesKept < 0) {
     return "Stopped";
@@ -293,14 +294,13 @@ function downloadOutcomeRowStatus(outcome: {
   // answers to what is on disk.
   if (outcome.outcome === "failed" || kept <= 0) {
     return {
+      // The state name is engine vocabulary and four call sites compare against it; only what the user reads changes, because nothing in the after-grab flow calls a pending file a casualty.
       state: "failed",
       label:
         failed > 0
           ? stripRowStop(grabCompletionMessage({ saved: 0, failed }).text)
-          : // No casualty count to name. This is the notification half's
-            // "Nothing was saved" (src/state/backend.ts:1689) as a fragment.
-            "Nothing saved",
-      tone: "danger",
+          : "Waiting for files",
+      tone: "muted",
     };
   }
 
@@ -309,10 +309,10 @@ function downloadOutcomeRowStatus(outcome: {
     label:
       failed > 0
         ? stripRowStop(grabCompletionMessage({ saved: kept, failed }).text)
-        : // Files landed and the engine says some did not, but it did not say
-          // how many. "Saved 2 of 2" would be a split the app never observed.
-          "Some files didn't arrive",
-    tone: "warning",
+        : // Files landed and the engine says some have not yet, but it did not
+          // say how many. "Saved 2 of 2" would be a split the app never saw.
+          "Waiting for the rest",
+    tone: "muted",
   };
 }
 
