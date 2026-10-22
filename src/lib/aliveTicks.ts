@@ -1,9 +1,6 @@
 /**
- * Validate an engine status reply before its liveness counter is trusted.
- * `aliveTicks` means "the engine's ticker is running", not "the OS let us
- * run": `engineStatus()` reports it unconditionally, so a failed `engineInit`
- * pins it at 0 while status calls keep succeeding and every long window reads
- * as fully frozen. A null return is no verdict — the window has no evidence.
+ * Validate an engine status reply before trusting its liveness counter. `engineStatus()` reports
+ * `aliveTicks` unconditionally, so a failed init pins it at 0 and every long window reads as frozen.
  */
 
 export type AliveReading = {
@@ -27,9 +24,8 @@ export type AliveStatusLike =
   | undefined;
 
 /**
- * Extract a trustworthy liveness reading, or null. `Number.isFinite`, not
- * `typeof === "number"`: `evaluateFreeze` tests only `observedTicks < 0`, so a
- * NaN counter slips through and a malformed reply reads as a clean run.
+ * A trustworthy reading, or null. `Number.isFinite`, not `typeof === "number"`: `evaluateFreeze`
+ * tests only `observedTicks < 0`, so a NaN counter would read as a clean run.
  */
 export function parseAliveReading(status: AliveStatusLike): AliveReading | null {
   if (!status) return null;

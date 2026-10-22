@@ -9,28 +9,19 @@ import {
 } from "./foregroundService";
 
 /**
- * Harness rows for the foreground service. The bridge, the drain and the
- * running-state bookkeeping live in `foregroundService.ts`; this file keeps
- * no native access of its own, because two modules holding independent
- * beliefs about whether the service is running is how a start and its stop
- * drift apart. It exists only to start the service from the background
- * transition without consulting the activity predicate. Debug builds only.
+ * Harness rows for the foreground service; it keeps no native access of its own, because two
+ * modules with independent beliefs about whether the service runs is how a start and stop drift.
  */
 
 const TAG = "rn.probe.oem";
 
 export { isForegroundServiceAvailable, startForegroundService, stopForegroundService };
 
-// ---------------------------------------------------------------------
 // Background-start arm (harness only)
-// ---------------------------------------------------------------------
 
 /**
- * Android 12+ forbids starting a foreground service from the background, so
- * whether a start from the `background` AppState transition lands inside a
- * grace window or throws has to be measured. The arm fires alongside the
- * shipping lifecycle: a second `startForegroundService` on a running service
- * re-enters `onStartCommand` and re-posts the same notification.
+ * Android 12+ forbids a background foreground-service start, so whether one lands inside a grace
+ * window or throws has to be measured. A second start on a running service just re-posts.
  */
 let armed = false;
 let subscription: { remove: () => void } | null = null;

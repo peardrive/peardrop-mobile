@@ -23,13 +23,8 @@ export type FolderAccessModalProps = {
 };
 
 /**
- * Manages which folders PearDrop can read.
- *
- * This is the honest surface for a permission the user granted piecemeal:
- * everything they've allowed, in one place, each removable. Android holds
- * these as persisted SAF grants, so without a screen like this the list
- * is invisible and only growable — which is exactly the pattern people
- * distrust in file-sharing apps.
+ * Everything the user has allowed, in one place, each removable. Android holds these as persisted
+ * SAF grants, so without this screen the list is invisible and only growable.
  */
 export default function FolderAccessModal({
   visible,
@@ -121,22 +116,16 @@ export default function FolderAccessModal({
             <Text style={styles.addText}>Add folder</Text>
           </Pressable>
 
-          {/* The subtitle already covers what Remove does. This is the
-              part it can't claim: removing stops us reading the folder,
-              but Android keeps the persisted grant until the user takes
-              it back in system settings. Saying "revoke" up top would
-              overpromise, so the precise note lives here. */}
+          {/* Removing stops us reading the folder, but Android keeps the persisted grant until the
+              user takes it back in system settings, so "revoke" up top would overpromise. */}
           <Text style={styles.footnote}>
             To take the Android permission back as well, use your
             device&apos;s app settings.
           </Text>
         </Pressable>
       </Pressable>
-      {/* last child on purpose: this Modal is its own Android window,
-          and a root-level toast would be painted under it (and untappable).
-          While this sheet is open its outlet is the last registered, so it
-          owns the toast; it unregisters on close and the root takes over.
-          See src/lib/toastOutletSelect.ts. */}
+      {/* Last child on purpose: this Modal is its own Android window, so a root-level toast would
+          paint under it. Its outlet is the last registered while open. See toastOutletSelect.ts. */}
       {visible && <ToastOutlet />}
     </Modal>
   );

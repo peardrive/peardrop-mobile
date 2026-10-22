@@ -1,17 +1,6 @@
 /**
- * Where a successful resolve leaves the Receive sheet.
- *
- * The sheet and the preview are two RN `Modal`s owned by two different state
- * systems: `receiveSheetVisible` is local to `MainScreen`, `previewVisible`
- * lives in `ShareLinkFlowContext`. Nothing on the success path connected them,
- * so pasting a link left the sheet mounted under the picker.
- *
- * This must NOT route through `closeReceiveSheet`: that calls `abortResolving`,
- * which bumps the resolve generation and fires an engine abort — on a resolve
- * that just succeeded. The sheet needs hiding, not cancelling.
- *
- * Extracted for the Amendment A-3 reason: the suite renders no `.tsx`, so the
- * decision is only assertable as a pure function.
+ * Where a successful resolve leaves the Receive sheet. Must NOT route through `closeReceiveSheet`:
+ * that aborts the resolve that just succeeded. The sheet needs hiding, not cancelling.
  */
 export type ResolveHandoffKind = "full" | "partial" | "none";
 

@@ -4,12 +4,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { IS_DEBUG_BUILD } from "../lib/devGate";
 
 /**
- * Which delay the simulated-completion test uses. A setting rather than a
- * constant because a completion scheduled inside the first minute always
- * fires before the OS gets round to freezing the process, so the
- * battery-restriction scenario cannot fail; proving it needs a window of
- * minutes. Persisted because the test protocol force-stops the app between
- * runs, and a session-only value would silently revert to the short delay.
+ * A setting, not a constant: a completion scheduled inside the first minute fires before the OS
+ * freezes anything. Persisted because the test protocol force-stops the app between runs.
  */
 
 const STORAGE_KEY = "peardrop.simulate-delay-ms";
@@ -102,9 +98,8 @@ export function subscribeSimulateDelay(listener: Listener): () => void {
 }
 
 /**
- * The debug-build check must live inside the effect, not around the hook call:
- * the rules of hooks force this hook to run in every build, so guarding outside
- * would still add a listener and hydrate storage in a release build.
+ * The debug-build check lives inside the effect, not around the hook call: the rules of hooks force
+ * the hook to run in every build, so guarding outside would still hydrate storage in a release build.
  */
 export function useSimulateDelay(): {
   delayMs: SimulateDelayMs;

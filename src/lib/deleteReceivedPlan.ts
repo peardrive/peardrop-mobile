@@ -1,9 +1,6 @@
 /**
- * What "Delete" on a received share removes: the app's own copies under
- * `<root>/peardrop/downloads`, plus the corestore via the engine. It never
- * touches files the user copied to `Downloads/PearDrop`, which is not under
- * the app's document directory and so can never match. Decided in a module
- * rather than in the screen so the safety property is directly testable.
+ * Delete removes the app's own copies under `<root>/peardrop/downloads` plus the corestore. It can
+ * never touch `Downloads/PearDrop`, which is outside the document directory and cannot match.
  */
 
 /** A downloaded-file index entry, narrowed to what the plan needs. */
@@ -42,10 +39,8 @@ function normalizePath(p: string): string {
     .replace(/\/{2,}/g, "/");
 }
 
-/** Is `candidate` a file the app itself wrote into its own downloads
- *  directory? Deliberately strict: a traversal segment anywhere disqualifies
- *  the path rather than being resolved away, because this gate guards an
- *  `unlink` and the safe answer to an unclear path is no. */
+/** Deliberately strict: a traversal segment anywhere disqualifies the path rather than being
+ *  resolved away, because this gate guards an `unlink`. */
 export function isAppOwnedCopy(candidate: string, documentDirectoryPath: string): boolean {
   const p = normalizePath(candidate);
   const root = appOwnedDownloadsRoot(documentDirectoryPath);
@@ -55,10 +50,8 @@ export function isAppOwnedCopy(candidate: string, documentDirectoryPath: string)
   return p.startsWith(`${root}/`) && p.length > root.length + 1;
 }
 
-/** Work out exactly what Delete removes for one received share. Both halves
- *  are needed: unlinking the bytes without dropping the index entries leaves
- *  the dedup probe claiming the files are already here, and dropping the
- *  entries without unlinking leaves files with nothing pointing at them. */
+/** Both halves are needed: unlinking without dropping the index leaves the dedup probe claiming the
+ *  files are here, and dropping the index without unlinking leaves files nothing points at. */
 export function planReceivedDelete(args: {
   shareFiles: ShareFileRef[];
   legacy: LegacyDownloadedEntry[];
@@ -100,10 +93,8 @@ export function planReceivedDelete(args: {
 
 export type DeleteConfirmCopy = { title: string; body: string };
 
-/** The confirm text, which has to say exactly what happens: which copies go
- *  and which stay. It deliberately does not promise that pasting the link
- *  again will offer the files, because that also depends on the sender still
- *  hosting, which this device cannot establish. */
+/** It deliberately does not promise that pasting the link again will offer the files — that depends
+ *  on the sender still hosting, which this device cannot establish. */
 export function describeDeleteConfirm(kind: "received" | "hosted"): DeleteConfirmCopy {
   if (kind === "received") {
     return {

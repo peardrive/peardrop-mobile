@@ -36,6 +36,9 @@ class MainApplication : Application(), ReactApplication {
               // with no manifest half to keep in step — the module needs no
               // permission, no <service> and no <queries> entry.
               add(SaveToDownloadsPackage())
+              // The share target. Its manifest half is the SEND and SEND_MULTIPLE
+              // filters on MainActivity, so the two move together.
+              add(PeardropShareIntentPackage())
             }
 
           override fun getJSMainModuleName(): String = ".expo/.virtual-metro-entry"

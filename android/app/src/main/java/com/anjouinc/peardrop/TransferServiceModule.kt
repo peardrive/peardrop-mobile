@@ -11,34 +11,8 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 
 /**
- * Sprint 6R's foreground-service bridge, restored by 7D as a harness row.
- *
- * A plain bridge module rather than a TurboModule — it works under both
- * architectures via the interop layer, and nothing here is hot enough to care.
- *
- * Both methods resolve rather than reject on failure, returning the exception
- * class name instead. A background start on Android 12+ is EXPECTED to fail
- * with ForegroundServiceStartNotAllowedException; that outcome is data the
- * harness exists to collect, so it must reach JS as a value rather than as an
- * unhandled rejection.
- *
- * ## No getConstants() here — deliberately
- *
- * The original carried `getConstants()` returning `isDebugBuild`. That is not
- * spike code: it is the gate signal for every dev-only surface in the app, and
- * split it out into BuildInfoModule (`"PeardropBuildInfo"`) so that
- * retiring this spike could not silently disable it. Restoring it here would
- * register the same constant under a second module name, and the gates would
- * break silently. The archive's README says so explicitly; it stays deleted.
- *
- * ## Why drainServiceLog exists
- *
- * `start()` resolves as soon as `startForegroundService` returns, which is
- * BEFORE `onStartCommand` has run — so the "started" string proves the call
- * was accepted, not that the service reached foreground state. Only
- * `TransferService` itself knows that, and it only said so to logcat, which
- * never reaches an exported log. This drains what the service recorded so the
- * JS side can write it into the debug log.
+ * Foreground-service bridge. Both methods resolve rather than reject: a blocked background start on
+ * Android 12+ is an expected outcome the caller needs as a value, not an unhandled rejection.
  */
 class TransferServiceModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -76,20 +50,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  /**
-   * is the screen on?
-   *
-   * `PowerManager.isInteractive()` requires NO permission — it is the reason
-   * the richer freeze attribution is obtainable at all. A screen-locked
-   * window and a screen-on one are different tests of the same mechanism,
-   * and every measurement in this project's record that mattered was taken
-   * screen-locked; without this, an exported log cannot say which kind of
-   * window produced a verdict.
-   *
-   * Lives on this module rather than BuildInfoModule because it is a
-   * changing value, not a build constant, and BuildInfoModule is
-   * constants-only and load-bearing for every dev gate.
-   */
+  /** Screen state. `isInteractive()` needs no permission, which is what makes freeze attribution obtainable. */
   @ReactMethod
   fun isScreenInteractive(promise: Promise) {
     try {
@@ -97,9 +58,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
         reactApplicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
       promise.resolve(pm?.isInteractive ?: true)
     } catch (e: Exception) {
-      // Unknown reads as "on": the conservative direction, since a
-      // screen-locked claim is the stronger evidence and should not be made
-      // on a failed read.
+      // Unknown reads as "on": a screen-locked claim is the stronger one and must not rest on a failed read.
       promise.resolve(true)
     }
   }
@@ -144,18 +103,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  /**
-   * was a Cancel tapped that could not be delivered to JS?
-   *
-   * The Receiving row's Cancel emits `PeardropCancelReceiving` directly
-   * when a `ReactContext` is available, which is the expected path — the
-   * foreground service exists to keep the process alive, so one should be.
-   * This is the fallback for when it is not: the tap is recorded and the JS
-   * side drains it on its next foreground transition, so a cancel the user
-   * pressed is never silently lost.
-   *
-   * Clears the flag as it reads, so draining twice does not cancel twice.
-   */
+  /** Drains a Cancel tap that could not be delivered to JS. Clears as it reads, so draining twice cannot cancel twice. */
   @ReactMethod
   fun drainPendingCancel(promise: Promise) {
     try {
@@ -165,11 +113,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
     }
   }
 
-  /**
-   * Take everything TransferService has recorded about itself since the last
-   * drain — `startForeground` success or failure, `onTimeout`, `onDestroy`.
-   * Resolves an empty array when nothing is pending, never rejects.
-   */
+  /** Everything TransferService recorded since the last drain. Resolves empty when nothing is pending, never rejects. */
   @ReactMethod
   fun drainServiceLog(promise: Promise) {
     try {

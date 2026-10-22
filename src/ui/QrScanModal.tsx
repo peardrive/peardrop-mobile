@@ -211,10 +211,8 @@ export default function QrScanModal() {
   const canRequest = permission?.canAskAgain !== false;
 
   /**
-   * Classified through `classifyScan`, the same single parser the sheet, the
-   * deep link and the paste path use: any QR at all must not read as a
-   * success. A rejected scan does not latch, because the camera is still
-   * pointed at something and the next code should be read.
+   * Classified through `classifyScan`, the one parser the sheet, deep link and paste path share, so
+   * no arbitrary QR reads as a success. A rejected scan does not latch — the next code should read.
    */
   const onScan = (data: string) => {
     if (!data || scannedRef.current) return;
@@ -363,9 +361,8 @@ export default function QrScanModal() {
                 </View>
               </View>
             </View>
-            {/* "Got it — opening…" is reachable only for a code that really
-                is a PearDrop link. A rejected scan says what happened, and
-                the scanner keeps reading. */}
+            {/* Reachable only for a code that really is a PearDrop link; a rejected scan says what
+                happened and the scanner keeps reading. */}
             <Text style={styles.hint}>
               {scanned
                 ? "Got it — opening…"

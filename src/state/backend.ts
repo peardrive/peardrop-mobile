@@ -93,7 +93,7 @@ import {
   msUntilActivityCouldChange,
   nextLastPeerLeftAt,
 } from "../lib/transferActivity";
-import { bytesAdvanceAt } from "../lib/bytesAdvance";
+import { stallFieldsAfterProgress } from "../lib/stallVerdict";
 import { carriesPreviousOutcome, restartTransfer } from "../lib/transferRestart";
 import {
   drainPendingCancel,
@@ -1486,9 +1486,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       : typeof evt.bytesTransferred === "number"
                         ? evt.bytesTransferred
                         : prev.totalSentBytes,
-                  // Stamped only when bytes rise, so a peer that stopped pulling lets it
-                  // go stale. The engine re-emits every second, so `lastEventAt` cannot.
-                  lastBytesAt: bytesAdvanceAt(evt, prev),
+                  // Stamped only when bytes rise, and the same advance clears the engine's
+                  // silence verdict, which `transfer-resumed` would leave stale until later.
+                  ...stallFieldsAfterProgress(evt, prev),
                   // Not marked completed here, even at 100%: completion comes
                   // from an explicit event, so the UI can clamp at 99.
                   completed: prev.completed,
@@ -1553,7 +1553,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                     "warn",
                     "rn.event",
                     `upload-complete for a NON-HOSTED drive=${evt.driveId} — the receive path ` +
-                      `moved to download-outcome (D-07). This means the packed worklet is older ` +
+                      `moved to download-outcome. This means the packed worklet is older ` +
                       `than this JS; re-run npm run bundle:backend.`
                   );
                 }
@@ -1991,7 +1991,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                       `peer-disconnect NOT finalized drive=${evt.driveId ?? "?"} — last peer left ` +
                         `but the engine reports delivered=${evt.delivered} ` +
                         `deliveredPeers=${evt.deliveredPeers ?? "?"}. The share was not delivered ` +
-                        `(D-09). percent stays ${prev.percent}`
+                        `percent stays ${prev.percent}`
                     );
                   }
 

@@ -38,10 +38,8 @@ function bridgeFailure(err) {
 }
 
 /**
- * `idleHostGraceMs` is passed straight through to `engineInit`. Not defaulted
- * and not validated here: the engine validates it at the boundary where it
- * enters, and a second opinion in this file is a second place for the number
- * to drift.
+ * `idleHostGraceMs` passes straight through to `engineInit`, neither defaulted nor validated here:
+ * the engine validates it where it enters, and a second opinion is a second place to drift.
  */
 export async function bridgeStart({ baseDir, onError, emit, idleHostGraceMs } = {}) {
   if (bridgeStarted && engineIsReady()) return { ok: true, already: true };
@@ -162,11 +160,8 @@ export async function bridgeDeactivateDrive(driveId) {
 }
 
 /**
- * `opts.serve` is the explicit announce opt-in, normalised here to a boolean
- * or undefined. The difference is load-bearing: `undefined` means the caller
- * expressed no preference and the engine applies its origin-derived default (a
- * received drive stays client-only). Coercing an absent flag to `false` looks
- * identical for a received drive and silently stops a hosted drive announcing.
+ * `opts.serve` normalised to boolean or undefined. `undefined` means no preference and the engine
+ * applies its origin default; coercing an absent flag to `false` silently stops a host announcing.
  */
 export async function bridgeActivateDrive(driveId, opts) {
   try {

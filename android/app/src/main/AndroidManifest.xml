@@ -5,43 +5,11 @@
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
   <uses-permission android:name="android.permission.VIBRATE"/>
-  <!--
-    the foreground service that keeps a backgrounded transfer
-    running. Promoted out of src/instrumented/ — it now ships.
-
-    Measured 2026-09-13, screen locked, unplugged, phone untouched: the
-    background-armed service sustained the engine on both major vendors with
-    no user interaction, and on the Redmi outperformed the Autostart
-    permission it replaces (2.0 s worst gap against Autostart's own 29 s).
-
-    The base FOREGROUND_SERVICE permission is not declared here: it already
-    arrives from expo-video's library manifest. Only the dataSync subtype is
-    ours.
-  -->
+  <!-- Only the dataSync subtype is declared here: the base FOREGROUND_SERVICE
+       permission already arrives from expo-video's library manifest. -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
-  <!--
-    Photo-picker permission shape (Sprint 2D continued, 2026-05-14).
-
-    Goal: on Android 14+ the system PhotoPicker shows a "PearDrop only
-    has access to a few photos" banner whenever the app declares ANY
-    media-access permission. PickVisualMedia (the contract
-    expo-image-picker uses) is permissionless on Android 13+, so on
-    those versions we want NO media permissions at all.
-
-    But on Android ≤12 (API 32), expo-image-picker falls back to
-    MediaStore which DOES need READ_EXTERNAL_STORAGE — stripping it
-    entirely (the first attempt) broke the picker on older devices.
-
-    Compromise: cap the legacy storage perms to API 32 (Android 12) and
-    below using android:maxSdkVersion. tools:replace forces our cap to
-    win over the un-capped permission expo-image-picker declares in its
-    library manifest. On API ≥ 33 the perm isn't declared → no banner;
-    on API ≤ 32 it's declared → legacy MediaStore path works.
-
-    READ_MEDIA_IMAGES / READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED
-    only exist on Android 13+ where we don't need them (PhotoPicker is
-    permissionless). Keep these stripped.
-  -->
+  <!-- Legacy storage perms are capped at API 32 so Android 13+ declares no media
+       permission at all, which is what keeps the system PhotoPicker banner away. -->
   <uses-permission
     android:name="android.permission.READ_EXTERNAL_STORAGE"
     android:maxSdkVersion="32"
@@ -61,18 +29,8 @@
     </intent>
   </queries>
   <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:supportsRtl="true" android:enableOnBackInvokedCallback="false">
-    <!--
-      notification small icon + accent. Hand-written to match
-      exactly what expo-notifications' config plugin emits at prebuild
-      (plugin/build/withNotificationsAndroid.js) so a future regeneration
-      produces the same four entries rather than a diff:
-        NOTIFICATION_ICON       = 'notification_icon'       -> @drawable/…
-        NOTIFICATION_ICON_COLOR = 'notification_icon_color' -> @color/…
-      The plugin writes both the FCM and the expo-local key for each,
-      so all four are listed even though this app has no FCM.
-      Mirrored in app.json's expo-notifications plugin entry — same
-      belt-and-braces pattern 6E used for the peardrop:// scheme.
-    -->
+    <!-- All four keys match what expo-notifications' config plugin emits at prebuild,
+         so a regeneration produces no diff. Mirrored in app.json. -->
     <meta-data android:name="com.google.firebase.messaging.default_notification_icon" android:resource="@drawable/notification_icon"/>
     <meta-data android:name="expo.modules.notifications.default_notification_icon" android:resource="@drawable/notification_icon"/>
     <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@color/notification_icon_color"/>
@@ -90,27 +48,24 @@
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="peardrop.mobile"/>
-        <!--
-          the share-link scheme the engine actually mints
-          (`peardrop://<64-hex>`, hyperdrive-engine.mjs createShareLink).
-          `peardrop.mobile` stays first and untouched — expo-router and the
-          dev client resolve their root URL from it. Android matches an
-          intent against ANY <data> scheme in the filter, so listing both
-          here needs no second intent-filter.
-
-          BROWSABLE means any web page can fire a peardrop:// URL at us, so
-          the RN side treats these links as untrusted: strictly validated at
-          the boundary and always routed to the confirm-first share preview,
-          never to a download.
-        -->
+        <!-- `peardrop.mobile` stays first: expo-router resolves its root URL from it. BROWSABLE
+             makes these links untrusted, so the app routes them to the confirm-first preview. -->
         <data android:scheme="peardrop"/>
       </intent-filter>
+      <!-- `*/*` rather than a type list: a type absent from a list is unreachable from the
+           share sheet with no error, and the engine reads no MIME. SEND_MULTIPLE needs its own. -->
+      <intent-filter>
+        <action android:name="android.intent.action.SEND"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <data android:mimeType="*/*"/>
+      </intent-filter>
+      <intent-filter>
+        <action android:name="android.intent.action.SEND_MULTIPLE"/>
+        <category android:name="android.intent.category.DEFAULT"/>
+        <data android:mimeType="*/*"/>
+      </intent-filter>
     </activity>
-    <!--
-      `stopWithTask=true`: swiping the app away is an explicit
-      "I'm done", and an ongoing notification surviving that reads as a leak.
-      Not exported — nothing outside this app has any business starting it.
-    -->
+    <!-- `stopWithTask=true`: an ongoing notification outliving a swipe-away reads as a leak. -->
     <service
       android:name=".TransferService"
       android:exported="false"

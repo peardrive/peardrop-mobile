@@ -18,10 +18,8 @@ export type KebabActionItem = {
   /** Optional: mark the row as toggled-on (icon takes `theme.primary`). */
   activeTint?: boolean;
   /**
-   * The row is shown and cannot be pressed. The received row's Share control
-   * is present and disabled on an incomplete copy rather than hidden: a
-   * hidden control teaches nothing, a disabled one with `sublabel` says why.
-   * `onPress` stays required so no caller can express "no action at all".
+   * Shown and unpressable. A hidden control teaches nothing; a disabled one with `sublabel` says
+   * why. `onPress` stays required so no caller can express "no action at all".
    */
   disabled?: boolean;
   /**
@@ -31,11 +29,7 @@ export type KebabActionItem = {
   sublabel?: string | null;
 };
 
-/**
- * Identity header at the top of the kebab sheet: which row the action list
- * is about. Thumbnail rendering mirrors ShareRow so the item reads
- * identically wherever it appears.
- */
+/** Identity header for the kebab sheet. Thumbnails mirror ShareRow so the item reads identically. */
 export type KebabActionHeader = {
   /** Fallback glyph shown when no `previewUri`. */
   iconName: React.ComponentProps<typeof Ionicons>["name"];
@@ -64,11 +58,7 @@ export type KebabActionSheetProps = {
   title?: string;
 };
 
-/**
- * Data-driven action list rendered inside the shared BottomSheet, which
- * supplies the scrim, safe-area padding and opaque background so
- * translucent-theme bleedthrough cannot reach this sheet.
- */
+/** Action list inside the shared BottomSheet, which supplies the opaque background. */
 export default function KebabActionSheet({
   visible,
   onClose,

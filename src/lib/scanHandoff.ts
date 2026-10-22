@@ -1,14 +1,6 @@
 /**
- * What an accepted QR scan does to the Receive sheet.
- *
- * The scan handler used to hide the sheet and then start the resolve, so the
- * camera was torn down and the user landed on the list with no spinner, no
- * Cancel, and nowhere for a failure to report. The sheet now stays open and
- * shows the looking state, exactly as a pasted link does.
- *
- * A record rather than a function of anything: there is one right answer per
- * field, and the point is that the suite can see it. The hide lives in a
- * `.tsx`, which jest never renders.
+ * What an accepted QR scan does to the Receive sheet: it stays open and shows the looking state,
+ * exactly as a pasted link does. A record, so the suite can read the answer without a render.
  */
 export type ScanHandoff = {
   /** False: the looking state needs the sheet mounted to draw on. */

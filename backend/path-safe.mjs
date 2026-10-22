@@ -1,11 +1,5 @@
-// safePathWithin guards peer-provided paths against traversal: the return
-// value is provably inside `root`. A hostile sender's manifest can carry
-// entries like `"path": "../../../etc/passwd"`, and path.join collapses `..`
-// segments into a path outside the intended root, so this resolves and then
-// verifies containment, throwing rather than returning a path.
-//
-// The typed error carries a `cause` field so the engine can tell peer
-// path-traversal apart from a local write failure.
+// Guards peer-provided paths against traversal: a hostile manifest can carry "../../../etc/passwd"
+// and path.join collapses it outside the root, so this resolves then verifies containment.
 
 import path from "bare-path";
 
@@ -25,10 +19,8 @@ export class PathTraversalError extends EngineError {
   }
 }
 
-// Join an untrusted relative path onto a trusted root, guaranteeing the result
-// stays inside `root`. Throws PathTraversalError on empty or non-string input,
-// on NUL bytes (some syscalls truncate at NUL), on absolute paths, and on
-// anything resolving outside root or onto root itself.
+// Throws PathTraversalError on empty or non-string input, on NUL bytes (some syscalls truncate
+// there), on absolute paths, and on anything resolving outside root or onto root itself.
 export function safePathWithin(root, relPath) {
   if (typeof relPath !== "string" || relPath.length === 0) {
     throw new PathTraversalError(

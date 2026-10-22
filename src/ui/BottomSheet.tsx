@@ -19,31 +19,21 @@ export type BottomSheetProps = {
   onClose: () => void;
   /** Optional sheet title (shown at top-left, bold). */
   title?: string;
-  /**
-   * Shows a filled circle-X close button top-right; otherwise a bare close.
-   * Both branches draw a `muted` glyph on a neutral fill. Dismissing a sheet
-   * destroys nothing, so `theme.danger` stays reserved for genuinely
-   * destructive controls.
-   */
+  /** Dismissing a sheet destroys nothing, so both branches draw a `muted` glyph and `theme.danger`
+   *  stays reserved for genuinely destructive controls. */
   filledClose?: boolean;
   /** Show the drag handle at top of sheet. Default true. */
   showHandle?: boolean;
   /** Optional max height, e.g. `"88%"`. Default: no cap (natural). */
   maxHeight?: string | number;
-  /**
-   * Inset the sheet from the screen's left/right edges so it reads as a
-   * floating card, and bump the top corner radius. Off by default: existing
-   * callers rely on full width.
-   */
+  /** Inset from the screen edges so it reads as a floating card. Off by default: callers rely on full width. */
   sideInset?: boolean;
   children?: React.ReactNode;
 };
 
 /**
- * Base bottom-sheet: tap-to-dismiss scrim, safe-area-inset container,
- * optional grab handle and title bar. Uses `theme.bg` for the sheet
- * background, the only token guaranteed opaque across every theme; many
- * themes' `theme.card` is translucent and lets the UI underneath bleed in.
+ * Base bottom sheet. Uses `theme.bg`, the only token guaranteed opaque across every theme —
+ * many themes' `theme.card` is translucent and lets the UI underneath bleed in.
  */
 export default function BottomSheet({
   visible,

@@ -88,17 +88,20 @@ let lastDrained: { id: string; at: number } | null = null;
  * sentence are load-bearing, for different reasons.
  *
  * WHY A CONTROL CHARACTER AT ALL. The id must be injective over
- * (kind, value). The only two kinds in the tree are "share-link"
- * (`INTENT_SHARE_LINK`, just above) and "share-link-rejected"
- * (`INTENT_SHARE_LINK_REJECTED`, `src/lib/links.ts:115`) - and the
- * first is a strict PREFIX of the second. With no separator, kind
- * "share-link" + value "-rejectedX" and kind "share-link-rejected" +
- * value "X" collapse to the same id, and one intent silently dedupes
- * the other away. A separator that cannot occur in either field
- * restores injectivity. US qualifies on both counts: no `kind` can
- * contain it (both are [a-z-]+ literals) and no value can either - a
- * share link is validated down to 64 hex characters by
- * `parseShareLink` (`src/lib/links.ts`) before it is ever enqueued.
+ * (kind, value), and one kind is a strict PREFIX of another:
+ * "share-link" (`INTENT_SHARE_LINK`, just above) and
+ * "share-link-rejected" (`INTENT_SHARE_LINK_REJECTED`,
+ * `src/lib/links.ts`). With no separator, kind "share-link" + value
+ * "-rejectedX" and kind "share-link-rejected" + value "X" collapse to
+ * the same id, and one intent silently dedupes the other away. A
+ * separator that cannot occur in either field restores injectivity,
+ * and US qualifies on both counts for every kind in the tree. The
+ * kinds are [a-z-]+ literals. The values are a 64-hex share link from
+ * `parseShareLink`, the raw URL of a rejected one, a 16-hex share id
+ * from `PeardropShareIntentModule` (`INTENT_SHARE_FILES`), and a
+ * fixed notice string (`INTENT_SHARE_NOTICE`) - and `npm run
+ * check:encoding` fails the build on a control byte in any of their
+ * sources, which is what keeps the last two true as they change.
  *
  * WHY AN ESCAPE SEQUENCE. A literal NUL byte on this line makes the file
  * binary to ripgrep, which then skips its contents SILENTLY WHILE

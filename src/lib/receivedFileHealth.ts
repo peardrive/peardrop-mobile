@@ -1,41 +1,8 @@
 import { baseName } from "./files";
 
 /**
- * whether a received file is really on the
- * device, decided here instead of trusting a stored flag.
- *
- * ## The defect this closes
- *
- * `receivedSharesStorage` has **no existence check on `localPath` anywhere**,
- * and `isDownloaded: true` has no `true → false` transition in the tree. The
- * latch is in `reconcileShareRecord`: a prior record with
- * `isDownloaded && localPath` is carried forward **unconditionally**, so a file
- * the user cleared out in Files — or that Android reclaimed without asking —
- * stays "on device" forever. The row then refuses to re-grab it (the re-grab
- * affordance is gated on `isMissing`, which the stale flag pins to `false`) and
- * a re-paste answers *"You've already got these."* **Unreachable and
- * un-re-gettable, with no user action required to get there.**
- *
- * ## Which fix this is
- *
- * S-PERSIST-2's: stat `prior.localPath` before honouring `isDownloaded: true`,
- * and demote on a miss. **X-STORE-2's *preferred* option is not built** — it
- * wanted the row to derive "on device" from `receivedFilesStorage` instead of
- * from a flag, which would add a second store to the rendering path joined on
- * `shareLink` + basename. That is the fragile two-store join the audit has a
- * separate defect for; it makes the rendering path worse, not cheaper.
- *
- * S-COPY-1's sketch — open the preview on the `"full"` dedup branch — is
- * **forbidden** and nothing here enables it. The problem was never the branch;
- * it was that the flag feeding it was false.
- *
- * ## Why a pure module
- *
- * The two call sites are `src/state/ShareLinkFlowContext.tsx` and
- * `src/screens/MainScreen.tsx`, neither of which the jest suite can reach —
- * `testMatch` collects only `*.test.ts` and no `.test.tsx` exists. Amendment
- * move the decision into `src/lib/` and test it there. The filesystem
- * probe is injected, so this module imports nothing from React or RNFS.
+ * Stat `prior.localPath` before honouring `isDownloaded: true`, and demote on a miss. Without it a
+ * file cleared out in Files stays "on device" forever, un-re-gettable, with no user action needed.
  */
 
 /** A stored per-file record. Structurally `ReceivedShareFile`. */

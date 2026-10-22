@@ -1,8 +1,4 @@
-// the bottom tab navigator was removed when the app collapsed
-// to a single unified main page. The root now uses a native stack with
-// the initial launch flow (Splash → Onboarding) leading into Main +
-// Settings. The file is kept under the same `Tabs.tsx` name to minimize
-// import churn in app/index.tsx.
+// Root native stack: Splash → Onboarding → Main + Settings. Named Tabs.tsx so app/index.tsx's import stays put.
 import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import MainScreen from "../screens/MainScreen";
@@ -32,7 +28,6 @@ export default function RootNav() {
       />
       <Stack.Screen name="Main" component={MainScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
-      {/* Inherits the shared screenOptions and draws its own header, like every other screen. */}
       <Stack.Screen name="Language" component={LanguageScreen} />
       <Stack.Screen name="Status" component={StatusRoute} />
     </Stack.Navigator>

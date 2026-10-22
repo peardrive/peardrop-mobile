@@ -37,10 +37,8 @@ export type FolderContentsFile = {
   statusLabel: string;
   statusTone: FolderContentsTone;
   /**
-   * Absent means no control is rendered at all. There is no per-file stop
-   * control, and `FolderRowControl` has no member that could express one: on
-   * a received row it would stop nothing, and on a hosted one it would stop
-   * the entire share with no confirmation.
+   * Absent means no control at all. There is deliberately no per-file stop: on a received row it
+   * would stop nothing, and on a hosted one it would stop the whole share with no confirmation.
    */
   rightControl?: FolderRowControl;
   /** When true, the row is dimmed (not-on-device / missing). */
@@ -67,17 +65,13 @@ export type FolderContentsModalProps = {
   status?: FolderContentsStatus | null;
   files: FolderContentsFile[];
   /**
-   * When present, enables the Copy Link CTA at the bottom. The caller must
-   * pass `null` when this phone is not announcing the share: an inactive
-   * folder's link no longer resolves here, and a received folder's link
-   * resolves to whoever sent it. The gate lives at the call site, where the
-   * announcing signal is; this component stays presentational.
+   * Enables the Copy Link CTA. The caller must pass `null` when this phone is not announcing —
+   * the gate lives at the call site, where the announcing signal is.
    */
   shareLink?: string | null;
   onCopyLink: () => void;
-  /** When set, renders a primary "Start sharing" CTA at the bottom. Wired
-   *  for inactive hosted folders so users can activate the whole bundle
-   *  from the same surface they browse it in. */
+  /** Renders a primary "Start sharing" CTA, so an inactive hosted folder can be activated from
+   *  the same surface it is browsed in. */
   onStartSharing?: () => void;
   /** Header overflow-dots (top-left). Optional. */
   onOverflowPress?: () => void;
@@ -240,9 +234,8 @@ export default function FolderContentsModal({
               }
             />
 
-            {/* onStartSharing wins over shareLink: an inactive folder can
-              *  still carry a persistent shareLink, but the drive is not
-              *  seeding, so the link will not resolve for peers. */}
+            {/* onStartSharing wins over shareLink: an inactive folder can still carry a persistent
+                shareLink, but the drive is not seeding so the link will not resolve. */}
             {onStartSharing ? (
               <Pressable
                 style={styles.startBtn}
@@ -349,9 +342,8 @@ function FileRow({
           {file.statusLabel}
         </Text>
       </View>
-      {/* The only control a row can carry is "open", and it is absent when
-          there is nothing on disk to open: a child still downloading gets no
-          control rather than one that claims the file is missing. */}
+      {/* The only control a row can carry is "open", absent when there is nothing on disk — a child
+          still downloading gets no control rather than one claiming the file is missing. */}
       {file.rightControl?.kind === "open" ? (
         <Pressable
           onPress={file.onRightControlPress}

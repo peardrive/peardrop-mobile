@@ -4,9 +4,8 @@ import { errorCause, errorMessage, userFacingError } from "../lib/errorMessage";
 export type ResolveGenRef = { current: number };
 
 /**
- * Holder for the pending-resolve's timeout. The caller owns this ref and
- * can clear the timer directly (e.g. from abortResolving), which makes the
- * timer race-safe: the 30 s setTimeout doesn't outlive a cancelled resolve.
+ * Holder for the pending resolve's timeout. The caller owns the ref and can clear the timer
+ * directly, so the timeout cannot outlive a cancelled resolve.
  */
 export type ResolveTimerRef = {
   current: ReturnType<typeof setTimeout> | null;
@@ -22,11 +21,7 @@ export type ResolveDeps = {
   onTimeout: () => void;
   onFinally?: () => void;
   timeoutMs?: number;
-  /**
-   * Optional ref the caller owns. While a resolve is in flight, the active
-   * timeout handle is parked here. Callers can clearTimeout it directly to
-   * abort the resolve's timer without waiting for openLink to settle.
-   */
+  /** Caller-owned ref parking the active timeout handle, so an abort need not wait for openLink. */
   timerRef?: ResolveTimerRef;
   /**
    * Optional breadcrumb sink, injected rather than imported so this module
@@ -36,12 +31,8 @@ export type ResolveDeps = {
 };
 
 /**
- * Core of `ShareLinkFlowContext.runResolve`, extracted so the generation
- * guard can be tested without mounting React. Increments `gen.current`,
- * awaits `openLink(link)` against a timeout, and only fires side-effect
- * callbacks if the generation at dispatch time is still current (i.e., no
- * newer resolve has started since). Callers wire state setters into the
- * callbacks; this module deliberately has no React dependency.
+ * The generation guard, extracted so it can be tested without mounting React: side-effect callbacks
+ * fire only if no newer resolve started since dispatch. No React dependency, deliberately.
  */
 export async function runGuardedResolve(
   link: string,
@@ -75,9 +66,8 @@ export async function runGuardedResolve(
       timeoutPromise,
     ])) as OpenLinkResult;
     if (myGen !== gen.current) {
-      // A newer resolve started while this one was in flight, so every side
-      // effect below is suppressed. Logged, because from the user's seat
-      // this is the "I tapped it and nothing happened" case.
+      // A newer resolve started mid-flight, so every side effect below is suppressed. Logged,
+      // because from the user's seat this is the "I tapped it and nothing happened" case.
       log(
         "warn",
         `resolve gen=${myGen} DISCARDED (superseded by gen=${gen.current}) after ${Date.now() - startedAt}ms — ` +

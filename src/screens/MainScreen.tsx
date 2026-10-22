@@ -62,13 +62,24 @@ import {
 } from "../lib/files";
 import { describeOpenFailure } from "../lib/openFileResult";
 import { openSavedFile } from "../lib/openSavedFile";
+import { canConfirmShareName, checkShareName } from "../lib/shareName";
 import {
-  canConfirmShareName,
-  checkShareName,
-  defaultBundleName,
-  prefillForSingleFile,
-  splitExtension,
-} from "../lib/shareName";
+  isUuidLikeName,
+  normalizeLocalPath,
+  pendingShareFor,
+  relPathsForShare,
+  typeLabelForFile,
+  type PendingNameShare,
+} from "../lib/pendingShareFor";
+import { type ShareIntakeState } from "../lib/shareIntakePayload";
+import { subscribeShareIntake } from "../lib/shareIntent";
+import {
+  clearShareHandoff,
+  setShareScreenBusy,
+  subscribeShareHandoff,
+} from "../lib/shareIntakeQueue";
+import { planCopyDeletion } from "../lib/sharedCopyDeletion";
+import CopyProgressModal from "../ui/CopyProgressModal";
 // read-only use of the protected predicate. transferActivity.ts is
 // unit-tested and must not be edited; importing from it is how the menu and
 // the foreground service stay on one definition of "in flight".
@@ -121,6 +132,7 @@ import {
   type FlapHold,
   type ShareView,
 } from "../lib/shareModel";
+import type { RowFloor } from "../lib/rowFloor";
 import { senderLookupFor } from "../lib/senderLookup";
 // the re-share decision and its whole
 // vocabulary live here. `active` is not `announcing`, and this file is unreachable from
@@ -137,6 +149,7 @@ import {
   classifyPickerResult,
   isPickerCancellation,
   mapImageAssets,
+  pickedAssetName,
   pickerExitPlan,
   type PickerOutcome,
 } from "../lib/pickerResult";
@@ -229,6 +242,7 @@ function receivedRowView(
   transfer: TransferSummary | undefined,
   now: number,
   holds?: Map<string, FlapHold>,
+  floors?: Map<string, RowFloor>,
 ): ShareView | null {
   if (!share) return null;
   // One shared reading: two inline readings made the row say sender offline while the picker said Starting.
@@ -239,8 +253,10 @@ function receivedRowView(
     now,
     // The anti-flap hold, because both inputs are edge-triggered on a link that can reset several times a minute.
     hold: holds?.get(share.shareKey) ?? null,
+    floor: floors?.get(share.shareKey) ?? null,
   });
   holds?.set(share.shareKey, view.hold);
+  floors?.set(share.shareKey, view.floor);
   return view;
 }
 
@@ -323,39 +339,35 @@ function rowPrimaryFile(d: DriveRecord): DriveLocalFile | undefined {
   return undefined;
 }
 
-// Folder-share materialization uses the user's original filename (potentially
-// with spaces or unicode) inside the cache filename. The URI returned by
-// expo-file-system is URL-encoded — RNFS / bare-fs need the decoded form.
-// Picker URIs don't trip this because their cache names are auto-generated.
-function normalizeLocalPath(uri: string): string {
-  let p = String(uri || "");
-  if (p.startsWith("file://")) {
-    p = p.slice(7);
-    if (p.startsWith("//")) p = p.slice(1);
-  }
+/** Deleting a hosted share takes its cache copies with it; "Stop sharing" takes nothing, because
+ *  it can be undone. Refusals are logged rather than silent, and the plan is the only guard. */
+async function deleteHostedShareCopies(driveId: string): Promise<void> {
   try {
-    return decodeURI(p);
-  } catch {
-    return p;
+    const entries = await loadSharedFilePaths();
+    const entry = entries.find((e) => e.driveId === driveId);
+    const plan = planCopyDeletion(
+      (entry?.files ?? []).map((f) => f.localPath),
+      RNFS.CachesDirectoryPath,
+    );
+    for (const refused of plan.refused) {
+      debugLog("warn", "rn.share", `copy delete refused: ${refused.reason}`);
+    }
+    for (const path of plan.remove) {
+      try {
+        await RNFS.unlink(path);
+      } catch {
+        // Already gone, or the OS purged the cache first. Nothing left to remove either way.
+      }
+    }
+    debugLog(
+      "info",
+      "rn.share",
+      `copy delete drive=${driveId} removed=${plan.remove.length} refused=${plan.refused.length}`,
+    );
+  } catch (e: unknown) {
+    logStructuredError("rn.share", "could not delete a share's cache copies", e);
   }
-}
-
-// Match "uuid.ext" or "uuid" — v5 fix so received shares whose filenames are
-// synthesized as UUIDs by the peer don't display the raw hex to the user.
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(\.[^.]+)?$/i;
-
-function isUuidLikeName(name: string): boolean {
-  return UUID_RE.test(name.trim());
-}
-
-function typeLabelForFile(name: string): string {
-  const mode = previewModeFor(name);
-  if (mode === "image") return "Shared photo";
-  if (mode === "video") return "Shared video";
-  if (mode === "audio") return "Shared audio";
-  if (mode === "text") return "Shared document";
-  return "Shared file";
+  await removeSharedFilePaths(driveId);
 }
 
 function rowDisplayName(d: DriveRecord): string {
@@ -822,6 +834,7 @@ export default function MainScreen() {
     retryWaitingRow,
     stopWaitingRow,
     flapHolds,
+    rowFloors,
   } = useShareLinkFlow();
 
   const { show: showToastRaw } = useToast();
@@ -873,34 +886,52 @@ export default function MainScreen() {
   const [inAppPickerBusy, setInAppPickerBusy] = useState(false);
 
   const [kebabSheet, setKebabSheet] = useState<KebabSheet>(null);
-  // Multi-file share: after the OS picker returns >1 asset, we park the
-  // selection here and open NameShareModal. The user's confirmed name is
-  // written into hostedShareFlagsStorage the moment we get a driveId back
-  // from sharePaths, so the list card + File info modal read it back as
-  // the drive title.
-  /**
-   * now covers every share path, not just multi-file.
-   *
-   * `ext` is the fixed suffix shown beside the field for a SINGLE file — the
-   * user edits the base, never the extension. Empty for bundles and folders.
-   *
-   * `folder` carries the picked directory for the folder path, because that
-   * path prompts BEFORE enumerating. See `onPickFolder` for why.
-   */
-  type PendingNameShare = {
-    kind: "files" | "photos" | "folder";
-    defaultName: string;
-    ext: string;
-    files: { uri: string; name: string; size?: number }[];
-    folder?: PickedDirectory;
-    fileCount: number;
-  };
+  // The selection parked for the naming step, which every share path goes through. The shape and
+  // the prefill rules are in `src/lib/pendingShareFor.ts`; `folder` is typed by this screen.
   const [pendingNameShare, setPendingNameShare] =
-    useState<PendingNameShare | null>(null);
+    useState<PendingNameShare<PickedDirectory> | null>(null);
+  // The copy the share target runs before a selection exists. Native owns the copy; this is the
+  // only thing the user sees during it, and a 4 GB video is minutes of it.
+  const [intake, setIntake] = useState<ShareIntakeState>({ kind: "idle" });
   // v5: shareBusy state removed with the top action row; the pickers can't
   // be double-fired because they're modals. If a future spinner needs it
   // back, reintroduce here and thread through BottomToolbar's Send button.
   const setShareBusy = (_v: boolean) => {};
+
+  // Published for `ShareIntentBridge`, which is mounted outside this screen and so cannot read
+  // the three things here that a newly arrived share would disturb.
+  useEffect(() => {
+    setShareScreenBusy(
+      pendingNameShare !== null || inAppPickerOpen || pickerSheet !== null,
+    );
+  }, [pendingNameShare, inAppPickerOpen, pickerSheet]);
+
+  useEffect(() => subscribeShareIntake(setIntake), []);
+
+  // Files handed over by the share sheet. The bridge decided the user was free; the naming step
+  // lives here, so this is where the selection is parked.
+  useEffect(() => {
+    return subscribeShareHandoff((handoff) => {
+      clearShareHandoff(handoff.shareId);
+      if (handoff.files.length === 0) return;
+      const stamp = Date.now();
+      // `uri: ""` on purpose: the ladder's URI-basename rung would otherwise win and show the
+      // cache filename. The declared name, then the MIME's extension, is exactly R4's rule.
+      const files = handoff.files.map((f) => ({
+        uri: `file://${f.path}`,
+        name: pickedAssetName(
+          { uri: "", fileName: f.displayName, mimeType: f.mimeType },
+          stamp,
+        ),
+        size: f.size,
+      }));
+      // The dropped count rides into the naming step: a toast cannot win against the modal that
+      // opens in the same commit, which is what the device run measured.
+      setPendingNameShare(
+        pendingShareFor("files", files, handoff.dropped.length),
+      );
+    });
+  }, []);
   const [qrDriveId, setQrDriveId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewText, setPreviewText] = useState("");
@@ -1004,10 +1035,8 @@ export default function MainScreen() {
       clearDraft: () => setLinkDraft(""),
     });
   }, [abortResolving, setLinkDraft]);
-  // UX-2026-09 · I-2: after the 30 s resolve timeout the app returns to the
-  // list — the Receive sheet closes and the muted wait message arrives as a
-  // top-level info toast (raised by ShareLinkFlowContext). Same one-shot
-  // tick pattern as manualEntryTick above.
+  // After the resolve timeout the Receive sheet closes and the wait message arrives as a
+  // top-level toast, on the same one-shot tick pattern as manualEntryTick above.
   useEffect(() => {
     if (resolveTimeoutTick <= 0) return;
     dismissReceiveSheet();
@@ -1241,6 +1270,7 @@ export default function MainScreen() {
   /** The anti-flap hold, taken from the flow context so the row and the picker share one per share key. */
   // A ref local to this screen was a second source of truth: the picker's hold initialised fresh on open while this one still held a value a window old.
   const rowHolds = flapHolds;
+  const rowFloorMap = rowFloors;
 
   const transferForRow = useCallback(
     (row: DriveRow) =>
@@ -1907,9 +1937,13 @@ export default function MainScreen() {
         `shareName=${opts.shareName ? JSON.stringify(opts.shareName) : "-"} ` +
         `bytes=${files.reduce((a, f) => a + (f.size ?? 0), 0)}`,
     );
+    // A bundle's in-drive keys come from the picked names, de-duplicated, because the engine
+    // otherwise keys on the cache basename — a UUID for both OS pickers. A single file passes
+    // null so the engine's rename-to-the-chosen-title still applies.
+    const relPaths = opts.relPaths ?? relPathsForShare(files) ?? undefined;
     const out = await sharePaths(
       files.map((f) => f.uri),
-      opts.relPaths,
+      relPaths,
       opts.shareName ?? undefined,
     );
     if (!out.ok || !out.shareLink) {
@@ -1936,7 +1970,7 @@ export default function MainScreen() {
       void saveSharedFilePathsEntry({
         driveId: out.driveId,
         files: files.map((f, i) => ({
-          name: opts.relPaths?.[i] || f.name,
+          name: relPaths?.[i] || f.name,
           localPath: normalizeLocalPath(f.uri),
           size: f.size,
         })),
@@ -1946,69 +1980,6 @@ export default function MainScreen() {
     haptics.success();
     void refreshDrives();
     if (out.driveId) setQrDriveId(out.driveId);
-  }
-
-  function defaultShareName(
-    kind: "files" | "photos",
-    fileCount: number,
-  ): string {
-    if (kind === "photos") {
-      return fileCount === 1 ? "Photo" : "Photos";
-    }
-    return fileCount === 1 ? "File" : "Files";
-  }
-
-  /**
-   * build the naming-step state for a picked selection.
-   *
-   * One place, because all three picker paths reach it and the prefill rules
-   * are not obvious:
-   *
-   * - **Single file** → the file's base name, with its extension carried as
-   *   fixed text. If the filename is UUID-shaped — which the photo picker
-   *   routinely produces, and which is the whole reason "Shared photo"
-   *   existed — the prefill becomes the human type label instead, keeping the
-   *   real extension. That fallback becomes the
-   *   prefill that fixes it.
-   * - **Bundle** → a common base when the files share one that breaks on a
-   *   separator and is long enough to mean something, else "Photos"/"Files".
-   */
-  function pendingShareFor(
-    kind: "files" | "photos",
-    files: { uri: string; name: string; size?: number }[],
-  ): PendingNameShare {
-    if (files.length === 1) {
-      const only = files[0]!;
-      // The BASE comes from the picker's reported name, which is the
-      // human-facing one (and the one that may be UUID-shaped).
-      const { base } = prefillForSingleFile(
-        only.name,
-        typeLabelForFile(only.name).replace(/^Shared /, "") || defaultShareName(kind, 1),
-        isUuidLikeName,
-      );
-      // The EXTENSION comes from the URI, not from `name`.
-      //
-      // 9I bug, found on device: a photo reported as `…​.jpg` by the picker was
-      // materialised to cache as `….jpeg`, and the engine derives its
-      // extension from `path.basename()` of that cache path. Showing the
-      // picker's `.jpg` while the engine appended `.jpeg` is half of how
-      // "Hello" became "Hello.jpg.jpeg".
-      //
-      // So the suffix rendered here is read from the same place the engine
-      // will read it: the file's own URI.
-      const { ext } = splitExtension(baseName(normalizeLocalPath(only.uri)));
-      return { kind, defaultName: base, ext, files, fileCount: 1 };
-    }
-    return {
-      kind,
-      defaultName: defaultBundleName(
-        files.map((f) => f.name),
-        defaultShareName(kind, files.length),
-      ),
-      ext: "",
-      files,
-      fileCount: files.length,
-    };
   }
 
   /**
@@ -2512,7 +2483,7 @@ export default function MainScreen() {
         void cancelTransfer(id, { purge: true }).then(() => {
           void refreshDrives();
         });
-        void removeSharedFilePaths(id);
+        void deleteHostedShareCopies(id);
         // drop the organizational flags too — a future fresh
         // share that happens to reuse the driveId shouldn't inherit them.
         void clearHostedShareFlags(id);
@@ -2639,7 +2610,7 @@ export default function MainScreen() {
       /** Every received row's line comes from the one model. */
       // The transfer-derived status is kept only for a received engine drive with no record at all.
       const rowView = isReceived
-        ? receivedRowView(drive.share, t, listNow, rowHolds)
+        ? receivedRowView(drive.share, t, listNow, rowHolds, rowFloorMap)
         : null;
       if (isFailed) {
         status = { label: `${typePrefix} · Couldn't restore`, tone: "danger" };
@@ -3254,6 +3225,29 @@ export default function MainScreen() {
         onPickPhotos={() => void onPickPhotosAndShare()}
       />
 
+      {/* What the user sees while the share target copies the incoming streams in. Native owns
+         the copy, so this renders a reading rather than driving anything. */}
+      <CopyProgressModal
+        visible={intake.kind === "start" || intake.kind === "progress"}
+        index={intake.kind === "progress" ? intake.index : 0}
+        count={
+          intake.kind === "progress"
+            ? intake.count
+            : intake.kind === "start"
+              ? intake.count
+              : 1
+        }
+        copiedBytes={intake.kind === "progress" ? intake.copiedBytes : 0}
+        totalBytes={
+          intake.kind === "progress"
+            ? intake.totalBytes
+            : intake.kind === "start"
+              ? intake.totalBytes
+              : 0
+        }
+        displayName={intake.kind === "progress" ? intake.displayName : ""}
+      />
+
       {/* The naming step for EVERY share — single file, bundle
          and folder. Cancel here means no share was ever created: `sharePaths`
          is simply not called, and on the folder path nothing has even been
@@ -3262,6 +3256,7 @@ export default function MainScreen() {
         visible={!!pendingNameShare}
         defaultName={pendingNameShare?.defaultName ?? ""}
         fileCount={pendingNameShare?.fileCount ?? 0}
+        droppedCount={pendingNameShare?.droppedCount ?? 0}
         subtitle={
           pendingNameShare?.kind === "folder"
             ? "This folder will share under this name."

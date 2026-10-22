@@ -9,19 +9,13 @@ export type EmptyStateProps = {
   title: string;
   subtitle?: string;
   /**
-   * True when the empty list is a failure, not an absence — the shares
-   * manifest could not be read, say, so the shares are on disk but unseen.
-   * Key error states off this flag, never off a `kind` string: a kind added
-   * to the union without a matching branch here would render calm.
+   * True when the empty list is a failure, not an absence. Key error states off this flag, never off
+   * a `kind` string: a kind added to the union without a branch here would render calm.
    */
   isError?: boolean;
 };
 
-/**
- * Themed empty state: soft round icon badge over a title and subtitle.
- * Two palettes, calm for an absence and error for a failure, selected by
- * `isError`.
- */
+/** Themed empty state; two palettes, calm for an absence and error for a failure, selected by `isError`. */
 export default function EmptyState({
   icon = "sparkles-outline",
   title,

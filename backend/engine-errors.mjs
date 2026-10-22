@@ -1,14 +1,5 @@
-// Structured engine errors. Every engine failure — thrown or returned via
-// {ok:false, error} — is an EngineError carrying a dot-namespaced `category`
-// stable across releases, a short machine-readable `cause` that RN
-// pattern-matches on, a human-readable `message` never used for control flow,
-// and an optional JSON-serializable `detail`.
-//
-// `JSON.stringify` calls `toJSON()` automatically, so an instance survives the
-// RPC boundary and RN receives a plain object of the same shape; `toString()`
-// returns the message so a defensive `String(err)` in RN degrades cleanly.
-//
-// Construction logs the error, so no call site needs its own logging.
+// Structured engine errors: a stable dot-namespaced `category`, a machine-readable `cause` RN
+// matches on, a `message` never used for control flow, and optional `detail`. Construction logs.
 
 import { blog, describeError } from "./debug-log.mjs";
 
@@ -39,9 +30,8 @@ export class EngineError extends Error {
   }
 }
 
-// Wrap an arbitrary caught value into an EngineError, preserving the
-// underlying message and code and falling back to a generic category / cause.
-// An already-typed error passes through, so wrapping is idempotent.
+// Wrap an arbitrary caught value, preserving its message and code. An already-typed error passes
+// through, so wrapping is idempotent.
 export function wrapError(err, { category, cause, message, detail } = {}) {
   if (err instanceof EngineError) {
     // Already typed (and already logged at construction) — record the

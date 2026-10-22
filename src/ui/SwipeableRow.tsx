@@ -22,26 +22,18 @@ type Props = {
   accessibilityLabel?: string;
   containerStyle?: StyleProp<ViewStyle>;
   /**
-   * Background color for the moving "front" surface. Must be opaque or the
-   * red delete backer bleeds through gaps in the row content. Defaults to
-   * `theme.bg`, the only color guaranteed opaque in every theme; `theme.card`
-   * is translucent in most. Pass a color when the parent backdrop differs.
+   * Must be opaque or the red delete backer bleeds through gaps in the row. Defaults to `theme.bg`,
+   * the only colour guaranteed opaque in every theme; `theme.card` is translucent in most.
    */
   frontBackground?: string;
   /**
-   * One-shot peek animation cueing that the row can be swiped. Calls
-   * `onPeekDone` when the sequence finishes so the parent can clear the
-   * trigger and persist the seen flag. The pan responder is unaffected:
-   * peek snaps to 0 before any user gesture can race it.
+   * One-shot peek cueing that the row can be swiped. The pan responder is unaffected: peek snaps
+   * to 0 before any user gesture can race it.
    */
   peek?: boolean;
   onPeekDone?: () => void;
-  /**
-   * Close-from-outside trigger: any change of value snaps the row back to
-   * rest. For parents that open a confirmation after `onDelete` and must
-   * close the swipe whether the user confirms or cancels. Pass `undefined`
-   * or a stable value to opt out.
-   */
+  /** Any change of value snaps the row back to rest, for parents that open a confirmation after
+   *  `onDelete`. Pass `undefined` or a stable value to opt out. */
   closeSignal?: number | string | boolean;
 };
 
@@ -50,11 +42,8 @@ const REVEAL_THRESHOLD = -REVEAL_WIDTH * 0.4;
 const COMMIT_THRESHOLD = -REVEAL_WIDTH * 1.6;
 
 /**
- * Swipe-to-delete row built on Animated and PanResponder, to avoid adding a
- * gesture library as a native dependency. The responder claims movement only
- * when horizontal motion dominates, so the parent list keeps its vertical
- * scroll, and an accessibility action exposes delete to users who cannot
- * gesture.
+ * Swipe-to-delete on Animated and PanResponder, to avoid a native gesture dependency. The responder
+ * claims movement only when horizontal motion dominates, so the list keeps its vertical scroll.
  */
 export default function SwipeableRow({
   children,
@@ -145,8 +134,7 @@ export default function SwipeableRow({
     if (lastCloseSignalRef.current === closeSignal) return;
     lastCloseSignalRef.current = closeSignal;
     snapTo(0);
-    // snapTo intentionally not in deps: it's a stable inline function
-    // closure over the Animated.Value ref.
+    // snapTo is a stable inline closure over the Animated.Value ref, so it is not in deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closeSignal]);
 

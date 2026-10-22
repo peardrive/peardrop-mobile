@@ -1,10 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * One-time hint about backing out of the OS picker without selecting. Some
- * Android pickers expose no obvious back affordance, so a user can be stuck
- * without knowing the edge swipe or the system back button works. Shown as
- * a toast the first time a cancelled picker is detected, then never again.
+ * One-time hint about backing out of the OS picker: some Android pickers expose no obvious back
+ * affordance, so a user can be stuck not knowing the edge swipe works.
  */
 
 const STORAGE_KEY = "peardrop.has-seen-picker-back-hint";

@@ -1,13 +1,6 @@
 /**
- * May this row be offered a share-activating action? One definition, because
- * the same decision is made at several call sites. A received row's id is
- * `share:<shareKey>`, while `engineActivateDrive` looks the id up in
- * `manifest.drives`, keyed by engine `driveId` — so the lookup cannot hit and
- * the user is told "Drive not found" about a share in front of them. Gating on
- * file count instead would only move the failure to a different row.
- *
- * No imports, by design — jest runs this under `testEnvironment: "node"` and
- * nothing here needs react-native.
+ * May this row be offered a share-activating action? A received row's id is `share:<shareKey>` but
+ * `engineActivateDrive` looks ids up in `manifest.drives` by `driveId`, so the lookup cannot hit.
  */
 
 /**

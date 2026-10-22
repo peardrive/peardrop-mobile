@@ -1,26 +1,6 @@
 /**
- * tone-tagged link notices.
- *
- * The two NORMAL waits — "no sender found yet" and "sender still syncing" —
- * must not terminate in the same red styling as real failures. Every message
- * that lands in
- * `ShareLinkFlowContext.linkError` now carries a tone:
- *
- *  - `"wait"`  — nothing failed; the other pear just hasn't answered yet.
- *    Exactly two triggers qualify: the no-manifest rejection
- *    (`RESOLVE_NO_MANIFEST_MESSAGE`, whether raised RN-side by
- *    `rejectUnusableResolve` or engine-side through `runGuardedResolve`'s
- *    `onFailure` — two routes, one sentence, one tone) and the 30 s resolve
- *    timeout from `src/state/resolveGuard.ts`.
- *  - `"error"` — everything else: malformed link, engine error,
- *    ok-without-driveId, grab failure, generic throw.
- *
- * Surfaces render `"wait"` in `theme.muted` with an info icon (or an info
- * toast); `"error"` stays `theme.danger` exactly as before.
- *
- * This lives in `src/lib/` because a `.tsx` cannot be imported by jest in
- * this project, so both the tone decision and the copy are only testable
- * from here. Asserted in `src/lib/__tests__/resolveNotice.test.ts`.
+ * Tone-tagged link notices: `"wait"` for the two normal waits (no-manifest and the resolve
+ * timeout), `"error"` for everything else. `"wait"` renders muted, never in the failure red.
  */
 
 import { RESOLVE_NO_MANIFEST_MESSAGE } from "./resolveDisposition";
@@ -31,10 +11,8 @@ export type LinkNotice = {
   text: string;
   tone: LinkNoticeTone;
   /**
-   * What produced it. Four triggers share the `wait` tone, and the picker has
-   * to suppress exactly ONE of them (`no-manifest`, now carried by the status
-   * line) while still showing the other two, which have no other surface.
-   * Tone is too coarse for that — gating on it rendered two messages red.
+   * What produced it. Four triggers share the `wait` tone and the picker must suppress exactly one
+   * of them, so tone alone is too coarse — gating on it rendered two messages red.
    */
   trigger: LinkNoticeTrigger;
 };

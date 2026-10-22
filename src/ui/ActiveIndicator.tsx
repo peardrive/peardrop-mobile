@@ -25,10 +25,8 @@ const RING_PEAK_SCALE = 2.8;
 const CYCLE_MS = 2000;
 
 /**
- * Tiered status overlay anchored to a file icon's corner: nothing, a static
- * dot, or a dot plus two phase-offset pulsing rings. Under the OS
- * reduce-motion setting `active-broadcasting` collapses to `active-idle`.
- * Native-driver `opacity` only, so many active rows leave the JS thread clear.
+ * Tiered status overlay on a file icon's corner; `active-broadcasting` collapses to `active-idle`
+ * under reduce-motion. Native-driver opacity only, so many active rows leave the JS thread clear.
  */
 export default function ActiveIndicator({
   state,

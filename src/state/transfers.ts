@@ -53,11 +53,8 @@ export type TransferUpdate =
 export type OriginResolver = (driveId: string) => TransferOrigin;
 
 /**
- * Pure reducer over the transfers array, holding the origin resolution and
- * the per-driveId insert, update and cap bookkeeping in one place, free of
- * React so tests can drive it. An object patch is merged into the base; a
- * function hands the caller full control. Either way origin and direction
- * are re-asserted afterwards, so a dropped field cannot desync routing.
+ * Pure reducer over the transfers array, free of React so tests can drive it. Origin and direction
+ * are re-asserted after every patch, so a dropped field cannot desync routing.
  */
 export function upsertTransfer(
   transfers: TransferSummary[],

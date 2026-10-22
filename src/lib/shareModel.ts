@@ -2,6 +2,7 @@
 // One percentage, from held bytes plus the active file's own, so header, file row and list row agree by construction.
 
 import { PAUSE_REASONS, type PauseReason } from "./rowLifecycle";
+import { applyRowFloor, floorSignature, type RowFloor } from "./rowFloor";
 import { isExpired, type WaitingStatus } from "./waitingStatus";
 
 /** How long a lookup's "found" answer is treated as current. */
@@ -18,6 +19,8 @@ export type ViewFile = {
   /** Where the saved file is on disk, when it is saved. */
   // Carried through the model rather than looked up beside it, so the picker's thumbnail and its open action read the same path the row does.
   readonly localPath?: string | null;
+  /** Bytes of this file already replicated, persisted so they outlive the attempt that pulled them. */
+  readonly partialBytes?: number;
 };
 
 export type ShareRecordLike = {
@@ -83,6 +86,8 @@ export type ShareView = {
   readonly shouldPause: boolean;
   /** The hold this render decided, to be threaded back in on the next one, returned rather than stored so the model stays pure. */
   readonly hold: FlapHold;
+  /** The floor this render decided, threaded back the same way. */
+  readonly floor: RowFloor;
 };
 
 export type ShareViewInput = {
@@ -93,6 +98,8 @@ export type ShareViewInput = {
   /** What the surfaces were last told, and when. */
   // A value the caller threads through rather than a module variable, so two surfaces sharing one guard agree by construction and a test can drive a flap sequence without a clock.
   readonly hold?: FlapHold | null;
+  /** The highest percentage this row has shown for this selection. Threaded like `hold`. */
+  readonly floor?: RowFloor | null;
 };
 
 /** How long a decided `senderOnline` / status word is held before it may flip. */
@@ -227,6 +234,16 @@ function goneCount(
 }
 
 /** The model. */
+/** What the record already holds for one file, so a live figure is not added on top of it. */
+function storedPartialFor(record: ShareRecordLike, key: string | null): number {
+  if (!key) return 0;
+  for (const f of record.files) {
+    if (norm(f.name) !== key) continue;
+    return Math.min(usable(f.partialBytes), usable(f.size));
+  }
+  return 0;
+}
+
 export function shareView(input: ShareViewInput): ShareView {
   const { record, transfer, now } = input;
   const expired = isExpired(record.status, record.lastUpdatedAt, now);
@@ -259,6 +276,9 @@ export function shareView(input: ShareViewInput): ShareView {
   let selectedTotal = 0;
   let heldBytes = 0;
   let filesDone = 0;
+  /** Bytes of selected files that are part-replicated, from the record rather than the engine,
+   *  whose figure is per-attempt and goes to zero when one ends. */
+  let partialBytes = 0;
   for (const f of record.files) {
     const key = norm(f.name);
     if (!selection.has(key)) continue;
@@ -267,6 +287,8 @@ export function shareView(input: ShareViewInput): ShareView {
     if (f.isDownloaded) {
       heldBytes += size;
       filesDone++;
+    } else {
+      partialBytes += Math.min(usable(f.partialBytes), size);
     }
   }
 
@@ -281,8 +303,12 @@ export function shareView(input: ShareViewInput): ShareView {
   let overallPct: number | null = null;
   if (selection.size > 0) {
     if (selectedTotal > 0) {
-      const fresh = activeIsSelected ? Math.min(activeBytes, activeTotal) : 0;
-      overallPct = clampPct(((heldBytes + fresh) / selectedTotal) * 100);
+      // The live figure only where it has overtaken what is stored for the same file; the wire
+      // figure stays excluded, because it spans files already counted in `heldBytes`.
+      const live = activeIsSelected ? Math.min(activeBytes, activeTotal) : 0;
+      const activeStored = activeIsSelected ? storedPartialFor(record, activeKey) : 0;
+      const fresh = partialBytes + Math.max(0, live - activeStored);
+      overallPct = clampPct(((heldBytes + Math.min(fresh, selectedTotal - heldBytes)) / selectedTotal) * 100);
     } else {
       // No usable sizes anywhere. The file count is the only honest
       // denominator left; a coarse figure beats 0% for a half-finished grab.
@@ -290,6 +316,14 @@ export function shareView(input: ShareViewInput): ShareView {
     }
   }
   if (status === "done") overallPct = 100;
+  // The floor is applied last, over the finished figure, and is keyed to this selection and its
+  // total so a changed share never inherits the previous one's high-water mark.
+  const floored = applyRowFloor(
+    input.floor,
+    floorSignature(record.selection, selectedTotal),
+    overallPct,
+  );
+  overallPct = floored.pct;
 
   /** The single-file identity, enforced here rather than hoped for: with one selected file the share is that file, so the two numbers must be the same number. */
   // The arithmetic is algebraically identical only while the two totals agree, and they come from the record and the engine; when they disagree the record wins, because that is what the row, the button and storage already agree on.
@@ -450,6 +484,7 @@ export function shareView(input: ShareViewInput): ShareView {
     files,
     shouldPause,
     hold,
+    floor: floored.floor,
   };
 }
 

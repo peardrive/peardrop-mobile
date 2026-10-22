@@ -33,9 +33,8 @@ const PRESETS: Record<StatusVariant, Preset> = {
     tone: "warning",
     icon: "wifi-outline",
     title: "No connection",
-    // There is no connectivity detection here, so this copy cannot claim a
-    // network is missing or send the user to a Wi-Fi setting. Say what
-    // happened, never why.
+    // No connectivity detection exists here, so this copy may not claim a missing network.
+    // Say what happened, never why.
     body: "PearDrop couldn't reach any peers. Both phones need to be awake with PearDrop open — try again in a moment.",
     actionSpecs: [{ label: "Retry", behavior: "back" }],
   },

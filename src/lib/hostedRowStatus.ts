@@ -1,10 +1,6 @@
 /**
- * Pure logic for a hosted share's row status, kept out of `MainScreen.tsx`
- * because a `.tsx` test is never collected by the jest suite — a fix inlined
- * there would be a change no test could see. A cancelled hosted row must read
- * as cancelled rather than fall past `transferring` to `completed`. No
- * react-native imports: jest runs this under `testEnvironment: "node"`, the
- * same constraint `receiveProgress.ts` and `transferStall.ts` are written to.
+ * A cancelled hosted row must read as cancelled rather than fall past `transferring` to `completed`.
+ * No react-native imports: jest runs this under `testEnvironment: "node"`.
  */
 
 import { cancelledRowLabel, clampReceivePercent } from "./receiveProgress";
@@ -35,12 +31,8 @@ export type HostedRowStatus = {
 };
 
 /**
- * Map a hosted transfer, plus whether its drive is currently activated, onto
- * a row status.
- *
- * `state: "idle"` carries an empty label and means "render nothing" — the
- * caller drops the sub-line and falls back to the row's `meta` line, which
- * is what the original chain did by leaving `status` null.
+ * Maps a hosted transfer plus its activation onto a row status. `state: "idle"` means render
+ * nothing — the caller drops the sub-line and falls back to the row's `meta`.
  */
 export function hostedRowStatus(
   transfer: HostedTransferLike | null | undefined,
@@ -48,16 +40,8 @@ export function hostedRowStatus(
 ): HostedRowStatus {
   const t = transfer ?? null;
 
-  // FIRST, ahead of everything. `markCancelled` writes `completed: true`
-  // alongside `cancelled: true` — deliberately, because every "this transfer
-  // is over" reader consults `completed`, including the activity predicate
-  // that releases the foreground service. So this branch placed anywhere
-  // below `completed` is unreachable code that looks like a fix.
-  //
-  // No file count here, unlike the received row. On a hosted share nothing
-  // was saved to THIS device, so "Stopped — 3 files saved" would be a claim
-  // about the other end that this side never observed. `cancelledRowLabel`
-  // with no count is the single source of the plain wording.
+  // FIRST, ahead of everything: `markCancelled` writes `completed: true` alongside `cancelled`, so
+  // this branch placed below `completed` is unreachable code that looks like a fix.
   if (t?.cancelled) {
     return { state: "cancelled", label: cancelledRowLabel(null), tone: "muted" };
   }

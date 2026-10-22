@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/**
- * Persistent dev-mode toggle, off by default. While on it exposes technical
- * detail — driveIds, raw peer counts, hex labels. An in-memory cache, a
- * listener set and a hook, so any consumer re-renders when the toggle flips.
- */
+/** Persistent dev-mode toggle, off by default; while on it exposes driveIds, peer counts and hex labels. */
 
 const STORAGE_KEY = "peardrop.dev-mode";
 
@@ -82,10 +78,8 @@ export function subscribeDevMode(listener: Listener): () => void {
 }
 
 /**
- * Hard-locked to disabled for shipping builds: there is no toggle in the UI,
- * and a stored flag set by an earlier install is ignored. The hook and the
- * storage helpers remain so every dev-mode branch keeps compiling and
- * collapses to the user-mode side at runtime. Do not ship it unlocked.
+ * Hard-locked disabled for shipping builds, and a stored flag from an earlier install is ignored.
+ * The helpers stay so every dev-mode branch keeps compiling. Do not ship it unlocked.
  */
 const RELEASE_LOCKED = true;
 

@@ -15,12 +15,8 @@ import {
 } from "../state/backgroundHealthStorage";
 
 /**
- * Offers the per-OEM setting that stops this device freezing the app.
- * Mounted app-wide rather than inside a screen, so it can appear on whatever
- * the user returned to, and renders nothing until there is something to say.
- * A last resort: `shouldPrompt` is gated on the foreground service having run
- * and this device having stopped the app anyway. Shown once per prompt
- * version whichever button is tapped; the Settings row stays as the way back.
+ * Offers the per-OEM setting that stops this device freezing the app. A last resort: `shouldPrompt`
+ * is gated on the foreground service having run and the device having stopped the app anyway.
  */
 export default function BackgroundRestrictionPrompt() {
   const [health, setHealth] = useState<BackgroundHealth | null>(null);

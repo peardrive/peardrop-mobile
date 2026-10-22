@@ -16,11 +16,7 @@ export type SegmentedControlProps<Value extends string> = {
   onChange: (next: Value) => void;
 };
 
-/**
- * Data-driven pill-track segmented control. Track and thumb reuse the
- * existing `surfaceSubtle` and `cardStrong` tokens, so every theme works
- * without adding any.
- */
+/** Pill-track segmented control reusing `surfaceSubtle` and `cardStrong`, so every theme works unchanged. */
 export default function SegmentedControl<Value extends string>({
   options,
   value,

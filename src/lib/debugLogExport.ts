@@ -1,9 +1,5 @@
-// The export → (confirm) → reset orchestrator. RN-free by design: every side
-// effect arrives as an injected function, so the ordering guarantee is a unit
-// test with fakes. That guarantee: `Sharing.shareAsync()` resolves when the
-// sheet is dismissed, identically whether the user sent the file or hit Back,
-// so there is no silent auto-reset — the log is cleared only on an explicit
-// "Clear it" answered after the sheet returns, and "clear" is a rotation.
+// Export → confirm → reset. `Sharing.shareAsync()` resolves on dismissal whether the user sent the
+// file or hit Back, so the log is cleared only on an explicit answer after the sheet returns.
 
 export type ExportStage =
   | "bundle" // building the bundle from the rotation segments
@@ -22,9 +18,8 @@ export type ExportOutcome =
   | { ok: false; cleared: false; stage: ExportStage; error: string; fileName: string | null };
 
 export type ExportDeps = {
-  /** Build the export bundle on disk and return where it landed; null or a
-   *  zero-byte result means nothing worth exporting. Implementations must
-   *  write a copy — reset must never touch a file that is mid-share. */
+  /** Build the bundle and return where it landed; null or zero bytes means nothing to export.
+   *  Implementations must write a copy — reset must never touch a file that is mid-share. */
   buildBundle: (label: string) => Promise<{ uri: string; fileName: string; bytes: number } | null>;
   /**
    * Hand the bundle to the system share sheet. Resolves on dismissal —
@@ -46,9 +41,8 @@ function errText(e: unknown): string {
   return String((e as Error)?.message || e || "unknown error");
 }
 
-/** Run the full export flow. Never throws: every failure comes back as a
- *  typed outcome, and in each of those paths `clearLog` has not been
- *  called. */
+/** Never throws: every failure returns a typed outcome, and on each of those paths `clearLog` has
+ *  not been called. */
 export async function runExportFlow(
   label: string,
   deps: ExportDeps
@@ -81,9 +75,7 @@ export async function runExportFlow(
     return { ok: false, cleared: false, stage: "share", error: errText(e), fileName };
   }
 
-  // --- Stage 3: confirm ---
-  // The sheet returns with no evidence of delivery, so ask. A failure to
-  // ask is treated as "keep".
+  // The sheet returns with no evidence of delivery, so ask. A failure to ask means keep.
   let wantsClear = false;
   try {
     wantsClear = await deps.confirmClear();

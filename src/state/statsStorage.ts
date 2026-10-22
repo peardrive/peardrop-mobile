@@ -2,10 +2,8 @@ import RNFS from "react-native-fs";
 import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 
 /**
- * Counter store for lifetime bytes shared and received. A plain JSON file:
- * it survives a reinstall less reliably than AsyncStorage but is trivial to
- * inspect and reset. Deliberately RN-side truth, so none of this
- * bookkeeping depends on the engine.
+ * Lifetime bytes shared and received, as a plain JSON file. Deliberately RN-side truth, so none of
+ * this bookkeeping depends on the engine.
  */
 
 export type Stats = {
@@ -43,9 +41,8 @@ async function readFromDisk(): Promise<Stats> {
 }
 
 /**
- * Temp file plus rename, never a bare write. This store also keeps its own
- * `inFlight` mutex: the per-path queue inside `writeJsonAtomic` serializes
- * the write leg, while `mutate` serializes the whole read-modify-write.
+ * Temp file plus rename, never a bare write. `inFlight` serializes the whole read-modify-write,
+ * while `writeJsonAtomic`'s per-path queue serializes only the write leg.
  */
 async function writeToDisk(s: Stats): Promise<void> {
   try {

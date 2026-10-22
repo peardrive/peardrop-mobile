@@ -22,9 +22,8 @@ export type ReceivedFileInfoModalProps = {
 };
 
 /**
- * Read-only "where did this come from" surface for a received file. The
- * share link is a forwarding affordance: passing on what the user already
- * has, never seeding a new drive from this device.
+ * Read-only provenance for a received file. The share link forwards what the user already has —
+ * it never seeds a new drive from this device.
  */
 export default function ReceivedFileInfoModal({
   visible,

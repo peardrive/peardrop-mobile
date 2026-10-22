@@ -3,10 +3,8 @@ import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 import { PINNING_ENABLED, stripStoredPins } from "../lib/pinning";
 
 /**
- * Per-hosted-share organizational flags. Hosted drives live in the engine
- * manifest, which RN must not mutate directly, so flags like pinned and
- * favorite need an RN-side annotation table keyed by driveId. Received
- * shares carry their own flags on their own record; this is the hosted side.
+ * Per-hosted-share flags. Hosted drives live in the engine manifest, which RN must not mutate, so
+ * pinned and favorite need an RN-side table keyed by driveId.
  */
 
 export type HostedShareFlags = {
@@ -15,10 +13,8 @@ export type HostedShareFlags = {
    * and undo `retirePins`. Readers treat absent as `false`. */
   isPinned?: boolean;
   isFavorite: boolean;
-  /** User-supplied name captured at share creation. When present, the
-   *  list card + File-info modal read this back as the drive title
-   *  instead of the engine-generated one. Undefined for shares the
-   *  user never named. */
+  /** User-supplied name captured at share creation; the card and File-info modal read it back as
+   *  the drive title. Undefined for shares the user never named. */
   customName?: string;
 };
 

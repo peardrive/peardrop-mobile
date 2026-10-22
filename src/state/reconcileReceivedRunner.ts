@@ -11,31 +11,22 @@ import { extractKey } from "../lib/links";
 import { log as debugLog } from "../lib/debugLog";
 
 /**
- * Apply the reconcile diff to storage. Split from the pure diff so the
- * decision logic stays unit-testable and this file holds only the effects.
- * It does not touch lifetime stats: those are a monotonic counter with no
- * per-drive provenance, so a reconcile that ran twice would double-count.
- * Silent by design — files reappearing in the list is the outcome, and
- * announcing a recovery advertises a failure the user never saw.
+ * Applies the reconcile diff; the pure diff stays testable and this file holds only effects. It
+ * does not touch lifetime stats — a monotonic counter with no provenance would double-count.
  */
 export async function runReceivedReconcile(
   drives: EngineDriveLike[] | null | undefined,
   reason: string
 ): Promise<number> {
   try {
-    // `loadDownloaded` drops entries whose file is gone, so what comes back
-    // both exists and is recorded. That filter is also why a user-deleted
-    // file cannot be resurrected here, even if it is briefly re-proposed.
+    // `loadDownloaded` drops entries whose file is gone, which is also why a user-deleted file
+    // cannot be resurrected here even if it is briefly re-proposed.
     const recorded = await loadDownloaded();
     const { groups, totalFiles } = reconcileReceivedFiles({ drives, recorded });
     if (totalFiles === 0) return 0;
 
-    // Verify each candidate is on disk before writing it: a deleted file
-    // stays in the engine's list forever, so without this every reconcile
-    // re-proposes it and writes a dead entry on every foreground. The check
-    // lives here, not in the pure diff, so that module stays free of
-    // filesystem imports. Only candidates are stat'd, and once converged
-    // there are none.
+    // Verify each candidate is on disk first: a deleted file stays in the engine's list forever,
+    // so without this every reconcile re-proposes it and writes a dead entry on each foreground.
     let wrote = 0;
     /** Files also written back into the store the rendered list reads. */
     let healed = 0;
@@ -54,13 +45,8 @@ export async function runReceivedReconcile(
       wrote += present.length;
 
       /**
-       * The per-file write above reaches a store the list does not render,
-       * so the repair has to reach the share store too. `markFilesDownloaded`
-       * is a no-op when no share record exists, which is correct here: the
-       * record is upserted during the resolve, before the download starts.
-       * Inventing one from engine data would make this a second, competing
-       * writer of the store the UI reads. Failure is swallowed per group so
-       * one stubborn record cannot abort recovery for the other drives.
+       * `markFilesDownloaded` is a no-op with no share record, which is correct — the record is
+       * upserted during the resolve. Failure is swallowed per group so one record cannot abort the rest.
        */
       const shareKey = group.shareLink ? extractKey(group.shareLink) : null;
       if (shareKey) {

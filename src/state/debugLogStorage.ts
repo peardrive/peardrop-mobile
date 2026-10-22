@@ -2,11 +2,8 @@ import { useEffect, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * The persistent debugging toggle, off by default. While on, the diagnostic
- * stream goes to a file that can be exported, so a failure can be
- * reconstructed without the device in hand; while off there is no file
- * handle, no buffer and no flush timer. Not release-locked: shipping it is
- * the point.
+ * The persistent debugging toggle, off by default; while off there is no file handle, no buffer
+ * and no flush timer. Not release-locked: shipping it is the point.
  */
 
 const STORAGE_KEY = "peardrop.debug-logging";
@@ -51,22 +48,16 @@ export async function getDebugLogging(): Promise<boolean> {
 }
 
 /**
- * Synchronous read for the hot path. The logger checks this on every call
- * and must not await — an un-hydrated cache reads as `false`, which is the
- * safe default (drop the line rather than buffer it before the user opted
- * in). Hydration completes within the first tick of app boot.
+ * Synchronous read for the hot path — the logger must not await. An un-hydrated cache reads
+ * `false`, which is the safe default: drop the line rather than buffer before the user opted in.
  */
 export function isDebugLoggingEnabledSync(): boolean {
   return cache === true;
 }
 
 /**
- * Resolve the persisted flag with a bounded wait, for the one caller that
- * must not read a stale `false`: the worklet drops every log line until the
- * flag arrives, and the synchronous read is `false` on a cold cache by
- * design. Bounded because listening must not be hostage to storage — on
- * timeout this resolves `false` and the subscriber corrects it later. A warm
- * cache short-circuits before any timer is armed.
+ * Bounded wait for the one caller that must not read a stale `false`. Bounded because listening
+ * must not be hostage to storage; on timeout it resolves `false` and the subscriber corrects it.
  */
 export async function awaitDebugLogging(timeoutMs = 1500): Promise<boolean> {
   if (cache !== null) return cache;

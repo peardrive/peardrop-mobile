@@ -1,26 +1,11 @@
 /**
- * Which empty state the shares list shows. An unreadable manifest puts the
- * engine into an explicit unavailable state, and RN must show that as an
- * error: an empty list is otherwise pixel-identical to the "no shares yet"
- * state a new install shows, so every hosted share looks gone. The decision
- * is a pure function because `jest.config.js` is `testEnvironment: "node"`
- * and no `.tsx` here can be imported by a test; the screen only renders it.
+ * Which empty state the shares list shows. An unreadable manifest must render as an error — an
+ * empty list is otherwise pixel-identical to a new install, so every hosted share looks gone.
  */
 
 /**
- * Copied from the engine, not composed here.
- *
- * The one definition on the RN side. The engine's own copy is
- * `MANIFEST_UNAVAILABLE_MESSAGE` in `backend/hyperdrive-engine.mjs` (declared
- * just below `let manifestUnavailable`), which is also the `error.message` on
- * every rejected create/receive. The two realms cannot share a module — the
- * worklet bundle is packed separately — so the string is restated, verbatim,
- * and **must not be reworded on either side.**
- *
- * bans raw engine/native text as user-facing copy. This is not that: it is
- * a sentence written FOR the user that the engine happens to hold the master of,
- * carries no errno, no parser detail and no category, and says nothing about
- * networks, connectivity or expiry.
+ * Restated verbatim from the engine's `MANIFEST_UNAVAILABLE_MESSAGE`; the two realms cannot share
+ * a module because the worklet is packed separately. **Must not be reworded on either side.**
  */
 export const MANIFEST_UNAVAILABLE_MESSAGE =
   "Couldn't load your shares — close and reopen PearDrop.";
@@ -43,17 +28,8 @@ export type ShareListEmptyState = {
   title: string;
   subtitle?: string;
   /**
-   * True when the empty list is a FAILURE and not an absence.
-   *
-   * The screen keys its styling off this rather than off `kind`, so a future
-   * error kind cannot be added and silently render in the calm palette.
-   *
-   * The field needs a reader to mean anything: a screen that takes `icon`,
-   * `title` and `subtitle` and drops this one renders the manifest failure in
-   * the calm palette. The readers are `MainScreen.tsx`'s `emptyState` memo,
-   * which forwards it, and `src/ui/EmptyState.tsx`'s `isError` prop, which
-   * selects the palette. A test reads those two files off disk, because no
-   * `.tsx` in this project can be imported by a test.
+   * True when the empty list is a FAILURE, not an absence. The screen keys styling off this rather
+   * than off `kind`, so a new error kind cannot be added and silently render in the calm palette.
    */
   isError: boolean;
 };

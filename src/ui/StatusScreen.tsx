@@ -21,11 +21,7 @@ export type StatusScreenProps = {
   actions: StatusScreenAction[];
 };
 
-/**
- * Full-screen status and error surface: tinted-tile icon, title, body and
- * one or two CTAs. All colors are token-driven so one shell covers every
- * status the app needs to show.
- */
+/** Status and error shell. Every colour is token-driven, so one shell covers every status. */
 export default function StatusScreen({
   tone,
   icon,

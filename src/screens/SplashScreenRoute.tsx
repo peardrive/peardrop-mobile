@@ -25,10 +25,8 @@ export default function SplashScreenRoute() {
         index: 0,
         routes: [{ name: done ? "Main" : "Onboarding" }],
       });
-      // A link can arrive before this reset runs, and the reset would
-      // discard anything acted on earlier, so intents are held and released
-      // here — only for a returning user. A first-run user is heading to
-      // Onboarding, which opens the gate once it completes.
+      // A link can arrive before this reset runs and would be discarded, so intents are held and
+      // released here — only for a returning user; Onboarding opens the gate for a first run.
       if (done) openIntentGate();
     });
   }, [nav]);

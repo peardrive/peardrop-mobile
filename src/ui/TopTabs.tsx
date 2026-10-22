@@ -39,10 +39,8 @@ const AnimatedPath = Animated.createAnimatedComponent(Path);
 const AnimatedText = Animated.createAnimatedComponent(Text);
 
 /**
- * Segmented tabs with an interlocking S-curve seam. The seam geometry is
- * stable and only which region is elevated changes: selection crossfades
- * the two region fills, so the curve survives the transition. All colors
- * resolve from the active theme, with no hardcoded values.
+ * Segmented tabs with an interlocking S-curve seam. The geometry is stable and selection crossfades
+ * the two region fills, so the curve survives the transition.
  */
 export default function TopTabs<Value extends string>({
   tabs,
@@ -158,10 +156,8 @@ export default function TopTabs<Value extends string>({
 }
 
 /**
- * Left region. The outer three edges track the container's rounded corners
- * and the right edge is the seam. Each hook is one quadratic bezier whose
- * control point sits at the elbow, so tangents stay horizontal at the
- * container edge and vertical at the middle.
+ * Left region; the right edge is the seam. Each hook is one quadratic bezier with its control point
+ * at the elbow, so tangents stay horizontal at the container edge and vertical at the middle.
  */
 function buildLeftPath(width: number): string {
   const left = INSET;

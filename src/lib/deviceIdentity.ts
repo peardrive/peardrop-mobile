@@ -5,11 +5,8 @@ import { isXiaomiDevice } from "./openBackgroundSettings";
 import { subscribeDebugLogging } from "../state/debugLogStorage";
 
 /**
- * Who this device says it is, and what `isXiaomiDevice()` makes of that.
- * That match is a `Build.MANUFACTURER` regex and decides which ladder runs,
- * which Settings row appears and what the prompt says, so MANUFACTURER and
- * BRAND are recorded verbatim and adjacent: autostart libraries dispatch on
- * `Build.BRAND.lowercase()`, and on rebranded builds the two disagree.
+ * MANUFACTURER and BRAND are recorded verbatim and adjacent: autostart libraries dispatch on
+ * `Build.BRAND.lowercase()` and the two disagree on rebranded builds.
  */
 
 type DeviceConstants = {
@@ -100,10 +97,8 @@ export function describeDevice(): string {
 
 let started = false;
 
-/** Write the identity line on the rising edge of debug logging, in every
- *  build. Deliberately not gated on `IS_DEBUG_BUILD`: a release-build log
- *  still needs to say which device produced it. Must be called after
- *  `initDebugLog()`, or subscriber order drops the line silently. */
+/** Not gated on IS_DEBUG_BUILD — a release log still needs to say which device produced it.
+ *  Must run after `initDebugLog()`, or subscriber order drops the line silently. */
 export function initDeviceIdentityLog(): void {
   if (started) return;
   started = true;

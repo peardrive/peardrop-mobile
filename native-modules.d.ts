@@ -18,11 +18,8 @@ declare module "b4a" {
   export default b4a;
 }
 
-// Minimal shims so the Hyperdrive smoke test (src/lib/__tests__/
-// hyperdriveStream.test.ts) compiles. These two packages are CommonJS
-// with no @types and are otherwise only consumed inside backend/*.mjs
-// which is JS, not TS. Loose `any` is fine — the test exercises runtime
-// behavior, not type contracts.
+// Shims for two CommonJS packages with no @types, consumed only from backend/*.mjs and one test.
+// Loose `any` is deliberate — the test exercises runtime behaviour, not type contracts.
 declare module "corestore" {
   const Corestore: any;
   export default Corestore;

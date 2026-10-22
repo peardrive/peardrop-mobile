@@ -1,12 +1,6 @@
 /**
- * What one background window is allowed to write. A module rather than four
- * lines in the caller because the caller imports react-native and is
- * unreachable from jest, so the rule governing what gets persisted about a
- * freeze would have no test. Pure: it persists nothing, reads no platform
- * API, and the single caller does the writing. Only windows spanning at
- * least ten expected ticks are graded, and a shorter one never counts —
- * below that, one missed tick is half the window and frozen is an artefact
- * of the resolution rather than a measurement.
+ * What one background window may write. Only windows spanning at least ten expected ticks are
+ * graded — below that, one missed tick is half the window and frozen is an artefact of resolution.
  */
 import {
   classifyWindow,
@@ -20,19 +14,14 @@ export type FreezeWindowDecision = {
   grade: FreezeGrade | null;
   /** Why it was not graded. Null when it was. */
   ungradedReason: UngradedReason | null;
-  /**
-   * Whether this window may be written to the persisted freeze history.
-   * Requires both that it was called frozen and that it was gradeable at
-   * all: an ungraded window is unknown, neither fine nor frozen.
-   */
+  /** Requires both that the window was called frozen and that it was gradeable: an ungraded
+   *  window is unknown, neither fine nor frozen. */
   recordFreeze: boolean;
 };
 
 /**
- * The null in `workletGapMs` is load-bearing: it means no gap measurement
- * was taken, which `classifyWindow` answers with an ungraded window. Do not
- * coerce it to 0 on the way in — that turns an absent measurement into a
- * clean one.
+ * The null in `workletGapMs` is load-bearing: it means no gap was measured. Do not coerce it to 0
+ * on the way in — that turns an absent measurement into a clean one.
  */
 export function decideFreezeWindow(
   verdict: FreezeVerdict,

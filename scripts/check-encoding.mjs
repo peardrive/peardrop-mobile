@@ -1,11 +1,7 @@
 #!/usr/bin/env node
 /**
- * Fail the build on source that is not clean text: a stray NUL byte compiles
- * and passes tests while ripgrep silently skips the file, putting a hole in
- * every search sweep. Rejects invalid UTF-8, caught by a decode-then-encode
- * round trip rather than by hunting U+FFFD, which is a legitimate character;
- * C0 control bytes other than TAB, LF and CR; and a UTF-8 BOM. Exit 2 if a
- * root does not exist, since a silently empty scan always passes.
+ * Fail the build on source that is not clean text: a stray NUL compiles and passes tests while
+ * ripgrep skips the file. Exit 2 on a missing root, since a silently empty scan always passes.
  */
 
 import fs from 'node:fs';

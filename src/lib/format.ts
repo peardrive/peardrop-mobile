@@ -1,14 +1,6 @@
 /**
- * render a simulate-completion delay for the Settings label.
- *
- * Lives here rather than beside the storage module because that module
- * imports AsyncStorage, which the jest config cannot load — a pure
- * formatter in `lib/` is genuinely testable instead of untested by
- * construction.
- *
- * Sub-minute reads in seconds; whole minutes read as minutes. The options
- * are a fixed set, so this deliberately doesn't handle mixed values like
- * 90 s — it would be dead code dressed as generality.
+ * Renders a simulate-completion delay. Lives here rather than beside the storage module, which
+ * imports AsyncStorage and so cannot be loaded by jest. The option set is fixed, so no mixed values.
  */
 export function formatSimulateDelay(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0s";
@@ -31,10 +23,8 @@ export function formatBytes(bytes?: number | null): string {
 }
 
 /**
- * Bytes, or an honest dash when the total is not known. Separate from
- * `formatBytes`, which answers `0 B` for `null`, `undefined`, `NaN` and `0`
- * alike — correct at its call sites, which pass a real measured size.
- * Here `0` means the manifest reported no sizes, not an empty share.
+ * Bytes, or an honest dash when the total is unknown. Separate from `formatBytes`, which answers
+ * `0 B` for null alike — here `0` means the manifest reported no sizes, not an empty share.
  */
 export function formatBytesOrUnknown(
   bytes?: number | null,
@@ -70,11 +60,7 @@ export function clampPercent(value: number | null | undefined): number {
   return value;
 }
 
-/**
- * Render a past timestamp as a relative label for the first week, then
- * fall back to a short absolute date. Used by the SHARE INFO / FILE INFO
- * surfaces. Anchored to a caller-supplied `now` for testability.
- */
+/** Relative for the first week, then a short absolute date. Anchored to a caller-supplied `now`. */
 export function formatRelativeOrDate(ms?: number, now: number = Date.now()): string | null {
   if (!ms || !Number.isFinite(ms)) return null;
   const diff = Math.max(0, now - ms);
@@ -106,12 +92,8 @@ export function formatAbsoluteDate(ms?: number): string | null {
   });
 }
 
-/**
- * "0:32" / "2:14" / "1:02:33" formatter for media playback timestamps.
- * Hours are only shown when needed; minutes always include leading
- * single-digit (e.g. "0:05" not "5"); seconds are zero-padded to two
- * digits. Negative or non-finite inputs return "0:00".
- */
+/** Playback timestamps: hours only when needed, minutes always two-digit. Negative or non-finite
+ *  input returns "0:00". */
 export function formatClock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
   const total = Math.floor(seconds);

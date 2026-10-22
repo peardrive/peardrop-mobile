@@ -2,12 +2,8 @@ import RNFS from "react-native-fs";
 import { readJsonFile, writeJsonAtomic } from "../lib/atomicFile";
 
 /**
- * Per-share record of the local cache paths the user's picked files live
- * at. The engine's manifest stores only in-drive paths, so without this
- * side-store a file the user shared cannot be previewed or opened
- * elsewhere. The paths sit in picker cache directories the OS may purge, so
- * the UI checks existence first: a missing copy hides preview and open, and
- * does not affect the served share itself.
+ * Local cache paths for the files a share serves; the manifest holds only in-drive paths. The OS
+ * may purge them, so the UI checks existence first — a missing copy never affects the served share.
  */
 
 export type SharedFilePath = {

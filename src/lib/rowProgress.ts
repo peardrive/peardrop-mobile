@@ -7,6 +7,8 @@ export type ProgressFile = {
   readonly size: number;
   /** Already on disk from an earlier attempt, or from this one. */
   readonly isDownloaded: boolean;
+  /** Bytes of this file already replicated, persisted so they survive the attempt ending. */
+  readonly partialBytes?: number;
 };
 
 export type RowProgressInput = {
@@ -50,6 +52,7 @@ export function rowProgress(input: RowProgressInput): RowProgress {
   let held = 0;
   let filesDone = 0;
   let remaining = 0;
+  let partial = 0;
 
   for (const f of input.files) {
     if (!wanted.has(norm(f.name))) continue;
@@ -60,6 +63,8 @@ export function rowProgress(input: RowProgressInput): RowProgress {
       filesDone++;
     } else {
       remaining += size;
+      // Clamped at the file's own size: a partial can never exceed the file it belongs to.
+      partial += Math.min(usable(f.partialBytes), size);
     }
   }
 
@@ -74,9 +79,12 @@ export function rowProgress(input: RowProgressInput): RowProgress {
     };
   }
 
+  // The persisted partials are the figure, and the wire total is only the fallback for a record
+  // written before them. Never summed: it spans files already counted in `held`.
+  const source = partial > 0 ? partial : usable(input.bytesThisAttempt);
   // Clamped at `remaining` so a wire figure inflated by block overhead cannot
   // make the bar claim more than the files that are still outstanding hold.
-  const fresh = Math.min(usable(input.bytesThisAttempt), remaining);
+  const fresh = Math.min(source, remaining);
   return {
     pct: clamp(Math.round(((held + fresh) / total) * 100)),
     filesDone,

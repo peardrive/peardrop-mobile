@@ -11,11 +11,7 @@ export type BottomToolbarProps = {
   onSettings: () => void;
 };
 
-/**
- * Floating bottom toolbar: three circular icon-only buttons on a lighter
- * parent panel, lifted off the bottom edge so it reads as a floating bar
- * rather than flush chrome.
- */
+/** Floating bottom toolbar, lifted off the bottom edge so it reads as a bar rather than chrome. */
 export default function BottomToolbar({
   onSend,
   onReceive,

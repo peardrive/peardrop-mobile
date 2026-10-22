@@ -8,25 +8,8 @@ import { fileURLToPath } from "url";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 /**
- * `backend/` was at one point NOT scanned, though a note elsewhere in this file
- * claimed it was.
- *
- * This was not a theoretical gap. The rule is *"no path may ever show
- * 'Drive not found' to a user again"*, and **the only producer of that string
- * was `backend/hyperdrive-engine.mjs`** — the one file the guard could not see.
- * A review planted `Drive not found` plus an offline claim as real string
- * literals in that file and this script reported **"clean, 121 files", exit 0**;
- * the identical strings in `src/lib/errorMessage.ts` produced exit 1.
- *
- * `rpc-commands.mjs` is included too: it is imported by BOTH realms, so a string
- * added there ships in both, and it sits at the repo root where neither `src` nor
- * `backend` would have reached it. It is also a file that was once edited with no
- * snapshot baseline, which is its own argument for coverage.
- *
- * **Engine strings are not all user-facing** — most are `debugLog` arguments, and
- * the `logCallSpans` suppression below already handles that, with a planted
- * offender immediately after a `debugLog` call proving the suppression does not
- * swallow a real hit.
+ * `backend/` must stay in scope: the only producer of "Drive not found" is the engine, and a
+ * guard that cannot see it reports green. `rpc-commands.mjs` too — both realms import it.
  */
 const SCAN_ROOTS = ["src", "app", "backend", "rpc-commands.mjs"];
 const EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -83,10 +66,9 @@ const EXCLUSIONS = [
   {
     file: "src/screens/ReceiveScreen.tsx",
     reason:
-      "DEAD — zero importers anywhere in src/ or app/ (verified FIX-2026-09 " +
-      "Phase 2h). Carries two banned strings at :1047. Deletion is deferred " +
-      "to PUBLISHIT.md Appendix D, after the tester build; editing a file " +
-      "that is about to be deleted is churn.",
+      "DEAD — zero importers anywhere in src/ or app/. Carries two banned " +
+      "strings at :1047; deletion is pending, and editing a file that is " +
+      "about to be deleted is churn.",
   },
 ];
 
@@ -103,9 +85,7 @@ function isTestFile(rel) {
   );
 }
 
-// ---------------------------------------------------------------------------
 // The scanner
-// ---------------------------------------------------------------------------
 
 /** Walks the source once, returning the same text with comments and string bodies blanked so offsets survive, plus each string literal and template chunk. */
 // Regex literals are recognised by the previous-significant-token heuristic, so a quote inside a character class cannot desynchronise the scan.
@@ -332,22 +312,8 @@ function logCallSpans(masked) {
 }
 
 /**
- * The body of `src/lib/files.ts`'s `fileIcon`, exempt from the emoji rule.
- *
- * `fileIcon` is a deprecated glyph helper — its own header says *"Prefer
- * `fileIconName` (Ionicons) for new rendering"* — and its six returns are the
- * only emoji literals left under `src`, `app` or `backend` outside test files.
- * Retiring it app-wide is deferred to `PUBLISHIT.md` Appendix D, so the rule
- * carves out the one function rather than the whole file: a new emoji string
- * anywhere else in `files.ts` is still reported.
- *
- * NOTE what this rule does and does not buy. It cannot catch a component that
- * RENDERS an emoji by calling a helper — `SharePreviewModal` held no emoji
- * literal, it called `fileIcon(name)` — so this guards against new emoji copy,
- * not against new call sites of the helper. Those need the helper deleted.
- *
- * Span-based, like `logCallSpans`, and computed over the masked source so a
- * brace inside a string cannot throw the match off.
+ * `fileIcon`'s body, exempt from the emoji rule — one carve-out, so a new emoji elsewhere in
+ * `files.ts` is still reported. Span-based over the masked source, like `logCallSpans`.
  */
 function emojiExemptSpans(rel, masked) {
   if (rel.split("\\").join("/") !== "src/lib/files.ts") return [];
@@ -443,9 +409,7 @@ function* walk(dir) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // --selftest
-// ---------------------------------------------------------------------------
 
 /** Verbatim, as they shipped. If the pattern stops matching these, it is broken. */
 const KNOWN_OFFENDERS = [
@@ -618,9 +582,7 @@ function selftest() {
   return failures.length === 0 ? 0 : 2;
 }
 
-// ---------------------------------------------------------------------------
 // main
-// ---------------------------------------------------------------------------
 
 function main() {
   const args = process.argv.slice(2);
@@ -676,8 +638,8 @@ function main() {
   }
   console.error(
     "\nPearDrop has no connectivity detection and links never expire, so copy" +
-      "\nmay not claim either. 'Drive not found' is raw engine text (ADD-2)." +
-      `\nProse over ${MAX_PROSE_LENGTH} chars truncates with "…" on screen (I-7).`,
+      "\nmay not claim either. 'Drive not found' is raw engine text." +
+      `\nProse over ${MAX_PROSE_LENGTH} chars truncates with "…" on screen.`,
   );
   process.exit(1);
 }

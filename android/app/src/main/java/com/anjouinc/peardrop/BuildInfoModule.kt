@@ -5,13 +5,7 @@ import android.os.Build
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 
-/**
- * Surfaces build-variant facts that JS cannot determine for itself.
- *
- * A plain bridge module rather than a TurboModule — it works under both
- * architectures via the interop layer, and a single constant read once at
- * startup is not hot enough to care.
- */
+/** Surfaces build-variant facts JS cannot determine for itself. */
 class BuildInfoModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 

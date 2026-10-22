@@ -1,10 +1,6 @@
 /**
- * An incoming link must never swap what the user is already looking at, and
- * must never be silently dropped. With a preview open or a grab in flight the
- * link is held rather than applied, and every `queue` outcome carries a
- * `notice` so the user knows it is waiting. A second link replaces the held
- * one and says so; the same link arriving twice is absorbed, because Android
- * re-delivers intents on resume. The queue is in memory; a kill loses it.
+ * An incoming link never swaps what the user is looking at and is never silently dropped: it is
+ * held with a `notice`. A repeat of the same link is absorbed, because Android re-delivers intents.
  */
 
 export type IncomingLinkDecision =
@@ -31,13 +27,7 @@ export function isBusy(state: Pick<IncomingLinkState, "previewVisible" | "downlo
   return state.previewVisible || state.downloadBusy || state.resolving;
 }
 
-/**
- * Decide what to do with a link that has just arrived.
- *
- * Pure: the caller owns the held slot and applies the decision. That is what
- * makes this assertable at all — `IncomingLinkBridge.tsx` is a `.tsx` and the
- * suite collects only `*.test.ts` (Amendment A-3).
- */
+/** Pure: the caller owns the held slot and applies the decision, which is what makes it assertable. */
 export function decideIncomingLink(
   link: string,
   state: IncomingLinkState,
@@ -60,11 +50,8 @@ export function decideIncomingLink(
 }
 
 /**
- * Is the held link ready to be applied?
- *
- * Separate from `decideIncomingLink` because it answers a different question at
- * a different moment: not *"what do I do with this arrival"* but *"is the user
- * free yet"*. The caller polls it as its own state settles.
+ * Is the held link ready to apply? A different question at a different moment from
+ * `decideIncomingLink` — not "what do I do with this arrival" but "is the user free yet".
  */
 export function shouldDrain(state: IncomingLinkState): boolean {
   return !!state.heldLink && !isBusy(state);

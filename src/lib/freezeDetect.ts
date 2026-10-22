@@ -1,14 +1,6 @@
 /**
- * Decide whether the process was frozen while backgrounded.
- *
- * Wall-clock time passes whether the app was running or frozen, and RN's own
- * timers stop on background either way, so neither is evidence. The engine's
- * liveness counter is: it advances while the app is merely backgrounded and
- * stops when the OS freezes the process. Comparing ticks actually observed
- * against ticks that should have elapsed is therefore the whole measurement.
- *
- * Pure by design — data in, verdict out, no React Native imports — so
- * jest.config.js can reach it.
+ * Wall-clock time passes whether the app ran or froze, and RN timers stop either way, so neither is
+ * evidence. Ticks observed against ticks that should have elapsed is the whole measurement.
  */
 
 export type FreezeInput = {
@@ -46,20 +38,14 @@ export type FreezeVerdict = {
 };
 
 /**
- * One minute. A freeze can begin within seconds — onsets of 2.6-6.4 s have
- * been measured — but a user glancing at another app for ten seconds is not
- * a problem worth reporting, and at a 30 s cadence a shorter window yields
- * fewer than two expected ticks, which is too coarse to divide by. Sixty
- * seconds is the point where the measurement is both meaningful and worth
- * acting on.
+ * One minute. Below that, a 30 s cadence yields fewer than two expected ticks — too coarse to
+ * divide by — and a ten-second glance at another app is not worth reporting.
  */
 export const DEFAULT_MIN_ELAPSED_MS = 60_000;
 
 /**
- * Half. A genuine freeze measures 96-99% frozen and an unrestricted run 0%,
- * so the two populations are nowhere near this line — it exists only to
- * reject noise, not to discriminate between close cases. Scheduler jitter
- * and a tick landing just outside the window cost a few percent at most.
+ * Half. A real freeze measures 96-99% and an unrestricted run 0%, so this line only rejects noise;
+ * it never has to discriminate between close cases.
  */
 export const DEFAULT_MIN_FROZEN_FRACTION = 0.5;
 
@@ -106,10 +92,8 @@ export function evaluateFreeze(input: FreezeInput): FreezeVerdict {
     };
   }
 
-  // Floor, not round: a window of 90 s at a 30 s cadence guarantees only two
-  // completed intervals, because the first tick lands at an arbitrary offset
-  // from the moment of backgrounding. Rounding up would manufacture a
-  // missing tick and report a freeze that did not happen.
+  // Floor, not round: the first tick lands at an arbitrary offset from backgrounding, so rounding
+  // up would manufacture a missing tick and report a freeze that did not happen.
   const expectedTicks = Math.floor(elapsedMs / tickIntervalMs);
 
   if (expectedTicks < 2) {

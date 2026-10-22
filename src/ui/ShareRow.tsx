@@ -19,8 +19,14 @@ import { FileKindBadge } from "./FileTypeIcon";
 import { highlightPlan } from "../lib/readyHighlight";
 
 
-/** The tint, keyed on the tick value rather than a boolean, so a re-render cannot replay it. */
-// One animated sequence on the native driver, because a per-frame write from the JS side is what stutters.
+/**
+ * The tint, driven once per tick change.
+ *
+ * Keyed on the tick VALUE rather than a boolean, so a re-render cannot replay
+ * it and the list can fire it again later for the same row. The whole sequence
+ * is one `Animated.sequence` on one value with the native driver, which is the
+ * lesson from the pear animation: a per-frame JS write is what stutters.
+ */
 function useReadyHighlight(tick: number): Animated.Value {
   const value = useRef(new Animated.Value(0)).current;
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -124,7 +130,11 @@ export type ShareRowProps = {
   selectionMode?: boolean;
   /** Only meaningful when `selectionMode` is true. */
   selected?: boolean;
-  /** Bumped by the list when this row has just become ready. The value is the trigger, not a boolean: a counter cannot be missed by a re-render and cannot replay on one either. */
+  /**
+   * Bumped by the list when this row has just become ready. The VALUE is the
+   * trigger, not a boolean: a counter cannot be missed by a re-render and
+   * cannot replay on one either.
+   */
   highlightTick?: number;
 };
 
@@ -178,7 +188,9 @@ export default function ShareRow({
       accessibilityState={selectionMode ? { checked: !!selected } : undefined}
       accessibilityLabel={`${name}, ${subText}`}
     >
-      {/* The tint is an opacity on an overlay rather than an animated background colour, which is not a native-driver property; nothing here changes a layout value, so the row never moves. */}
+      {/* The tint is an OPACITY on an overlay, not an animated backgroundColor:
+          colour is not a native-driver property and animating it would throw.
+          Nothing here changes a layout value, so the row never moves. */}
       <Animated.View
         pointerEvents="none"
         style={[

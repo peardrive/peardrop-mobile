@@ -22,6 +22,9 @@ export type NameShareModalProps = {
   /** How many files this share bundles, surfaced in the subtitle so the user
    *  knows what they are naming. Ignored when `subtitle` is set. */
   fileCount: number;
+  /** Items the share sheet offered that could not be read. A toast loses this race: the modal
+   *  opens in the same commit and draws over it, so the line belongs inside the modal. */
+  droppedCount?: number;
   onCancel: () => void;
   /** Fires with the trimmed name once the user taps Share. */
   onConfirm: (name: string) => void;
@@ -32,32 +35,22 @@ export type NameShareModalProps = {
   placeholder?: string;
   confirmLabel?: string;
   confirmIcon?: React.ComponentProps<typeof Ionicons>["name"];
-  // Single-file naming.
   /**
-   * The file's extension, rendered as fixed text beside the field and not
-   * editable. Empty for bundles and for the debug-log label. `onConfirm`
-   * receives the base only; `joinNameAndExt` recombines in one place,
-   * including the double-extension rule, since a visible suffix does not
-   * stop people typing it.
+   * The file's extension, fixed text beside the field. `onConfirm` receives the base only;
+   * `joinNameAndExt` recombines in one place, because a visible suffix does not stop people typing it.
    */
   fixedSuffix?: string;
-  /**
-   * Validate as the user types. Returns a reason to show, or null when the
-   * name is usable. Injected rather than imported so this stays a dumb
-   * prompt: the debug-log caller has no share-name rules to inherit.
-   */
+  /** Injected rather than imported so this stays a dumb prompt: the debug-log caller has no
+   *  share-name rules to inherit. */
   validate?: (raw: string) => string | null;
 };
 
-/**
- * One-step name prompt shown after a multi-file / multi-photo pick. The
- * confirmed name is stored on the hosted-share flags row so the list card
- * and File-info modal both read it back as the drive title.
- */
+/** One-step name prompt; the confirmed name is stored on the hosted-share flags row. */
 export default function NameShareModal({
   visible,
   defaultName,
   fileCount,
+  droppedCount = 0,
   onCancel,
   onConfirm,
   title = "Name this share",
@@ -136,12 +129,16 @@ export default function NameShareModal({
                   : `${fileCount} files will share under this name.`)}
             </Text>
 
-            {/*
-              The field and its fixed suffix share one bordered row: the
-              input takes `flex: 1` and the suffix does not shrink, so a long
-              base scrolls inside the input while the extension stays pinned
-              and visible. With no suffix the row is a plain bordered input.
-            */}
+            {droppedCount > 0 ? (
+              <Text style={styles.dropped}>
+                {droppedCount === 1
+                  ? "1 file couldn't be read."
+                  : `${droppedCount} files couldn't be read.`}
+              </Text>
+            ) : null}
+
+            {/* The input takes `flex: 1` and the suffix does not shrink, so a long base scrolls
+                inside the field while the extension stays pinned and visible. */}
             <View style={[styles.inputRow, !!problem && styles.inputRowError]}>
               <TextInput
                 style={styles.input}
@@ -254,6 +251,13 @@ function createStyles(theme: AppTheme, topInset: number) {
       color: theme.muted,
       fontSize: 13,
       textAlign: "center",
+    },
+    // Muted, not `danger`: nothing here went wrong for the user to act on.
+    dropped: {
+      color: theme.muted,
+      fontSize: 13,
+      textAlign: "center",
+      marginTop: -8,
     },
     inputRow: {
       flexDirection: "row",

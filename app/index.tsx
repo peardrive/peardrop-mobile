@@ -6,6 +6,7 @@ import { ensureNotificationsReady } from "../src/lib/notifications";
 import { BackendProvider } from "../src/state/backend";
 import { ShareLinkFlowProvider } from "../src/state/ShareLinkFlowContext";
 import IncomingLinkBridge from "../src/state/IncomingLinkBridge";
+import ShareIntentBridge from "../src/state/ShareIntentBridge";
 import { ThemeProvider, useAppTheme } from "../src/state/ThemeContext";
 import SharePreviewModal from "../src/ui/SharePreviewModal";
 import { ToastOutlet, ToastProvider } from "../src/ui/Toast";
@@ -13,12 +14,31 @@ import BackgroundRestrictionPrompt from "../src/ui/BackgroundRestrictionPrompt";
 import { LIGHT_THEME_IDS } from "../src/ui/themes";
 
 /**
- * A flex:1 View below ThemeProvider whose backgroundColor is theme.bg is the
- * backstop for every safe-area edge. React Navigation's Bottom Tab navigator
- * gives its scene container a platform-default background (white on iOS),
- * which otherwise shows through above the status bar and below the home
- * indicator. Tabs.tsx sets `sceneContainerStyle.backgroundColor` to cover the
- * inner scene area as well.
+ * iOS visual SafeArea fix. The first
+ * iOS build showed white strips above the status bar / Dynamic Island and
+ * below the home indicator — the dark theme wasn't reaching those zones.
+ *
+ * Root cause: React Navigation's Bottom Tab navigator gives its scene
+ * container a platform-default background (white on iOS, system default
+ * on Android). On Android we never noticed because the OEM defaults are
+ * usually black-or-near-black; on iOS the white shines through every
+ * safe-area edge that the screen view's `paddingTop`/`paddingBottom`
+ * inset away from.
+ *
+ * Fix is three small things inside this file + one in Tabs:
+ *   1. Wrap the entire tree (below ThemeProvider) in a flex:1 View whose
+ *      backgroundColor is theme.bg. Becomes the absolute backstop —
+ *      anywhere in the tree that doesn't draw its own bg now falls
+ *      through to the theme color.
+ *   2. Set Tab.Navigator's `sceneContainerStyle.backgroundColor` so the
+ *      inner scene area also fills with theme.bg (handled in Tabs.tsx).
+ *   3. <StatusBar> with the right barStyle for the current theme (light
+ *      text on dark themes, dark text on light themes). Uses react-
+ *      native's built-in (already in the dep graph) — no new package.
+ *
+ * Content (MainScreen, SettingsScreen, etc.) already uses `useSafeAreaInsets`
+ * for paddingTop/paddingBottom, so content stays clear of the notch /
+ * home indicator. Only the *background* is what's changing.
  */
 function ThemedRoot({ children }: { children: React.ReactNode }) {
   const { theme, themeId } = useAppTheme();
@@ -36,9 +56,11 @@ function ThemedRoot({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  // Register the notification channel before anything can post to it. Above
-  // BackendProvider deliberately, so it never queues behind worklet start;
-  // idempotent and best-effort, so nothing downstream waits on the result.
+  // Register the notification channel before anything can post to it.
+  // Deliberately above BackendProvider: the channel and the worklet share
+  // no state, so this must not queue behind worklet start. Fire-and-forget
+  // — it is idempotent and internally best-effort, and nothing downstream
+  // waits on the result.
   React.useEffect(() => {
     void ensureNotificationsReady();
   }, []);
@@ -52,20 +74,33 @@ export default function App() {
               <ShareLinkFlowProvider>
                 <Tabs />
                 <SharePreviewModal />
-                {/* Drains peardrop:// links parked by app/+native-intent.ts
-                    into the resolve-and-preview flow above. Renders nothing,
-                    and sits outside <Tabs /> so the splash's nav.reset()
-                    can't unmount it. SharePreviewModal is a sibling rather
-                    than a screen, so an incoming link needs no navigation at
-                    all — the preview draws over whatever route the launch
-                    flow settled on. */}
+                {/* Drains peardrop:// links parked by
+                    app/+native-intent.ts into the resolve-and-preview
+                    flow above. Renders nothing, and sits outside <Tabs />
+                    so the splash's nav.reset() can't unmount it. Note
+                    SharePreviewModal is a sibling here rather than a
+                    screen, which is why an incoming link needs no
+                    navigation at all — the preview draws over whatever
+                    route the launch flow settled on. */}
                 <IncomingLinkBridge />
-                {/* Offers the background-activity setting only once the OS
-                    has been observed freezing the app. Mounted here rather
-                    than in a screen so it can appear over whatever the user
-                    returned to; renders nothing until there is something to
-                    say. */}
+                {/* Drains files handed over by Android's share sheet. Sits beside
+                    IncomingLinkBridge for the same reason: nav.reset() must not unmount it. */}
+                <ShareIntentBridge />
+                {/* Offers the background-activity setting after the OS has
+                    actually been observed freezing the app. Mounted here
+                    rather than in a screen so it can appear over whatever
+                    the user returned to; renders nothing until there is
+                    something to say. */}
                 <BackgroundRestrictionPrompt />
+                {/* v5: QR scanner is embedded directly in ReceiveSheet;
+                    the standalone QrScanModal is no longer mounted. */}
+                {/* T1 — the root toast surface, and it must stay LAST here.
+                    RN draws siblings without zIndex in declaration order, so
+                    its position is what puts it over <Tabs />. It only draws
+                    when no modal outlet is registered; every shipped Modal
+                    carries its own as its last child, and
+                    `selectToastOutlet` gives the innermost open one the
+                    toast. See src/lib/toastOutletSelect.ts. */}
                 <ToastOutlet />
               </ShareLinkFlowProvider>
             </BackendProvider>

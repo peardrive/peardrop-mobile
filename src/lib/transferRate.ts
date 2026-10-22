@@ -14,13 +14,8 @@ const MIN_SAMPLE_GAP_MS = 250;
 type Sample = { t: number; bytes: number };
 
 /**
- * Derives a short-window transfer rate and ETA from a TransferSummary by
- * sampling `bytesTransferred` on every render. Holding samples in a ref
- * means we don't re-render just to collect data, and the state pulse only
- * fires when the window actually changes the computed rate.
- *
- * This lives on the RN side on purpose: when pearcore lands it can emit
- * rate information natively and this hook becomes a thin pass-through.
+ * Short-window rate and ETA from a TransferSummary. Samples live in a ref so collecting data does
+ * not re-render; the state pulse fires only when the window actually changes the computed rate.
  */
 export function useTransferRate(transfer: TransferSummary | null | undefined): TransferRate {
   const samplesRef = useRef<Sample[]>([]);

@@ -19,7 +19,9 @@ import {
   deleteShare,
   loadShare,
   loadShares,
+  clearPartialBytes,
   markFilesDownloaded,
+  setFilePartialBytes,
   patchShare,
   rememberDriveSession,
   subscribeShares,
@@ -44,7 +46,9 @@ import {
   type ShareRecordLike,
   type ShareView,
 } from "../lib/shareModel";
+import type { RowFloor } from "../lib/rowFloor";
 import { planStallRetry } from "../lib/stallRetry";
+import { stallVerdictStillHolds } from "../lib/stallVerdict";
 // The fetch/keep rule and the offline picker's adapter stay pure modules: this file is unreachable from the suite, and re-inlining them restores the defect they close.
 import {
   heldNames,
@@ -176,6 +180,8 @@ type ShareLinkFlowApi = {
   /** One anti-flap hold per share key, shared by every surface: two holds are two sources of truth about the same question. */
   // A mutable map rather than state, because the hold is an output of rendering and storing it would re-render on every decision.
   flapHolds: Map<string, FlapHold>;
+  /** The row's high-water percentage per share, so the list and the picker floor alike. */
+  rowFloors: Map<string, RowFloor>;
   /** Commit the picker's draft. The only selection write: ticks and the x are a draft until the button is tapped. */
   // `stop` is separate from `remove` because only the first should tear a pipe down.
   confirmSelection: (diff: SelectionDiff) => Promise<void>;
@@ -200,6 +206,10 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   } = useBackend();
   const { show: showToast } = useToast();
   const { enabled: devMode } = useDevMode();
+  // Read wherever a decision outlives the render it was made in: an interval callback, or a
+  // verdict awaiting a load while the snapshot it was decided from moves on.
+  const transfersRef = useRef(transfers);
+  transfersRef.current = transfers;
   const [linkDraft, setLinkDraftRaw] = useState("");
   const [resolving, setResolving] = useState(false);
   const [linkError, setLinkError] = useState<LinkNotice | null>(null);
@@ -761,16 +771,22 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   const retryNowRef = useRef<(shareKey: string) => Promise<boolean>>(
     async () => false,
   );
-  const stallTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
-    new Map(),
-  );
+  /** The pending retry per share, with when it was armed, so moving bytes can retire it. */
+  const stallTimersRef = useRef<
+    Map<string, { timer: ReturnType<typeof setTimeout>; armedAt: number }>
+  >(new Map());
+
+  /** Drop a pending retry. A row whose bytes are moving has nothing to retry. */
+  const cancelStallRetry = useCallback((shareKey: string) => {
+    const existing = stallTimersRef.current.get(shareKey);
+    if (!existing) return;
+    clearTimeout(existing.timer);
+    stallTimersRef.current.delete(shareKey);
+  }, []);
+
   const scheduleStallRetry = useCallback(
     (shareKey: string, state: RowLifecycleState) => {
-      const existing = stallTimersRef.current.get(shareKey);
-      if (existing) {
-        clearTimeout(existing);
-        stallTimersRef.current.delete(shareKey);
-      }
+      cancelStallRetry(shareKey);
       const plan = planStallRetry(state, Date.now());
       if (plan.at === null) return;
       const delay = Math.max(0, plan.at - Date.now());
@@ -779,22 +795,34 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         "rowstate",
         `rowstate retry key=${shareKey.slice(0, 6)} attempt=${plan.attempt} in=${delay}ms`,
       );
-      stallTimersRef.current.set(
-        shareKey,
-        setTimeout(() => {
+      stallTimersRef.current.set(shareKey, {
+        armedAt: Date.now(),
+        timer: setTimeout(() => {
           stallTimersRef.current.delete(shareKey);
           void retryNowRef.current(shareKey);
         }, delay),
-      );
+      });
     },
-    [],
+    [cancelStallRetry],
+  );
+
+  /** Bytes arriving after a retry was armed retire it, so a recovered row does not restart itself. */
+  const retireStallRetryIfMoving = useCallback(
+    (shareKey: string, lastBytesAt: number | null | undefined) => {
+      const pending = stallTimersRef.current.get(shareKey);
+      if (!pending) return;
+      if (typeof lastBytesAt !== "number" || !Number.isFinite(lastBytesAt)) return;
+      if (lastBytesAt <= pending.armedAt) return;
+      cancelStallRetry(shareKey);
+    },
+    [cancelStallRetry],
   );
 
   // Every pending timer dies with the provider, so a retry cannot fire into an
   // unmounted tree.
   useEffect(
     () => () => {
-      for (const timer of stallTimersRef.current.values()) clearTimeout(timer);
+      for (const pending of stallTimersRef.current.values()) clearTimeout(pending.timer);
       stallTimersRef.current.clear();
     },
     [],
@@ -832,6 +860,13 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           pauseReason: state.pauseReason ?? undefined,
           stallRetries: state.stallRetries,
         });
+        // A new selection is a new denominator, so the partials recorded against the old one
+        // describe a share that no longer exists.
+        if (!sameSelection) {
+          lastPartialWriteRef.current.delete(key);
+          rowFloorsRef.current.delete(key);
+          await clearPartialBytes(key);
+        }
         // After the write, so the retry re-reads the row just persisted; a no-op returned above.
         scheduleStallRetry(key, state);
       } catch (err: unknown) {
@@ -929,6 +964,12 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   /** Bytes seen on the previous progress tick, per share. */
   const lastProgressBytesRef = useRef<Map<string, number>>(new Map());
 
+  /** The partial last written to disk, per share and file, so a 1 Hz tick is not a 1 Hz write. */
+  const lastPartialWriteRef = useRef<Map<string, number>>(new Map());
+
+  /** A megabyte of replication is worth a write; less is churn on a file read on every render. */
+  const PARTIAL_WRITE_STEP = 1024 * 1024;
+
   const applyRowProgress = useCallback(
     async (shareKey: string, transfer: TransferSummary): Promise<void> => {
       const key = String(shareKey || "").toLowerCase();
@@ -943,6 +984,22 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       const restarted = prev !== undefined && seen < prev;
       const firstEver = prev === undefined;
       const advanced = seen > 0 && (grew || restarted || firstEver);
+      // Recorded before the row event, and on every tick rather than only on an advance: the
+      // figure has to be on disk before the attempt that produced it can end.
+      const activeKey = transfer.activeKey;
+      const activeBytes = Number(transfer.activeBytes ?? 0);
+      if (activeKey && Number.isFinite(activeBytes) && activeBytes > 0) {
+        const stamp = `${key}\u001f${activeKey}`;
+        const written = lastPartialWriteRef.current.get(stamp) ?? 0;
+        if (activeBytes - written >= PARTIAL_WRITE_STEP) {
+          lastPartialWriteRef.current.set(stamp, activeBytes);
+          try {
+            await setFilePartialBytes(key, activeKey, activeBytes);
+          } catch (err: unknown) {
+            logStructuredError("rowstate", "could not record replicated bytes", err);
+          }
+        }
+      }
       if (!advanced) return;
       await applyRowEvent(key, { type: "FIRST_BYTE" });
       try {
@@ -997,6 +1054,21 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           now: Date.now(),
         });
         if (!view.shouldPause) return;
+        /** Decided before the `await`, so apply it only if the silence still holds: bytes
+         *  returning inside that gap is what put a STALLED after a FIRST_BYTE. */
+        const live = transfersRef.current.find((x) => x.driveId === transfer.driveId);
+        if (
+          !stallVerdictStillHolds({
+            decidedOnEngineStall: transfer.engineStalled === true,
+            decidedLastBytesAt: transfer.lastBytesAt,
+            currentLastBytesAt: live?.lastBytesAt,
+            currentEngineStalled: live?.engineStalled,
+            rowStillPresent: live !== undefined,
+          })
+        ) {
+          cancelStallRetry(shareKey);
+          return;
+        }
         /** Which pause: the peer count at the moment of the silence verdict is what separates "the link went bad" from "the sender went away". */
         // The verdict fires on silence whether or not a peer still looks attached, and a peer still on the books with nothing moving is the first case.
         const peersAttached = (transfer.peersConnected ?? 0) > 0;
@@ -1027,6 +1099,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       if (t.origin !== "received") continue;
       const key = driveToShareRef.current.get(t.driveId);
       if (!key) continue;
+      // A row that just moved bytes has nothing left to retry.
+      retireStallRetryIfMoving(key, t.lastBytesAt);
+
       // Sequential, not raced: a file landing this pass must be written before the count is taken.
       void (async () => {
         await applyFilesLanded(key, t);
@@ -1039,6 +1114,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     applyFilesLanded,
     applyRowProgress,
     maybePauseOnPeerLoss,
+    retireStallRetryIfMoving,
     pauseTick,
   ]);
 
@@ -1580,10 +1656,6 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   /** A row downloading with no live session for more than one loop tick is paused as reconnecting. */
   // Two consecutive misses, not one: the gap between sessions is a normal part of a resume, and pausing inside it flaps.
   const sessionMissRef = useRef<Map<string, number>>(new Map());
-  // The interval callback is created once and would otherwise close over the
-  // first render's `transfers`. Assigned every render, read inside the tick.
-  const transfersRef = useRef(transfers);
-  transfersRef.current = transfers;
   useEffect(() => {
     const id = setInterval(() => {
       void (async () => {
@@ -1698,6 +1770,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   // A ref rather than state, because a hold that re-rendered on every decision would be a second clock.
   const flapHoldsRef = useRef<Map<string, FlapHold>>(new Map());
 
+  /** The high-water percentage, carried the same way and keyed the same way. */
+  const rowFloorsRef = useRef<Map<string, RowFloor>>(new Map());
+
   const pickerView = useMemo(() => {
     if (!pickerRecord) return null;
     const key = lastResolvedLink ? extractKey(lastResolvedLink) : null;
@@ -1707,8 +1782,12 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       lookup: pickerLookup,
       now: nowTick,
       hold: key ? (flapHoldsRef.current.get(key) ?? null) : null,
+      floor: key ? (rowFloorsRef.current.get(key) ?? null) : null,
     });
-    if (key) flapHoldsRef.current.set(key, view.hold);
+    if (key) {
+      flapHoldsRef.current.set(key, view.hold);
+      rowFloorsRef.current.set(key, view.floor);
+    }
     return view;
   }, [pickerRecord, pickerTransfer, pickerLookup, nowTick, lastResolvedLink]);
 
@@ -1790,6 +1869,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       pickerView,
       pickerHydrating,
       flapHolds: flapHoldsRef.current,
+      rowFloors: rowFloorsRef.current,
       confirmSelection,
     }),
     [

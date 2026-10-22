@@ -11,43 +11,16 @@ import {
 } from "./oemProbeCandidates";
 
 /**
- * fire ONE candidate and report what happened.
- *
- * Deliberately not a ladder. `openBackgroundSettings()` falls through on
- * failure because a user needs to land somewhere; this needs the opposite,
- * because a ladder hides which rung worked and which rung worked is the whole
- * question. One tap, one intent, one outcome.
- *
- * Gated inside the module as well as at the call site, on the same signal the
- * rows use. Metro does not tree-shake, so this file is in the release bundle;
- * making the entry point inert here means no future caller can fire an OEM
- * intent from a shipping build by forgetting a wrapper.
+ * Fires ONE candidate and reports what happened — deliberately not a ladder, because which rung
+ * worked is the question. Gated inside the module too: Metro does not tree-shake.
  */
 
 /** Distinct tag so a probe session can be grepped out of a mixed log. */
 export const PROBE_TAG = "rn.probe.oem";
 
 /**
- * How long to wait for a rejection before calling it a launch.
- *
- * `IntentLauncher.startActivityAsync` uses `startActivityForResult`, and its
- * promise is held until the launched activity RETURNS — so awaiting it would
- * mean the verdict, the toast and the log line all arrive minutes later, when
- * the operator comes back, and in the order they happened to return rather
- * than the order they tapped. Only the failure path settles promptly:
- * `startActivityForResult` throws synchronously in native and is rejected on
- * the spot.
- *
- * So the signal is "did it reject immediately", and this is the window for
- * immediately. 700 ms is comfortably longer than a bridge round-trip and
- * shorter than a person can tap twice.
- *
- * The consequence is that `launched` means "the start call did not throw" —
- * which is why the borrowed-device protocol asks the operator to record the
- * TITLE of the screen that opened. A candidate that successfully opens the
- * wrong screen is the failure mode this project has already paid for twice
- * (see the APP_PERM_EDITOR note in openBackgroundSettings.ts), and no
- * in-process signal can detect it.
+ * How long to wait for a rejection before calling it a launch. `startActivityForResult` holds its
+ * promise until the activity returns, so only the failure path settles promptly; 700 ms is the window.
  */
 const LAUNCH_GRACE_MS = 700;
 

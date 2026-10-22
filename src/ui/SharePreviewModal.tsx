@@ -17,7 +17,15 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { formatBytes } from "../lib/format";
 import { baseName } from "../lib/files";
 import FileTypeIcon from "./FileTypeIcon";
-// Nine modules this picker once imported are gone, among them `pickerStatus`, `pickerGrabGate` and `PearSonarLite`: each was a surface that could contradict another, and the model answers for the row as well, so the two cannot drift.
+// Nine modules this picker used to import are gone, and the list is the
+// sprint's audit: `pickerStatus` and `pickerGrabGate` (the `Look again` card,
+// the staged searching copy and a Grab button in every state), `pickerModel`
+// and `rowCopy`'s picker half (superseded by `shareView`, which answers for
+// the row as well so the two cannot drift), `ConfirmModal` (the stop confirm
+// is gone - the blocks survive a stop), `previewHint`/`previewPrimaryLabel`
+// (the button's label is the model's), `indicatorColor`/`RESOLVE_LOOKING_LABEL`
+// and `PearSonarLite` (no animation in the picker; the Receive sheet keeps its
+// pear). Each was a surface that could contradict another.
 import {
   DRAFT_HINT,
   draftButton,
@@ -32,8 +40,18 @@ import { openSavedFile } from "../lib/openSavedFile";
 import { previewModeFor } from "../lib/files";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
 
-/** A saved file's own frame, or its type icon, from the same two pieces the folder sheet uses so both show the same tile for the same file. */
-// Its own component because the frame hook cannot run inside the file rows' map.
+/**
+ * A saved file's own frame, or its type icon.
+ *
+ * The same two pieces the folder sheet already uses — `previewModeFor` to
+ * decide what the name is, and `useVideoThumbnail` to pull one frame out of a
+ * video — so the picker and the sheet show the same tile for the same file.
+ * The sheet had thumbnails and the picker did not, which is the whole of the
+ * owner's clause-6 complaint.
+ *
+ * Its own component because `useVideoThumbnail` is a hook and the file rows
+ * are a `.map`.
+ */
 function SavedFileThumb({
   name,
   localPath,
@@ -162,8 +180,11 @@ function createStyles(theme: AppTheme, bottomInset: number) {
       fontSize: 11,
       fontWeight: "700",
     },
-    // Same footprint as the checkbox it replaces, so a file reaching saved shifts nothing beside it.
-    // The sender dot replaces the sonar and the Look again card, which animated about a wait the app cannot observe ending.
+    // A saved file's mark. Same footprint as the checkbox it replaces, so a
+    // file reaching `saved` mid-list shifts nothing beside it.
+    // The sender dot: the picker's whole answer to "is the sender there".
+    // Replaces the sonar and the `Look again` card, both of which animated
+    // about a wait the app cannot actually observe the end of.
     senderDot: {
       width: 8,
       height: 8,
@@ -176,7 +197,10 @@ function createStyles(theme: AppTheme, bottomInset: number) {
       marginTop: 4,
       marginBottom: 2,
     },
-    // Same footprint as the checkbox it stands in for; filled once marked, so "will stop on confirm" is visible at a glance.
+    // The red x. Same footprint as the checkbox it stands in for, so a file
+    // reaching `inProgress` shifts nothing beside it.
+    // The x once the user has marked this file to stop: filled rather than
+    // outlined, so "will stop on confirm" is visible at a glance.
     cancelMarkActive: {
       backgroundColor: theme.danger,
       borderColor: theme.danger,
@@ -273,7 +297,9 @@ function createStyles(theme: AppTheme, bottomInset: number) {
       fontSize: 12,
       lineHeight: 16,
     },
-    // Muted with an info icon: a resolve still waiting on the sender has not failed, so it must not render as one.
+    // the "wait"-tone notice banner. Muted, with an info
+    // icon — a resolve still waiting on the sender has not failed, so it must
+    // not render as a failure.
     waitBanner: {
       flexDirection: "row",
       alignItems: "center",
@@ -301,8 +327,25 @@ export default function SharePreviewModal() {
     () => createStyles(theme, insets.bottom),
     [theme, insets.bottom],
   );
-  /** One source: the view carries every string, tick, percentage, control and button this modal draws. */
-  // A local selection set made checkbox and label disagree; a share-wide percentage made header and file disagree.
+  /**
+   * ONE source. `pickerView` carries every string, tick, percentage, control
+   * and button this modal draws.
+   *
+   * What is deliberately NOT read here any more, and why each one was a bug:
+   *
+   *  - **`useState<Set<string>>` selection.** The owner ticked a file, saw no
+   *    tick, and read `Grab 1 (9.2 MB)` on the button - because the checkbox
+   *    rendered local state and the label rendered the record. The selection
+   *    lives on the record now and ticking dispatches to the reducer.
+   *  - **`transfers` / `transfer.percent`.** Share-wide, so the header said
+   *    21% while the only file said 0%. Both come off `shareView` now, from one
+   *    byte arithmetic.
+   *  - **`pickerStatus` and `pickerGrabGate`.** They produced the
+   *    `No sender found yet - tap Look again` card, the searching animation and
+   *    a Grab button in every state. The picker shows a short message and
+   *    whether the sender is online; the Receive sheet keeps its pear.
+   *  - **`grabFailed`.** There is no red error after a grab, so nothing reads it.
+   */
   const {
     previewVisible,
     closePreview,
@@ -317,11 +360,25 @@ export default function SharePreviewModal() {
   const { show: showToast } = useToast();
 
   const view = pickerView;
-  // Its own memo for a stable dependency: a bare `?? []` allocates each render and re-seeds the draft on every progress event.
+  // Its own memo, so the `saved` memo below has a stable dependency. A bare
+  // `?? []` allocates a new array every render, which would re-seed the draft
+  // on every progress event - the 1e defect in a new place.
   const files = useMemo(() => view?.files ?? [], [view?.files]);
 
-  /** The draft: ticks, unticks and the x change nothing until confirm, and the corner close throws it away. */
-  // Null means not opened or just discarded; the draft is seeded from the model on open rather than kept across opens.
+  /**
+   * THE draft. Part D: ticks, unticks and the x change nothing until the button
+   * under the list is tapped, and the corner X throws the draft away.
+   *
+   * `null` means "not opened yet, or just discarded" - the draft is seeded from
+   * the model on open rather than kept across opens, so a picker reopened after
+   * an outside change shows what is actually saved.
+   *
+   * This is a picker-local selection, which 1f deleted on purpose. It does not
+   * reintroduce that defect: back then the checkbox read local state while the
+   * button label read the record, and the two disagreed. Everything here -
+   * checkbox, label, strike-through - reads the draft, and the draft is seeded
+   * from `shareView`. One source, held one layer closer to the user.
+   */
   const [ticked, setTicked] = useState<string[] | null>(null);
   const [willStop, setWillStop] = useState<string[]>([]);
 
@@ -334,15 +391,25 @@ export default function SharePreviewModal() {
     [files],
   );
 
-  // Seeded on open and on discard only: re-seeding mid-edit would wipe the draft whenever a progress event landed.
+  // Seeded on open and on a discard, never on every render: re-seeding while
+  // the user is mid-edit would wipe their draft whenever a progress event
+  // landed, which is the 1e defect in a new place.
   useEffect(() => {
     if (!previewVisible) {
       setTicked(null);
       setWillStop([]);
     }
   }, [previewVisible]);
-  /** Seeded once the real record is in hand, never off the synthesised stand-in. */
-  // The stand-in says nothing is chosen, and the draft is one-shot, so seeding against it left an already-queued row with empty boxes that the real selection could never re-seed.
+  /**
+   * Seeded once the REAL record is in hand, never off the synthesised one.
+   *
+   * `pickerHydrating` is true between opening the picker and `loadShare`
+   * landing, and during those frames `pickerRecord` is a synthesised
+   * `status: "ready", selection: undefined` stand-in. Seeding against it gave
+   * the owner's queued three-file row six empty checkboxes and a `Grab N`
+   * button where `Looks good` belonged (device run, step 3) — the draft is
+   * one-shot, so the real selection arriving a tick later never re-seeded it.
+   */
   useEffect(() => {
     if (previewVisible && !pickerHydrating && ticked === null && files.length > 0) {
       setTicked(saved);
@@ -355,7 +422,9 @@ export default function SharePreviewModal() {
       saved,
       ticked: ticked ?? saved,
       willStop,
-      // The sizes, not a pre-made label: the model's label is computed from the saved selection, which is empty before a first grab while the draft is not.
+      // The SIZES, not a pre-made label. `view.button.label` is computed from
+      // the record's saved selection, and in `ready` that is empty while the
+      // draft is not - which is `Grab 0 (0 B)` beside a ticked box.
       files: files.map((f) => ({ name: f.name, size: f.size })),
       // Straight off the model: a share holding any saved file is past its
       // first grab, whatever the status says. See `DraftInput.hasGrabbed`.
@@ -381,8 +450,13 @@ export default function SharePreviewModal() {
     });
   }
 
-  /** The x on the in-progress file marks a stop; it does not perform one. */
-  // The file stays listed, ticked and struck through with the x active, so the user can see what confirming will do and still change their mind.
+  /**
+   * The x on the in-progress file. It MARKS a stop; it does not perform one.
+   *
+   * The file stays in the list, stays ticked and is drawn struck through with
+   * the x active, so the user can see what Confirm is about to do and still
+   * change their mind with the corner X.
+   */
   function onMarkStop(key: string) {
     setWillStop((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
   }
@@ -407,7 +481,13 @@ export default function SharePreviewModal() {
     onDiscard();
   }
 
-  /** The success pulse, on the model's own sender signal rather than on a removed status module. */
+  /**
+   * The success pulse, on the model's own signal.
+   *
+   * It used to fire on `pickerStatus` reaching `found`, which is one of the
+   * surfaces this sprint removed. `senderOnline` is the same event with one
+   * owner.
+   */
   const prevOnlineRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (!previewVisible) {
@@ -420,7 +500,13 @@ export default function SharePreviewModal() {
     if (!prev && view?.senderOnline) haptics.success();
   }, [previewVisible, view?.senderOnline]);
 
-  /** Grab, for the first grab only. The selection is already on the record, so this passes the model's ticked list rather than a local set. */
+  /**
+   * Grab, for the first grab only.
+   *
+   * The selection is already on the record - that is the whole point of this
+   * sprint - so this passes the model's own ticked list rather than a local
+   * set, and `runDownload` re-reads it anyway.
+   */
 
   return (
     <Modal visible={previewVisible} transparent animationType="fade" onRequestClose={closePreview}>
@@ -449,7 +535,10 @@ export default function SharePreviewModal() {
           <Text style={styles.meta}>
             {previewSubtitle(files.length, openResult?.totalBytes)}
           </Text>
-          {/* One status line and no second surface: the message says what is happening and the dot says whether the sender is reachable. */}
+          {/* ONE status line, and no second surface.
+              No sonar, no `Look again`: the message says what is happening and
+              the dot says whether the sender is reachable. Polite - it changes
+              on a timer with no user action. */}
           <View style={styles.lookupRow} accessibilityLiveRegion="polite">
             <View
               style={[
@@ -471,13 +560,17 @@ export default function SharePreviewModal() {
               {view?.header ?? ""}
             </Text>
           </View>
-          {/* The after-grab hint: one line, and the only second line the header is allowed. */}
+          {/* The after-grab hint. One line, and the only second line the
+              header is allowed. Part D's wording, because the gesture it
+              describes is now a draft plus a button. */}
           {!!view?.hint && (
             <Text style={styles.hintLine}>
               {view.status === "ready" ? view.hint : DRAFT_HINT}
             </Text>
           )}
-          {/* The partial-dedup acknowledgement, and only before a grab, because afterwards the per-file marks already say what is held. */}
+          {/* The partial-dedup acknowledgement, and only before a grab: it
+              says what the user already holds, which after a grab the
+              per-file `Saved` marks already say. */}
           {view?.status === "ready" &&
             !!linkError &&
             linkError.trigger === "already-held" && (
@@ -499,7 +592,8 @@ export default function SharePreviewModal() {
                 f.control === "checkbox" ||
                 f.control === "cancel" ||
                 (f.state === "done" && !!f.localPath);
-              // The draft decides the tick and the strike-through; the record's saved state is only the seed.
+              // The DRAFT decides the tick and the strike-through, not the
+              // record. `f.checked` is the saved state and is only the seed.
               const isTicked = (ticked ?? saved).includes(f.name);
               const marked = isMarkedToStop(draft, f.name);
               return (
@@ -514,7 +608,9 @@ export default function SharePreviewModal() {
                   onPress={() => {
                     if (f.control === "cancel") onMarkStop(f.name);
                     else if (f.control === "checkbox") onToggle(f.name);
-                    // A saved file opens from the picker: the tick beside it is not tappable, so the row press means this.
+                    // Clause 6: a saved file opens from the picker. The tick
+                    // beside it is not a control (`doneMark` is deliberately
+                    // not tappable), so the row press is free to mean this.
                     else if (f.state === "done" && f.localPath) {
                       void onOpenSavedFile(f.localPath);
                     }
@@ -545,7 +641,9 @@ export default function SharePreviewModal() {
                       <Ionicons name="checkmark" size={16} color={theme.primary} />
                     </View>
                   ) : f.control === "cancel" ? (
-                    /* The red x marks a stop and confirming performs it; the cancel leaves the store alone, so the blocks stay and re-ticking resumes from them. */
+                    /* The red x. Tapping it MARKS a stop; Confirm performs it.
+                       `engineCancelTransfer` leaves the Corestore alone, so the
+                       blocks stay and re-ticking the file resumes from them. */
                     <View style={[styles.cancelMark, marked && styles.cancelMarkActive]}>
                       <Ionicons
                         name="close"
@@ -562,7 +660,10 @@ export default function SharePreviewModal() {
                   ) : (
                     <View style={styles.savedMark} />
                   )}
-                  {/* A saved image or video shows its own frame, and the path comes through the model with the file so the thumbnail and the open action cannot point at different files. */}
+                  {/* Clause 6: a saved image or video shows its own frame.
+                      The path comes through the model with the file, so the
+                      thumbnail and the open action below cannot point at
+                      different files. */}
                   <View style={styles.iconSlot}>
                     <SavedFileThumb
                       name={f.name}
@@ -606,11 +707,13 @@ export default function SharePreviewModal() {
               );
             })}
           </ScrollView>
-          {/* The button is present in every state: a first grab, then a confirm, and a resume for a row the user stopped. */}
+          {/* The button is back in every state, by instruction. `Grab N` for
+              the first grab, then `Looks good` / `Confirm changes`, and
+              `Resume` for a row the user stopped. */}
           {!!view && (
             <View style={styles.actions}>
-              {/* The busy flag suppresses the first grab only: gating every kind made the button a spinner for the whole of a download, so a marked stop could not be committed and the control was decorative.
-                  Changing a selection mid-download is the ordinary case, not a conflicting one; only starting a fresh download while one is already starting is the genuine double-tap. */}
+              {/* `downloadAllBusy` suppresses the FIRST GRAB only. Changing a selection
+                  mid-download is ordinary; only starting a second fresh download is the double-tap. */}
               {(() => {
                 const busy = downloadAllBusy && button.kind === "grab";
                 return (

@@ -1,9 +1,5 @@
-// Helper for extracting a display-safe string from an engine error result.
-// `out.error` from a bridge call is a structured object of shape
-// `{category, cause, message, detail?}`, not a raw string, so rendering it
-// directly produces "[object Object]". This pulls the `.message` field out,
-// falls back to stringifying an unexpected shape, and returns null for
-// nullish input. Branch on `.cause` for typed handling instead.
+// `out.error` is `{category, cause, message, detail?}`, so rendering it directly gives
+// "[object Object]". Branch on `.cause` for typed handling.
 
 import { MANIFEST_UNAVAILABLE_MESSAGE } from "./shareListEmptyState";
 
@@ -31,10 +27,8 @@ export function errorMessage(err: unknown): string | null {
   }
 }
 
-/** Curated user-facing lines, keyed by an error's machine-readable `cause`.
- *  Raw engine or native text is never returned and the caller's own fallback
- *  wins unless there is a true thing to say. An entry has to be a `cause` the
- *  engine really emits, with a sentence that is true of it. */
+/** Curated lines keyed by an error's `cause`. Raw engine or native text is never returned, and
+ *  the caller's own fallback wins unless there is a true thing to say. */
 export const CURATED_BY_CAUSE: Record<string, string> = {
   "manifest-unavailable": MANIFEST_UNAVAILABLE_MESSAGE,
 };

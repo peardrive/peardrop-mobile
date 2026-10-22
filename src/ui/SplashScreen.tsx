@@ -20,11 +20,7 @@ const HOLD_MS = 600;
 const DOT_SIZE = 40;
 const RING_PEAK_SCALE = 3.2;
 
-/**
- * Two-beat splash: a pear-pulse borrowing ActiveIndicator's motion language,
- * then the wordmark fades in. Reduce-motion collapses it to an instant
- * reveal.
- */
+/** Two-beat splash: pear-pulse, then wordmark. Reduce-motion collapses it to an instant reveal. */
 export default function SplashScreen({ onFinish }: SplashScreenProps) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);

@@ -32,9 +32,7 @@ module.exports = [
     },
   },
   {
-    // backend/*.mjs runs inside the Bare worklet and has access to Bare
-    // runtime globals (`Bare`, `BareKit`) that aren't in the browser/Node
-    // globals list. Declare them here so lint doesn't flag real references.
+    // Bare worklet globals, so lint does not flag real references.
     files: ["backend/**/*.mjs"],
     languageOptions: {
       globals: {
@@ -44,11 +42,7 @@ module.exports = [
     },
   },
   {
-    // scripts/*.mjs runs in plain Node (not React Native, not Bare), so
-    // Node's built-in globals apply. The FIX-2026-09 engine harness is the
-    // same case: it drives backend/*.mjs from plain Node child processes,
-    // aliasing bare-fs/bare-path to their node: equivalents via a resolve
-    // hook. It is test tooling, not shipped code, but it is still linted.
+    // scripts/*.mjs and the engine harness run in plain Node, so Node globals apply.
     files: [
       "scripts/**/*.{js,mjs,cjs}",
       "backend/__poc__/**/*.{js,mjs,cjs}",

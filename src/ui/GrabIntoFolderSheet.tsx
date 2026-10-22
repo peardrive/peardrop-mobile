@@ -39,11 +39,7 @@ export type GrabIntoFolderSheetProps = {
   onGrab: (result: GrabIntoFolderResult) => void;
 };
 
-/**
- * Post-selection sheet for the "grab into folder" flow: editable folder
- * name, file checklist, Pick-all toggle, full-width Grab CTA.
- * Presentational only; the parent owns the download plumbing.
- */
+/** Post-selection sheet for the grab-into-folder flow. Presentational; the parent owns the download. */
 export default function GrabIntoFolderSheet({
   visible,
   onClose,

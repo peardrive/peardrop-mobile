@@ -1,6 +1,7 @@
 package com.anjouinc.peardrop
 import expo.modules.splashscreen.SplashScreenManager
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 
@@ -20,7 +21,31 @@ class MainActivity : ReactActivity() {
     // @generated begin expo-splashscreen - expo prebuild (DO NOT MODIFY) sync-f3ff59a738c56c9a6119210cb55f0b613eb8b6af
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
+
+    // A non-null bundle is the platform saying this activity is RESTORED, not launched; read it
+    // before super.onCreate(null) discards it.
+    val restored =
+      savedInstanceState?.getBoolean(PeardropShareIntentModule.STATE_SHARE_SEEN) == true
     super.onCreate(null)
+    PeardropShareIntentModule.recordCreate(restored, intent)
+    if (restored) PeardropShareIntentModule.markRestored(intent)
+    else PeardropShareIntentModule.offer(this, intent, "cold")
+  }
+
+  /** The marker that turns the next `onCreate` into a restore rather than a launch. */
+  override fun onSaveInstanceState(outState: Bundle) {
+    super.onSaveInstanceState(outState)
+    outState.putBoolean(PeardropShareIntentModule.STATE_SHARE_SEEN, true)
+  }
+
+  /**
+   * Warm start. `setIntent` first, or a later `getIntent()` returns the launch intent and the
+   * share is read a second time on the next recreation.
+   */
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    PeardropShareIntentModule.offer(this, intent, "warm")
   }
 
   /**

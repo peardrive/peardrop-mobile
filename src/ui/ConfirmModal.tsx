@@ -67,11 +67,8 @@ export default function ConfirmModal({
           </View>
         </Pressable>
       </Pressable>
-      {/* last child on purpose: this Modal is its own Android window,
-          and a root-level toast would be painted under it (and untappable).
-          While this sheet is open its outlet is the last registered, so it
-          owns the toast; it unregisters on close and the root takes over.
-          See src/lib/toastOutletSelect.ts. */}
+      {/* Last child on purpose: this Modal is its own Android window, so a root-level toast would
+          paint under it. Its outlet is the last registered while open. See toastOutletSelect.ts. */}
       {visible && <ToastOutlet />}
     </Modal>
   );

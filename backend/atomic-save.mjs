@@ -1,12 +1,5 @@
-// Atomic manifest write: write to <path>.tmp, then rename onto <path>. A
-// same-filesystem rename is atomic, so a reader sees the old file or the new
-// file, never a truncated in-between state.
-//
-// bare-fs exposes no fsync, so this is atomic against process kill but not
-// against power loss between the tmp write and the rename metadata commit.
-//
-// Serialization is the caller's job, not this module's: each call site chains
-// against its own path so a stall in one cannot back up another.
+// Atomic manifest write: write to <path>.tmp, then rename onto <path>. bare-fs exposes no fsync,
+// so this is atomic against process kill but not against power loss. Callers serialize their own path.
 
 import fs from "bare-fs/promises";
 

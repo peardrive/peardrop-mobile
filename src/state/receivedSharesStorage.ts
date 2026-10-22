@@ -38,6 +38,9 @@ export type ReceivedShareFile = {
   /** Local on-disk path when isDownloaded === true. */
   localPath?: string;
   downloadedAt?: number;
+  /** Bytes already replicated, for a file not downloaded yet. Persisted because the engine's own
+   *  figure is per-attempt and vanishes when one ends. */
+  partialBytes?: number;
 };
 
 export type ReceivedShare = {
@@ -106,6 +109,14 @@ function sanitizeFile(raw: unknown): ReceivedShareFile | null {
     downloadedAt:
       typeof r.downloadedAt === "number" && Number.isFinite(r.downloadedAt)
         ? r.downloadedAt
+        : undefined,
+    // Dropped for a downloaded file, whose whole size is counted. Validated where it enters.
+    partialBytes:
+      r.isDownloaded !== true &&
+      typeof r.partialBytes === "number" &&
+      Number.isFinite(r.partialBytes) &&
+      r.partialBytes > 0
+        ? Math.max(0, r.partialBytes)
         : undefined,
   };
 }
@@ -481,6 +492,59 @@ export async function rememberDriveSession(
   return next;
 }
 
+/** Record how far the in-flight file has got, so the figure survives the attempt ending. Never
+ *  bumps `lastUpdatedAt`, or a stalled row would never expire. */
+export async function setFilePartialBytes(
+  shareKey: string,
+  fileName: string,
+  partialBytes: number,
+): Promise<void> {
+  const k = String(shareKey || "").toLowerCase();
+  const wanted = baseName(String(fileName || ""));
+  if (!k || !wanted) return;
+  const bytes =
+    typeof partialBytes === "number" && Number.isFinite(partialBytes)
+      ? Math.max(0, Math.floor(partialBytes))
+      : 0;
+  const list = await loadShares();
+  const idx = list.findIndex((s) => s.shareKey === k);
+  if (idx < 0) return;
+  const share = list[idx];
+  if (!share) return;
+  let changed = false;
+  const files = share.files.map((f) => {
+    if (baseName(f.name) !== wanted || f.isDownloaded) return f;
+    // Monotonic: the engine resets its counter per attempt, and that must not retract bytes.
+    if ((f.partialBytes ?? 0) >= bytes) return f;
+    changed = true;
+    return { ...f, partialBytes: bytes };
+  });
+  if (!changed) return;
+  const next: ReceivedShare[] = [...list];
+  next[idx] = { ...share, files };
+  await writeToDisk(next);
+  emit(next);
+}
+
+/** Forget every partial on a share. The selection changed, or the row is being reset. */
+export async function clearPartialBytes(shareKey: string): Promise<void> {
+  const k = String(shareKey || "").toLowerCase();
+  if (!k) return;
+  const list = await loadShares();
+  const idx = list.findIndex((s) => s.shareKey === k);
+  if (idx < 0) return;
+  const share = list[idx];
+  if (!share) return;
+  if (!share.files.some((f) => typeof f.partialBytes === "number")) return;
+  const next: ReceivedShare[] = [...list];
+  next[idx] = {
+    ...share,
+    files: share.files.map((f) => ({ ...f, partialBytes: undefined })),
+  };
+  await writeToDisk(next);
+  emit(next);
+}
+
 /**
  * Mark a subset of a share's files as downloaded, supplying the local
  * paths. Updates `lastUpdatedAt`. If no matching share exists, this is a
@@ -508,6 +572,8 @@ export async function markFilesDownloaded(
         localPath: df.localPath,
         downloadedAt: now,
         size: existing.size || df.size || 0,
+        // The whole size counts now, so a partial beside it would be counted twice.
+        partialBytes: undefined,
       });
     } else {
       // The download finished a file the manifest did not list, which is

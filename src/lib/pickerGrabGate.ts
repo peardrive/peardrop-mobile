@@ -14,9 +14,8 @@ export type PickerGrabGate = {
   /** Draw a spinner in place of the label. */
   busy: boolean;
   /**
-   * A grab may actually be initiated. The belt-and-braces guard at the top of
-   * the press handler reads this, so a future layout change cannot re-create a
-   * tappable button whose handler returns.
+   * A grab may actually be initiated. The guard at the top of the press handler reads this, so a
+   * layout change cannot re-create a tappable button whose handler returns.
    */
   grabAllowed: boolean;
 };
@@ -29,9 +28,8 @@ export type PickerGrabGateInput = {
 };
 
 export function pickerGrabGate(input: PickerGrabGateInput): PickerGrabGate {
-  // Settled with nothing to grab from: offer the retry instead. Both states
-  // mean "no manifest, no resolve running" — they differ only in what the
-  // status line says above.
+  // Settled with nothing to grab from: offer the retry. Both states mean "no manifest, no resolve
+  // running" and differ only in what the status line says.
   if (input.lookupState === "notFoundYet" || input.lookupState === "unreadable") {
     return {
       kind: "lookAgain",

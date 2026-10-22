@@ -2,11 +2,8 @@ import RNFS from "react-native-fs";
 import { logStructuredError, logWarn } from "./debugLog";
 
 /**
- * The RNFS twin of `backend/atomic-save.mjs`, which cannot be imported here:
- * it pulls in `bare-fs/promises`, resolvable only inside the Bare worklet.
- * Writes land on `<path>.tmp` and are renamed over the destination, so a kill
- * damages only the temp. `RNFSManager.moveFile` silently falls back to
- * copy-then-delete when `renameTo` fails, and that fallback is not atomic.
+ * The RNFS twin of `backend/atomic-save.mjs`, which pulls in `bare-fs` and cannot be imported here.
+ * `RNFSManager.moveFile` falls back to copy-then-delete when `renameTo` fails, and that is not atomic.
  */
 
 /** Outcome of `readJsonFile`. */
@@ -26,9 +23,8 @@ export type JsonReadResult<T> =
    */
   | { status: "unreadable"; movedAside: string | null };
 
-/** Per-path write queue: interleaved writers share one fixed `<path>.tmp`, so
- *  the write leg is serialized to stop one renaming another's partly rewritten
- *  temp into place. The surrounding read-modify-write is still not atomic. */
+/** Per-path write queue: interleaved writers share one fixed `<path>.tmp`, so the write leg is
+ *  serialized. The surrounding read-modify-write is still not atomic. */
 const writeQueue = new Map<string, Promise<void>>();
 
 function tempPathFor(path: string): string {
@@ -59,9 +55,7 @@ async function writeOnce(path: string, json: string): Promise<void> {
   }
 }
 
-/** Serialize `JSON.stringify(value, null, 2)` onto `path` via a temp file and
- *  a rename, so a failure cannot leave a half-written store behind. Rejects if
- *  the write or the rename fails. */
+/** Serialize onto `path` via a temp file and a rename, so a failure cannot leave a half-written store. */
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   const json = JSON.stringify(value, null, 2);
   // Every `writeQueue` value is a tail whose rejection is already absorbed, so
@@ -81,10 +75,8 @@ function noop(): void {
   /* queue chaining only — the caller sees the real rejection */
 }
 
-/** Rename an unreadable or unparseable file aside before anything else, so
- *  the next write cannot destroy data that was only momentarily unreadable.
- *  Returns `null` when even the rename failed, the one case where the data is
- *  at the mercy of the next write. */
+/** Rename an unreadable file aside first, so the next write cannot destroy data that was only
+ *  momentarily unreadable. `null` means even the rename failed. */
 async function preserveUnreadable(
   path: string,
   reason: "corrupt" | "unreadable",

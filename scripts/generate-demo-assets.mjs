@@ -62,9 +62,7 @@ await writeFile(
   "utf8"
 );
 
-// ─── sunset.jpg ─────────────────────────────────────────────────────────
-// Minimal valid 1x1 JPEG encoding a single dark-orange pixel (hand-crafted
-// baseline JPEG; ~125 bytes). Produces a solid color block in-preview.
+// sunset.jpg — minimal valid 1x1 baseline JPEG, one dark-orange pixel (~125 bytes).
 await writeFile(
   path.join(DEMO_DIR, "sunset.jpg"),
   fromHex(
@@ -80,10 +78,8 @@ await writeFile(
   )
 );
 
-// ─── clip.mp3 ───────────────────────────────────────────────────────────
-// 1 s of silence at 44.1 kHz stereo: one MPEG-1 Layer III frame of silence
-// repeated 38 times. A valid MP3 container, so the "Open in another app"
-// fallback works even if the in-app audio player chokes.
+// clip.mp3 — 1 s of silence, one MPEG-1 Layer III frame repeated 38 times. A valid container, so
+// the "Open in another app" fallback works even if the in-app player chokes.
 {
   const id3 = fromHex("494433040000000000"); // ID3v2.4 tag, empty
   id3.writeUInt32BE(0, 5); // syncsafe zero
@@ -97,10 +93,8 @@ await writeFile(
   await writeFile(path.join(DEMO_DIR, "clip.mp3"), Buffer.concat([id3, frames]));
 }
 
-// ─── intro.mp4 ──────────────────────────────────────────────────────────
-// Hand-crafted "empty" ISO BMFF / MP4 container: ftyp box + minimal moov
-// with a zero-duration track + empty mdat. Identifies as a video file but is
-// too small to show frames, so "Open in another app" is the real path.
+// intro.mp4 — minimal ISO BMFF container. Identifies as video but is too small to show frames, so
+// "Open in another app" is the real path.
 {
   const box = (type, payload) => {
     const size = 8 + payload.length;
@@ -147,9 +141,7 @@ await writeFile(
   );
 }
 
-// ─── sample.pdf ─────────────────────────────────────────────────────────
-// Minimal valid single-page PDF, ~620 bytes. There is no in-app PDF viewer,
-// so this opens through the system reader via "Open in another app".
+// sample.pdf — minimal single-page PDF. No in-app viewer, so it opens through the system reader.
 {
   const pdfBody =
     "%PDF-1.4\n" +

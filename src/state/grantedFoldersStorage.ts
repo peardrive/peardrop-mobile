@@ -1,11 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /**
- * Persistence for the folders the user has let PearDrop read. Android
- * accumulates SAF grants rather than replacing them, so holding several
- * trees at once is normal platform behaviour; each costs one folder-picker
- * dialog and no manifest permission. A single-folder key from an earlier
- * version is migrated in on first read, so nothing needs re-granting.
+ * The folders the user has let PearDrop read. Android accumulates SAF grants rather than replacing
+ * them, so several trees at once is normal. A single-folder key from an earlier version migrates in.
  */
 
 const STORAGE_KEY = "peardrop.granted-folder-uris";
@@ -96,10 +93,8 @@ export async function addGrantedFolder(uri: string): Promise<string[]> {
 }
 
 /**
- * Drops a folder from the list. This does not hand the SAF permission back
- * to Android, which keeps the grant until the user revokes it or uninstalls
- * the app; it stops the folder being read or shown, which is what remove
- * means from the user's side.
+ * Drops a folder from the list. It does not hand the SAF permission back — Android keeps that until
+ * the user revokes it — but the folder stops being read or shown, which is what remove means here.
  */
 export async function removeGrantedFolder(uri: string): Promise<string[]> {
   const current = await ensureHydrated();

@@ -1,12 +1,6 @@
 /**
- * The curated toast copy, split out of `src/ui/Toast.tsx` so it can be tested:
- * `Toast.tsx` imports `react-native` and the theme context, so jest cannot
- * load it, and copy that no test can read asserts whatever it likes.
- * `Toast.tsx` re-exports everything here, so its importers are unaffected.
- *
- * The copy claims nothing the app cannot establish: no connectivity detection
- * exists here, links do not expire, and "the host is offline" is
- * indistinguishable from "discovery is still running".
+ * Toast copy, split out of `Toast.tsx` so jest can load it — copy no test can read asserts whatever
+ * it likes. It claims nothing the app cannot establish: no connectivity detection, no link expiry.
  */
 
 import type { ToastKind } from "./toastKind";

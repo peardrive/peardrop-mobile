@@ -2,13 +2,8 @@ import * as Haptics from "expo-haptics";
 import { Platform } from "react-native";
 
 /**
- * Thin wrapper over expo-haptics so callers don't have to guard every call
- * with platform checks. expo-haptics already no-ops on web; this layer adds
- * try/catch so a device that lacks a taptic engine can't crash the render.
- *
- * The event names are phrased around user intent ("actionDone") instead of
- * the raw pattern ("light impact") so we can retune the feel in one place
- * without chasing call sites.
+ * Thin wrapper over expo-haptics; the try/catch stops a device with no taptic engine crashing a
+ * render. Event names are phrased around intent so the feel can be retuned in one place.
  */
 
 const unsupported = Platform.OS === "web";

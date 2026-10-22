@@ -1,13 +1,5 @@
-// Proof-of-concept: round-trip a 5 MB file through Hyperdrive using streaming
-// on both ends, verifying byte-for-byte fidelity.
-//
-// Runs under Node, because bare-fs needs the Bare global. What it proves is
-// the pipe contract between Hyperdrive's streams and a Node-style fs stream:
-// both surfaces expose the same Readable/Writable conventions, so what works
-// here should map to bare-fs under Bare. It does not prove bare-fs's own
-// stream implementation.
-//
-// Run: node backend/__poc__/stream-poc.mjs
+// Round-trips a 5 MB file through Hyperdrive with streams on both ends. Proves the pipe contract
+// between Hyperdrive's streams and a Node-style fs stream, not bare-fs's own implementation.
 
 import { createReadStream, createWriteStream, mkdtempSync, rmSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,9 +18,8 @@ function md5(path) {
 }
 
 async function pipeAwaitClose(src, dst) {
-  // Pipe, then wait for the destination's 'close'. Hyperdrive's
-  // createWriteStream sequences the in-drive `db.put` inside its `final`
-  // callback, so 'close' fires only after the manifest entry is committed.
+  // Wait for the destination's 'close': createWriteStream sequences the in-drive `db.put` inside
+  // its `final` callback, so 'close' fires only once the manifest entry is committed.
   return new Promise((resolve, reject) => {
     let settled = false;
     const done = (err) => {
@@ -106,9 +97,8 @@ async function main() {
     if (!propagated) throw new Error("expected error did not propagate");
     console.log("[poc] error propagated as:", propagated.code || propagated.message);
 
-    // ---- Backpressure sanity: write 5 MB in chunks via write() return value ----
-    // Not a full backpressure test: it confirms the Writable.write() return
-    // value is the streamx boolean contract, so manual pumping would work.
+    // Not a full backpressure test: it confirms Writable.write()'s return value is the streamx
+    // boolean contract, so manual pumping would work.
     console.log("[poc] backpressure smoke check…");
     const ws = drive.createWriteStream("/bp.bin");
     const chunk = Buffer.alloc(64 * 1024, 0x7f);

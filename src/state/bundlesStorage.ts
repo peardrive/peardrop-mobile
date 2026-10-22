@@ -1,11 +1,8 @@
 import RNFS from "react-native-fs";
 
 /**
- * Persistent record of every share bundle the user has created: a JSON file
- * in Documents, an in-memory cache and a listener set, so the list can
- * subscribe for live updates. After a restart the engine no longer announces
- * these drives, so persisted bundles are dormant — a link record whose share
- * link does not resolve until the user re-shares.
+ * Every share bundle the user has created: a JSON file, a cache and a listener set. After a restart
+ * the engine no longer announces these drives, so a persisted bundle is dormant until re-shared.
  */
 
 export type PersistedBundleFile = {

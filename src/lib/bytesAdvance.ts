@@ -29,16 +29,24 @@ export function byteFigureOf(
   return Math.max(sent ?? 0, moved ?? 0);
 }
 
-/** `now` if a figure rose, else the previous stamp. A first reading above zero counts,
- * so the stamp does not wait for a second event; equal or lower means no new bytes. */
+/** Whether the event's figure is higher than the row's; the stall verdict and the `lastBytesAt`
+ *  stamp ask this same question, so neither decides for itself what "bytes moved" means. */
+export function bytesAdvanced(
+  event: BytesAdvanceEvent | null | undefined,
+  prev: BytesAdvancePrev | null | undefined
+): boolean {
+  const next = byteFigureOf(event);
+  if (next === null) return false;
+  const before = byteFigureOf(prev);
+  if (before === null) return next > 0;
+  return next > before;
+}
+
+/** `now` if a figure rose, else the previous stamp. */
 export function bytesAdvanceAt(
   event: BytesAdvanceEvent | null | undefined,
   prev: BytesAdvancePrev | null | undefined,
   now: number = Date.now()
 ): number | null {
-  const next = byteFigureOf(event);
-  if (next === null) return prev?.lastBytesAt ?? null;
-  const before = byteFigureOf(prev);
-  if (before === null) return next > 0 ? now : (prev?.lastBytesAt ?? null);
-  return next > before ? now : (prev?.lastBytesAt ?? null);
+  return bytesAdvanced(event, prev) ? now : (prev?.lastBytesAt ?? null);
 }

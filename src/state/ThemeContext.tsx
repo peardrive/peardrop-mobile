@@ -19,11 +19,7 @@ import {
 const STORAGE_KEY_ID = "peardrop.themeId";
 const STORAGE_KEY_MODE = "peardrop.themeMode";
 
-/**
- * Theme strategy. "manual" uses the theme the user picked explicitly;
- * "system" follows the OS color scheme, mapping to the default dark theme
- * when the system is dark and the default light one when it is light.
- */
+/** "manual" uses the theme the user picked; "system" follows the OS scheme to the matching default. */
 export type ThemeMode = "manual" | "system";
 
 type ThemeContextValue = {
