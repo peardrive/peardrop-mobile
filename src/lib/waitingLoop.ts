@@ -90,6 +90,8 @@ export type WaitingLoopDeps = {
   readonly isBusy?: (shareKey: string) => boolean;
   /** Clear a row's backoff. Called by `retryNow` before it looks the row up. */
   readonly onBackoffReset?: (shareKey: string) => Promise<void>;
+  /** Once per round that checked rows, after all its onFound work; never for a skipped round. */
+  readonly onRoundEnd?: () => Promise<void> | void;
   readonly log?: (level: "debug" | "info" | "warn", message: string) => void;
   readonly setTimer?: (fn: () => void, ms: number) => unknown;
   readonly clearTimer?: (handle: unknown) => void;
@@ -192,6 +194,11 @@ export function createWaitingLoop(deps: WaitingLoopDeps): WaitingLoop {
         }
       }
       log("info", `loop round: checked=${checkable.length} found=${found}`);
+      try {
+        await deps.onRoundEnd?.();
+      } catch (err) {
+        log("warn", `loop round-end handler failed: ${String(err)}`);
+      }
       return found;
     } finally {
       roundRunning = false;

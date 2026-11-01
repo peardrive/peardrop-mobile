@@ -350,6 +350,18 @@ async function migrateFromLegacyIfNeeded(): Promise<void> {
   }
 }
 
+/** One read-modify-write at a time: a writer that builds on the cache while another's write is in flight undoes that write. */
+let mutating: Promise<unknown> = Promise.resolve();
+
+function serialised<T>(run: () => Promise<T>): Promise<T> {
+  const turn = mutating.then(run, run);
+  mutating = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  return turn;
+}
+
 export async function loadShares(): Promise<ReceivedShare[]> {
   if (cache) return cache;
   await migrateFromLegacyIfNeeded();
@@ -364,7 +376,7 @@ export async function loadShare(shareKey: string): Promise<ReceivedShare | null>
   return list.find((s) => s.shareKey === k) ?? null;
 }
 
-export async function upsertShare(share: ReceivedShare): Promise<ReceivedShare[]> {
+async function upsertShareBody(share: ReceivedShare): Promise<ReceivedShare[]> {
   const list = await loadShares();
   const idx = list.findIndex((s) => s.shareKey === share.shareKey);
   let next: ReceivedShare[];
@@ -397,7 +409,7 @@ export async function upsertShare(share: ReceivedShare): Promise<ReceivedShare[]
 
 /** A row that holds the link and nothing else, for a sender who was not there. */
 // The name carries the key's first few hex, because the list's own nameless fallback cannot tell two waiting rows apart; the real name replaces it as soon as the share resolves.
-export async function createWaitingShare(shareLink: string): Promise<ReceivedShare | null> {
+async function createWaitingShareBody(shareLink: string): Promise<ReceivedShare | null> {
   const link = normalizeShareLink(shareLink);
   const key = extractKey(link);
   if (!key) return null;
@@ -407,7 +419,7 @@ export async function createWaitingShare(shareLink: string): Promise<ReceivedSha
     if (isLoopStatus(existing.status)) return existing;
     // A ready row whose sender has gone has a list and no selection, so it belongs back in the loop.
     if (existing.status === "ready") {
-      return (await patchShare(key, { status: "waiting" })) ?? existing;
+      return (await patchShareBody(key, { status: "waiting" })) ?? existing;
     }
     // `done` and `downloading` are left alone. The caller checks the status it
     // gets back rather than assuming a row was enrolled.
@@ -423,13 +435,13 @@ export async function createWaitingShare(shareLink: string): Promise<ReceivedSha
     files: [],
     status: "waiting",
   };
-  await upsertShare(record);
+  await upsertShareBody(record);
   return record;
 }
 
 /** Write a status, and whatever moves with it, as one record. */
 // Routed through the main write so the merge rule keeps applying: a status change must not be able to erase the two fields the re-grab path needs.
-export async function patchShare(
+async function patchShareBody(
   shareKey: string,
   patch: Partial<Omit<ReceivedShare, "shareKey" | "shareLink">> & {
     /** Leave `lastUpdatedAt` alone — a lookup that found nothing is not progress. */
@@ -446,12 +458,12 @@ export async function patchShare(
     ...fields,
     lastUpdatedAt: touch === false ? prev.lastUpdatedAt : Date.now(),
   };
-  await upsertShare(next);
+  await upsertShareBody(next);
   return next;
 }
 
 /** Persist the session facts a re-grab needs without disturbing the file list; a no-op when the share is not on record. */
-export async function rememberDriveSession(
+async function rememberDriveSessionBody(
   shareKey: string,
   facts: { driveId?: string | null; downloadFolder?: string | null },
 ): Promise<ReceivedShare[]> {
@@ -494,7 +506,7 @@ export async function rememberDriveSession(
 
 /** Record how far the in-flight file has got, so the figure survives the attempt ending. Never
  *  bumps `lastUpdatedAt`, or a stalled row would never expire. */
-export async function setFilePartialBytes(
+async function setFilePartialBytesBody(
   shareKey: string,
   fileName: string,
   partialBytes: number,
@@ -527,7 +539,7 @@ export async function setFilePartialBytes(
 }
 
 /** Forget every partial on a share. The selection changed, or the row is being reset. */
-export async function clearPartialBytes(shareKey: string): Promise<void> {
+async function clearPartialBytesBody(shareKey: string): Promise<void> {
   const k = String(shareKey || "").toLowerCase();
   if (!k) return;
   const list = await loadShares();
@@ -550,7 +562,7 @@ export async function clearPartialBytes(shareKey: string): Promise<void> {
  * paths. Updates `lastUpdatedAt`. If no matching share exists, this is a
  * no-op — callers should `upsertShare` first to establish the record.
  */
-export async function markFilesDownloaded(
+async function markFilesDownloadedBody(
   shareKey: string,
   files: { name: string; localPath: string; size?: number }[],
 ): Promise<ReceivedShare[]> {
@@ -606,7 +618,7 @@ export async function markFilesDownloaded(
  * `localPath` that is actually present is a lie this cannot detect.
  * Returns `true` when something changed.
  */
-export async function markFileMissing(
+async function markFileMissingBody(
   shareKey: string,
   localPath: string,
 ): Promise<boolean> {
@@ -642,7 +654,7 @@ export type DeleteShareOutcome = {
  * gone, which the existence filter handles, while the reverse order leaves bytes
  * on the phone with nothing naming them. Copies outside the app are not touched.
  */
-export async function deleteShare(shareKey: string): Promise<DeleteShareOutcome> {
+async function deleteShareBody(shareKey: string): Promise<DeleteShareOutcome> {
   const k = String(shareKey || "").toLowerCase();
   const list = await loadShares();
   const target = list.find((s) => s.shareKey === k) ?? null;
@@ -686,7 +698,7 @@ export async function deleteShare(shareKey: string): Promise<DeleteShareOutcome>
 
 /** Flip a share's pin flag. `lastUpdatedAt` deliberately does not move:
  *  pinning is metadata, and bumping it would reorder the recency sort. */
-export async function setSharePinned(
+async function setSharePinnedBody(
   shareKey: string,
   pinned: boolean,
 ): Promise<ReceivedShare[]> {
@@ -704,7 +716,7 @@ export async function setSharePinned(
   return next;
 }
 
-export async function setShareFavorite(
+async function setShareFavoriteBody(
   shareKey: string,
   favorite: boolean,
 ): Promise<ReceivedShare[]> {
@@ -720,6 +732,52 @@ export async function setShareFavorite(
   await writeToDisk(next);
   emit(next);
   return next;
+}
+
+
+// The exported writers, each queued behind the last; the bodies above call one another directly.
+export function upsertShare(...args: Parameters<typeof upsertShareBody>): ReturnType<typeof upsertShareBody> {
+  return serialised(() => upsertShareBody(...args)) as ReturnType<typeof upsertShareBody>;
+}
+
+export function createWaitingShare(...args: Parameters<typeof createWaitingShareBody>): ReturnType<typeof createWaitingShareBody> {
+  return serialised(() => createWaitingShareBody(...args)) as ReturnType<typeof createWaitingShareBody>;
+}
+
+export function patchShare(...args: Parameters<typeof patchShareBody>): ReturnType<typeof patchShareBody> {
+  return serialised(() => patchShareBody(...args)) as ReturnType<typeof patchShareBody>;
+}
+
+export function rememberDriveSession(...args: Parameters<typeof rememberDriveSessionBody>): ReturnType<typeof rememberDriveSessionBody> {
+  return serialised(() => rememberDriveSessionBody(...args)) as ReturnType<typeof rememberDriveSessionBody>;
+}
+
+export function setFilePartialBytes(...args: Parameters<typeof setFilePartialBytesBody>): ReturnType<typeof setFilePartialBytesBody> {
+  return serialised(() => setFilePartialBytesBody(...args)) as ReturnType<typeof setFilePartialBytesBody>;
+}
+
+export function clearPartialBytes(...args: Parameters<typeof clearPartialBytesBody>): ReturnType<typeof clearPartialBytesBody> {
+  return serialised(() => clearPartialBytesBody(...args)) as ReturnType<typeof clearPartialBytesBody>;
+}
+
+export function markFilesDownloaded(...args: Parameters<typeof markFilesDownloadedBody>): ReturnType<typeof markFilesDownloadedBody> {
+  return serialised(() => markFilesDownloadedBody(...args)) as ReturnType<typeof markFilesDownloadedBody>;
+}
+
+export function markFileMissing(...args: Parameters<typeof markFileMissingBody>): ReturnType<typeof markFileMissingBody> {
+  return serialised(() => markFileMissingBody(...args)) as ReturnType<typeof markFileMissingBody>;
+}
+
+export function deleteShare(...args: Parameters<typeof deleteShareBody>): ReturnType<typeof deleteShareBody> {
+  return serialised(() => deleteShareBody(...args)) as ReturnType<typeof deleteShareBody>;
+}
+
+export function setSharePinned(...args: Parameters<typeof setSharePinnedBody>): ReturnType<typeof setSharePinnedBody> {
+  return serialised(() => setSharePinnedBody(...args)) as ReturnType<typeof setSharePinnedBody>;
+}
+
+export function setShareFavorite(...args: Parameters<typeof setShareFavoriteBody>): ReturnType<typeof setShareFavoriteBody> {
+  return serialised(() => setShareFavoriteBody(...args)) as ReturnType<typeof setShareFavoriteBody>;
 }
 
 export function subscribeShares(listener: Listener): () => void {

@@ -26,6 +26,12 @@ import { formatBytes, formatSimulateDelay } from "../lib/format";
 import { useToast } from "../ui/Toast";
 import type { AppTheme } from "../ui/themes";
 import { useDebugLogging } from "../state/debugLogStorage";
+import { useSenderAvailableAlerts } from "../state/senderAvailableStorage";
+import {
+  isWaitingCapOverridden,
+  setWaitingCapOverride,
+  WAITING_BUDGET_TEST_CAP_MS,
+} from "../state/waitingBudgetStorage";
 import { useBackend } from "../state/backend";
 import {
   SIMULATE_DELAY_OPTIONS,
@@ -202,6 +208,15 @@ export default function SettingsScreen() {
   // debug logging
   // ---------------------------------------------------------------
   const { enabled: debugEnabled, setEnabled: setDebugEnabled } = useDebugLogging();
+  const { enabled: senderAlertsEnabled, setEnabled: setSenderAlertsEnabled } =
+    useSenderAvailableAlerts();
+  const [shortCapOn, setShortCapOn] = useState<boolean>(isWaitingCapOverridden());
+
+  /** Local state leads, because the override lives in a module cache rather than in a subscription. */
+  const onToggleShortCap = useCallback((next: boolean) => {
+    setShortCapOn(next);
+    void setWaitingCapOverride(next ? WAITING_BUDGET_TEST_CAP_MS : null);
+  }, []);
   const [logBytes, setLogBytes] = useState(0);
   const [exportBusy, setExportBusy] = useState(false);
   const [labelPromptOpen, setLabelPromptOpen] = useState(false);
@@ -818,6 +833,43 @@ export default function SettingsScreen() {
                 );
               })}
             </View>
+          </View>
+        ) : null}
+      </View>
+
+      {/* Notifications section */}
+      <SectionLabel theme={theme}>Notifications</SectionLabel>
+      <View style={styles.sectionCard}>
+        <View style={[styles.debugRow, { borderTopWidth: 0 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.followLabel}>Tell me when a sender is available</Text>
+            <Text style={styles.followHint}>
+              Get a notification when someone you&apos;re waiting for comes
+              online and you still have files to choose.
+            </Text>
+          </View>
+          <Switch
+            value={senderAlertsEnabled}
+            onValueChange={setSenderAlertsEnabled}
+            accessibilityLabel="Sender available notifications"
+          />
+        </View>
+        {/* The short cap a device run can finish inside. Gated on Debugging, which ships, so a release APK can be measured; it only ever lowers the cap. */}
+        {debugEnabled ? (
+          <View style={styles.debugRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.followLabel}>Short background-waiting cap</Text>
+              <Text style={styles.followHint}>
+                {`Caps background waiting at ${Math.round(
+                  WAITING_BUDGET_TEST_CAP_MS / 60_000,
+                )} minutes instead of the usual two hours. Turning Debugging off restores it.`}
+              </Text>
+            </View>
+            <Switch
+              value={shortCapOn}
+              onValueChange={onToggleShortCap}
+              accessibilityLabel="Short background waiting cap"
+            />
           </View>
         ) : null}
       </View>

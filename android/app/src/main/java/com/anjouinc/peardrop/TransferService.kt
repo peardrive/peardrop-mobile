@@ -109,6 +109,16 @@ class TransferService : Service() {
      * is shared, so a rename has to touch both. */
     const val EVENT_CANCEL_RECEIVING = "PeardropCancelReceiving"
 
+    /** The platform's own `dataSync` timeout, told to JS so it can say what stopped. Must match
+     * `EVENT_SERVICE_TIMEOUT` in `foregroundService.ts`. */
+    const val EVENT_SERVICE_TIMEOUT = "PeardropServiceTimeout"
+
+    /** Set when the timeout could not be delivered to JS, and drained on the next foreground. */
+    private val pendingTimeout = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Take the pending-timeout flag, clearing it. */
+    fun drainPendingTimeout(): Boolean = pendingTimeout.getAndSet(false)
+
     /**
      * Set when a cancel was requested but could not be delivered to JS.
      *
@@ -128,6 +138,49 @@ class TransferService : Service() {
 
     /** Which notification id `startForeground` is currently bound to. */
     @Volatile private var foregroundId: Int = RECEIVING_NOTIFICATION_ID
+
+    // A stop must not reach the platform before `startForeground`, or it kills the app; these two carry a stop across that gap.
+    private val startLock = Any()
+    private var startPending = false
+    private var stopAfterStart = false
+
+    /** Called just before `startForegroundService`; a new start cancels a stop still waiting on the last one. */
+    fun noteStartRequested() {
+      synchronized(startLock) {
+        startPending = true
+        stopAfterStart = false
+      }
+    }
+
+    /** The start never reached the platform, so nothing is pending. */
+    fun noteStartFailed() {
+      synchronized(startLock) {
+        startPending = false
+        stopAfterStart = false
+      }
+    }
+
+    /** False when the stop is deferred until the pending start has promoted the service. */
+    fun requestStop(context: Context): Boolean {
+      synchronized(startLock) {
+        if (startPending) {
+          stopAfterStart = true
+          record("stop deferred until startForeground")
+          return false
+        }
+      }
+      context.stopService(Intent(context, TransferService::class.java))
+      return true
+    }
+
+    /** Clears the pending start and says whether a stop arrived while it was pending. */
+    private fun takeDeferredStop(): Boolean =
+      synchronized(startLock) {
+        startPending = false
+        val deferred = stopAfterStart
+        stopAfterStart = false
+        deferred
+      }
 
     private fun serviceNotificationId(): Int =
       if (serviceRow == ROW_SHARING) SHARING_NOTIFICATION_ID else RECEIVING_NOTIFICATION_ID
@@ -360,22 +413,32 @@ class TransferService : Service() {
    * `currentReactContext` is nullable, so this returns false when none exists
    * and the caller queues the tap instead of dropping it.
    */
-  private fun emitCancelToJs(): Boolean {
+  private fun emitToJs(event: String, label: String): Boolean {
     return try {
       val host = (application as? com.facebook.react.ReactApplication)?.reactHost
       val reactContext = host?.currentReactContext
       if (reactContext == null) {
-        record("cancel: no ReactContext — queued for drain")
+        record("$label: no ReactContext — queued for drain")
         false
       } else {
-        reactContext.emitDeviceEvent(EVENT_CANCEL_RECEIVING)
-        record("cancel: emitted $EVENT_CANCEL_RECEIVING to JS")
+        reactContext.emitDeviceEvent(event)
+        record("$label: emitted $event to JS")
         true
       }
     } catch (e: Exception) {
-      record("cancel: emit THREW ${e.javaClass.simpleName}: ${e.message ?: ""}")
+      record("$label: emit THREW ${e.javaClass.simpleName}: ${e.message ?: ""}")
       false
     }
+  }
+
+  private fun emitCancelToJs(): Boolean = emitToJs(EVENT_CANCEL_RECEIVING, "cancel")
+
+  /**
+   * The timeout must not wait on JS: `stopSelf` has to happen within seconds of `onTimeout` or
+   * the platform throws, so the emit is best-effort and the flag is the fallback.
+   */
+  private fun announceTimeout() {
+    if (!emitToJs(EVENT_SERVICE_TIMEOUT, "timeout")) pendingTimeout.set(true)
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -423,9 +486,17 @@ class TransferService : Service() {
       // than taking the app down.
       Log.e(TAG, "startForeground threw: ${e.javaClass.simpleName}: ${e.message}")
       record("startForeground THREW ${e.javaClass.simpleName}: ${e.message ?: ""}")
+      takeDeferredStop()
       running = null
       stopSelf()
       return START_NOT_STICKY
+    }
+
+    // Promoted, so the platform's deadline is met and a stop that arrived meanwhile can run now.
+    if (takeDeferredStop()) {
+      Log.i(TAG, "deferred stop applied startId=$startId")
+      record("deferred stop applied startId=$startId")
+      stopSelf()
     }
 
     // Not sticky: if the system kills this, silently restarting it would
@@ -440,6 +511,7 @@ class TransferService : Service() {
   override fun onTimeout(startId: Int) {
     Log.i(TAG, "onTimeout startId=$startId — stopping")
     record("onTimeout startId=$startId — stopped cleanly")
+    announceTimeout()
     clearRows(this)
     stopSelf()
   }
@@ -447,6 +519,7 @@ class TransferService : Service() {
   override fun onTimeout(startId: Int, fgsType: Int) {
     Log.i(TAG, "onTimeout startId=$startId fgsType=$fgsType — stopping")
     record("onTimeout startId=$startId fgsType=$fgsType — stopped cleanly")
+    announceTimeout()
     clearRows(this)
     stopSelf()
   }

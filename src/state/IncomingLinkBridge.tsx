@@ -2,11 +2,15 @@ import { useEffect, useRef } from "react";
 import { useBackend } from "./backend";
 import { useShareLinkFlow } from "./ShareLinkFlowContext";
 import { useToast } from "../ui/Toast";
+import * as Notifications from "expo-notifications";
 import {
+  enqueueIntent,
   INTENT_SHARE_LINK,
   intentAgeMs,
   setIntentHandler,
 } from "../lib/pendingIntents";
+import { SENDER_AVAILABLE_LINK_KEY } from "../lib/notifications";
+import { intentForAlertTap } from "../lib/senderAvailable";
 import { INTENT_SHARE_LINK_REJECTED } from "../lib/links";
 // Queue an incoming link rather than swapping what the user is looking at.
 // Decision + copy live there.
@@ -156,6 +160,20 @@ export default function IncomingLinkBridge(): null {
       });
     });
   }, [showToast]);
+
+  /** A tap on "a sender is available" enqueues rather than resolves, so it takes the same launch-flow gate and confirm-first preview as any other link. */
+  // Not gated on `ready`: the holder is what waits, and registering late is how a cold-start tap gets lost.
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const request = response?.notification?.request;
+      const link = (request?.content?.data as Record<string, unknown> | undefined)?.[
+        SENDER_AVAILABLE_LINK_KEY
+      ];
+      const intent = intentForAlertTap(request?.identifier, link);
+      if (intent) enqueueIntent(intent);
+    });
+    return () => sub.remove();
+  }, []);
 
   useEffect(() => {
     if (!watchingRef.current) return;

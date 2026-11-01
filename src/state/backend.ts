@@ -87,6 +87,7 @@ import {
   // `selectReceivingCancelTargets`, the notification path through `describeNotificationRows`.
   decideServiceTransition,
   describeActivity,
+  holdsForWaiting,
   IDLE_HOST_GRACE_MS,
   IDLE_HOST_GRACE_WAKE_PAD_MS,
   isTransferActive,
@@ -97,7 +98,9 @@ import { stallFieldsAfterProgress } from "../lib/stallVerdict";
 import { carriesPreviousOutcome, restartTransfer } from "../lib/transferRestart";
 import {
   drainPendingCancel,
+  drainPendingTimeout,
   EVENT_CANCEL_RECEIVING,
+  EVENT_SERVICE_TIMEOUT,
   isForegroundServiceAvailable,
   isScreenOn,
   startForegroundService,
@@ -123,7 +126,17 @@ import { runReceivedReconcile } from "./reconcileReceivedRunner";
 import type { EngineDriveLike } from "../lib/reconcileReceived";
 import { addSent } from "./statsStorage";
 import { haptics } from "../lib/haptics";
-import { notifyTransferComplete } from "../lib/notifications";
+import { notifyTransferComplete, notifyWaitingStopped } from "../lib/notifications";
+import { notifyWaitingTick } from "../lib/waitingTick";
+import { countRowsWaiting } from "../lib/waitingStatus";
+import { WAITING_WAKE_MAX_GAP_MS } from "../lib/waitingBudget";
+import {
+  advanceWaitingSpan,
+  describeWaitingBudget,
+  hydrateWaitingBudget,
+  isWaitingBudgetExhausted,
+  openWaitingSpan,
+} from "./waitingBudgetStorage";
 
 import bundle from "../../app/app.bundle.mjs";
 
@@ -364,6 +377,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * is Android behaving correctly toward an idle app.
    */
   const serviceStartedForWindowRef = useRef<boolean>(false);
+  /** Whether waiting rows are part of what holds the service in this window. The Receiving row claims checking is happening, so it may only show while this is true. */
+  const waitingHoldRef = useRef<boolean>(false);
+  /** The user cancelled the waiting row, or the cap ran out. Either way waiting does not restart until the next foreground. */
+  const waitingDeclinedRef = useRef<boolean>(false);
+  /** The plain end-of-waiting notice, posted once per window. */
+  const waitingNoticePostedRef = useRef<boolean>(false);
   /**
    * Mirror of `drives` for the notification's name lookup. Same reason as
    * `transfersRef`: the feed runs inside `commitTransfers`, which cannot be a
@@ -376,6 +395,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   /** `pushNotification` reached from the share subscription, which is
    *  declared above it and must keep an empty dep array. */
   const pushNotificationRef = useRef<((list: TransferSummary[]) => void) | null>(null);
+  /** The start half, reached from the waiting review below it, for the same reason. */
+  const applyServiceForBackgroundRef = useRef<((trigger?: string) => boolean) | null>(null);
   /** One slot per row, or the two interfere; null means nothing posted in this
    * service window, so the next window's first update always posts. */
   const lastNotificationRef = useRef<{
@@ -445,6 +466,11 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   /** Falls back to the received-share store, because the drives manifest holds
    * no received drive mid-download. A partial grab overstates the count. */
 
+  /** The background decision reads the budget synchronously, so it has to be in memory before the first backgrounding. Its own effect, for the same reason as the one below. */
+  useEffect(() => {
+    void hydrateWaitingBudget();
+  }, []);
+
   /** Its own effect, never folded into the boot effect, whose dep array is a
    * tripwire: a retrigger there restarts the worklet. */
   useEffect(() => {
@@ -453,6 +479,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
       /** Re-push, because the notification only refreshed on a transfer mutation while a share record can change without one. */
       // The rate limit drops a duplicate when nothing user-visible changed, so a record write that moves nothing costs one comparison.
       pushNotificationRef.current?.(transfersRef.current);
+      // A row that starts or stops waiting while the app is already backgrounded arrives as a record write and nothing else.
+      reviewWaitingServiceRef.current?.();
     });
     // The dependency array stays empty, because a retrigger here re-subscribes, so the push is reached through a ref instead.
   }, []);
@@ -485,7 +513,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   const pushNotification = useCallback(
     (list: TransferSummary[]) => {
       const now = Date.now();
-      const rows = describeNotificationRows(list, now, driveNamesFor);
+      // Only while the service is actually held for waiting: the row claims checking is happening, and after the cap it is not.
+      const waiting = waitingHoldRef.current ? countRowsWaiting(receivedSharesRef.current, now) : 0;
+      const rows = describeNotificationRows(list, now, driveNamesFor, waiting);
       // Gated on the decision plus the content, because this runs once per
       // transfer mutation and an ungated line would flood the log it informs.
       if (!rows.serviceRow) {
@@ -800,10 +830,24 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
    * logged either way: the service's own outcome lines are absent exactly
    * when it never started, which is the case most in need of explanation.
    */
+  /** Rows still waiting for a sender, read synchronously from the share subscription's materialised list: the background decision may not await. */
+  const rowsWaitingNow = useCallback(
+    () => countRowsWaiting(receivedSharesRef.current, Date.now()),
+    []
+  );
+
   const applyServiceForBackground = useCallback((trigger = "appstate-background") => {
     const now = Date.now();
     const list = transfersRef.current;
-    const active = isTransferActive(list, now);
+    const transferActive = isTransferActive(list, now);
+    const rowsWaiting = countRowsWaiting(receivedSharesRef.current, now);
+    const capSpent = isWaitingBudgetExhausted(now);
+    const waitingHold =
+      !waitingDeclinedRef.current &&
+      holdsForWaiting({ rowsWaiting, waitingBudgetExhausted: capSpent });
+    const active = transferActive || waitingHold;
+    // The remaining budget at every service start, so an exported log can tell "the OEM froze us" from "we ran out of budget".
+    debugLog("warn", "rn.waiting", `${describeWaitingBudget(now)} trigger=${trigger} at=${now}`);
     // Printed unconditionally: `simulated=0` on a real run is as load-bearing
     // as `simulated=1`, or a log reader cannot tell the two runs apart.
     const simulatedCount = list.filter((t) =>
@@ -812,8 +856,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     debugLog(
       "warn",
       "rn.fgs",
-      `background decision ${describeActivity(list, now)} ` +
+      `background decision ${describeActivity(list, now, rowsWaiting)} ` +
         `simulated=${simulatedCount} ` +
+        `waitingHold=${waitingHold} capSpent=${capSpent} ` +
         `service=${active ? "START" : "skip"} ` +
         // Two triggers can reach this line, and an exported log has to say
         // which one ran: they are different measurements of one mechanism.
@@ -821,6 +866,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         `available=${isForegroundServiceAvailable()} at=${now}`
     );
     serviceStartedForWindowRef.current = active;
+    waitingHoldRef.current = waitingHold && active;
+    // Billed from the start of the window, and only when waiting is what holds it: a transfer's own hold is not charged to the waiting cap.
+    if (waitingHold) openWaitingSpan(now);
     if (active) {
       // A fresh window has no post history, so the first update cannot be
       // suppressed as a duplicate.
@@ -837,6 +885,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     return active;
   }, [pushNotification]);
 
+  applyServiceForBackgroundRef.current = applyServiceForBackground;
+
   /**
    * The release half, as one stable function. `useCallback(…, [])` is
    * required: the boot effect's dep array lists it, and a changing identity
@@ -850,14 +900,23 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     if (!serviceStartedForWindowRef.current) return false;
     const now = Date.now();
     const list = transfersRef.current;
-    if (isTransferActive(list, now)) {
+    const rowsWaiting = countRowsWaiting(receivedSharesRef.current, now);
+    const waitingHold =
+      !waitingDeclinedRef.current &&
+      holdsForWaiting({
+        rowsWaiting,
+        waitingBudgetExhausted: isWaitingBudgetExhausted(now),
+      });
+    waitingHoldRef.current = waitingHold;
+    if (isTransferActive(list, now) || waitingHold) {
       // Held, and the log says for how long and what is expected to end it: a
       // long hold must read as either waiting out a grace window or stuck.
       const wait = msUntilActivityCouldChange(list, now);
       debugLog(
         "warn",
         "rn.fgs",
-        `service held — ${describeActivity(list, now)} trigger=${trigger} ` +
+        `service held — ${describeActivity(list, now, rowsWaiting)} trigger=${trigger} ` +
+          `waitingHold=${waitingHold} ` +
           `graceEndsInMs=${wait ?? "n/a"} wakeRealm=worklet at=${now}`
       );
       return false;
@@ -865,7 +924,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     debugLog(
       "warn",
       "rn.fgs",
-      `releasing service — ${describeActivity(list, now)} trigger=${trigger} at=${now}`
+      `releasing service — ${describeActivity(list, now, rowsWaiting)} trigger=${trigger} at=${now}`
     );
     serviceStartedForWindowRef.current = false;
     // Let the completion write land before the service goes: the predicate
@@ -878,6 +937,68 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     })();
     return true;
   }, []);
+
+  /** End background waiting without touching a row: nothing is purged, no status is written, and the next foreground transition picks the rows up again. */
+  const stopWaitingHold = useCallback((reason: string): void => {
+    const now = Date.now();
+    waitingDeclinedRef.current = true;
+    waitingHoldRef.current = false;
+    debugLog(
+      "warn",
+      "rn.waiting",
+      `waiting hold ended (${reason}) — ${describeWaitingBudget(now)} ` +
+        `transferActive=${isTransferActive(transfersRef.current, now)} at=${now}`
+    );
+    if (!waitingNoticePostedRef.current) {
+      waitingNoticePostedRef.current = true;
+      void notifyWaitingStopped();
+    }
+    // A live transfer keeps the service; only the waiting half of the hold is given up here.
+    releaseServiceIfInactive(`waiting-${reason}`);
+    pushNotificationRef.current?.(transfersRef.current);
+  }, [releaseServiceIfInactive]);
+
+  const stopWaitingHoldRef = useRef(stopWaitingHold);
+  stopWaitingHoldRef.current = stopWaitingHold;
+
+  /** The worklet's wake, billed and then passed on. The cap is checked here because this is the only clock running while the app is backgrounded. */
+  const handleWaitingWake = useCallback((tick: number): void => {
+    const now = Date.now();
+    if (!waitingHoldRef.current) {
+      notifyWaitingTick(tick);
+      return;
+    }
+    advanceWaitingSpan(now, WAITING_WAKE_MAX_GAP_MS);
+    if (isWaitingBudgetExhausted(now)) {
+      stopWaitingHoldRef.current("budget-spent");
+      return;
+    }
+    notifyWaitingTick(tick);
+  }, []);
+
+  const handleWaitingWakeRef = useRef(handleWaitingWake);
+  handleWaitingWakeRef.current = handleWaitingWake;
+
+  /** A row becoming or ceasing to be waiting while the app is already backgrounded. A share-record write is the event, and the loop's own rounds produce them. */
+  const reviewWaitingService = useCallback((): void => {
+    if (AppState.currentState === "active") return;
+    const now = Date.now();
+    const transition = decideServiceTransition({
+      appActive: false,
+      serviceStartedForWindow: serviceStartedForWindowRef.current,
+      transfers: transfersRef.current,
+      now,
+      rowsWaiting: waitingDeclinedRef.current
+        ? 0
+        : countRowsWaiting(receivedSharesRef.current, now),
+      waitingBudgetExhausted: isWaitingBudgetExhausted(now),
+    });
+    if (transition === "start") applyServiceForBackgroundRef.current?.("rows-waiting");
+    else if (transition === "stop") releaseServiceIfInactive("rows-waiting");
+  }, [releaseServiceIfInactive]);
+
+  const reviewWaitingServiceRef = useRef(reviewWaitingService);
+  reviewWaitingServiceRef.current = reviewWaitingService;
 
   const markBackgrounded = useCallback(async () => {
     // Reset the gap window alongside the tick mark, so the gap reported at
@@ -1267,6 +1388,8 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         `cancel-receiving (${reason}) — ${describeActivity(list, now)} ` +
           `targets=${targets.length} at=${now}`
       );
+      // A Cancel on the waiting row stops the waiting service and nothing else: no row is purged and no status is written.
+      if (waitingHoldRef.current) stopWaitingHoldRef.current("cancel-tapped");
       if (targets.length === 0) return;
       await Promise.all(targets.map((driveId) => cancelInFlight(driveId)));
     },
@@ -1290,6 +1413,14 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     });
     return () => sub.remove();
   }, [cancelReceiving]);
+
+  /** The platform ending the service out from under the hold. The rows are untouched; only the claim that they are being checked goes. */
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(EVENT_SERVICE_TIMEOUT, () => {
+      if (waitingHoldRef.current) stopWaitingHoldRef.current("service-timeout");
+    });
+    return () => sub.remove();
+  }, []);
 
   /**
    * `opts.serve` is the explicit announce opt-in. Omit it and the engine
@@ -1418,6 +1549,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                 // Diagnostic only, so it stays inside the dev-build gate.
                 if (AppState.currentState !== "active") void flushDebugLog();
               }
+              return;
+            }
+            // The waiting loop's background cadence, handled beside the heartbeat
+            // and for its reason: fixed interval, and never for the UI state machine.
+            if (evt.type === "waiting-tick") {
+              handleWaitingWakeRef.current(typeof evt.tick === "number" ? evt.tick : 0);
               return;
             }
             if (evt.type === "listening") {
@@ -2292,6 +2429,10 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         // first tick after resume would otherwise rule on all of them.
         foregroundSinceRef.current = Date.now();
         setAppActive(true);
+        // Waiting is foreground work again, so the window's refusals are spent and the next background transition decides fresh.
+        waitingHoldRef.current = false;
+        waitingDeclinedRef.current = false;
+        waitingNoticePostedRef.current = false;
         // A stop trigger: the app is visible again, so the service has
         // nothing left to protect. Unconditional, because the OS may have
         // stopped it already and a believed state is not a reason to skip.
@@ -2300,6 +2441,12 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
         // delivering live. Ordered after the stop: an empty target set is right.
         void drainPendingCancel().then((pending) => {
           if (pending) void cancelReceivingRef.current("drained-on-resume");
+        });
+        // A timeout whose live emit found no ReactContext. Logged only: the app is open, so the notice it would have posted is moot.
+        void drainPendingTimeout().then((pending) => {
+          if (pending) {
+            debugLog("warn", "rn.waiting", `service timeout drained on resume at=${Date.now()}`);
+          }
         });
         // Both rows go with the service, so the post history that described
         // them is stale from here on.
@@ -2323,7 +2470,17 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
           // call succeeds; once frozen there would be nothing to ask.
           void markBackgrounded();
           // Ordered after both of those deliberately: the two calls above are the measurement surface and must not be displaced by a release that is only an optimisation.
-          void releaseLookup();
+          // Kept while rows wait: the loop keeps checking them off the worklet's ticker, and a release makes every background round pay a fresh DHT bootstrap.
+          const waiting = rowsWaitingNow();
+          if (waiting > 0) {
+            debugLog(
+              "warn",
+              "rn.waiting",
+              `lookup node kept — rows waiting=${waiting} at=${Date.now()}`
+            );
+          } else {
+            void releaseLookup();
+          }
         }
       }
     };
@@ -2342,6 +2499,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     // Stable: its only dep is `appendErrorLog`, which is `useCallback(…, [])`.
     // An unstable value here would re-arm the 90 s interval on every render.
     releaseLookup,
+    rowsWaitingNow,
   ]);
 
   useEffect(() => {
@@ -2419,6 +2577,10 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
           serviceStartedForWindow: false,
           transfers: transfersRef.current,
           now: Date.now(),
+          rowsWaiting: waitingDeclinedRef.current
+            ? 0
+            : countRowsWaiting(receivedSharesRef.current, Date.now()),
+          waitingBudgetExhausted: isWaitingBudgetExhausted(Date.now()),
         }) === "start"
       ) {
         applyServiceForBackground("transfer-started-while-backgrounded");

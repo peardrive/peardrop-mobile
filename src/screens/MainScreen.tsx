@@ -29,6 +29,7 @@ import RNFS from "react-native-fs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { log as debugLog, logStructuredError } from "../lib/debugLog";
+import { INTENT_SHOW_SHARES, setIntentHandler } from "../lib/pendingIntents";
 import { ensurePermission as ensureNotificationPermission } from "../lib/notifications";
 
 import {
@@ -787,6 +788,12 @@ export default function MainScreen() {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const navigation = useNavigation<any>();
+
+  // The coalesced available alert promises the list of shares, so its tap returns here from any screen.
+  useEffect(
+    () => setIntentHandler(INTENT_SHOW_SHARES, () => navigation.navigate("Main")),
+    [navigation],
+  );
 
   const {
     ready,

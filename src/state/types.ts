@@ -174,7 +174,10 @@ export type BackendEvent =
    * nothing. Every field optional — an older worklet emits nothing here,
    * which must read as no wake rather than as an error.
    */
-  | { type: "host-idle-grace-elapsed"; driveId?: string; idleMs?: number; at?: number };
+  | { type: "host-idle-grace-elapsed"; driveId?: string; idleMs?: number; at?: number }
+  /** The waiting loop's cadence while backgrounded, on the engine's alive ticker because RN's timers are dead in that state. */
+  // A wake and not a verdict: which rows are due stays with the loop, and every field is optional so an older worklet reads as no wake.
+  | { type: "waiting-tick"; tick?: number; at?: number };
 
 /**
  * The canonical drive-file shape: one concept, one type. Several shapes spell

@@ -90,6 +90,32 @@ export function isExpired(
   return now - lastUpdatedAt > ROW_EXPIRY_MS;
 }
 
+/** A row the loop would still pick up. Minimal subset, so the caller need not pass whole records. */
+export type WaitingCountRow = {
+  readonly status: WaitingStatus;
+  readonly lastUpdatedAt: number;
+};
+
+/**
+ * How many rows are still waiting for a sender. The background service decision reads this
+ * synchronously at the moment the app backgrounds, so it takes a materialised list and does no I/O.
+ */
+export function countRowsWaiting(
+  rows: readonly WaitingCountRow[] | null | undefined,
+  now: number,
+): number {
+  if (!Array.isArray(rows)) return 0;
+  let count = 0;
+  for (const row of rows) {
+    if (!row || !isWaitingStatus(row.status)) continue;
+    if (!isLoopStatus(row.status)) continue;
+    // An expired row is not waiting: the loop retires it rather than checking it.
+    if (isExpired(row.status, row.lastUpdatedAt, now)) continue;
+    count++;
+  }
+  return count;
+}
+
 export type StatusLineInput = {
   readonly status: WaitingStatus;
   readonly files: readonly StatusFile[];

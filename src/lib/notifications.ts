@@ -25,6 +25,12 @@ import { DEFAULT_THEME_ID, themes } from "../ui/themes";
 export const TRANSFER_CHANNEL_ID = "transfers";
 
 /**
+ * The one alerting channel. Its own, because the three that exist are either frozen at
+ * `IMPORTANCE_LOW` or carry completions, and a user muting those must not mute this silently.
+ */
+export const SENDER_AVAILABLE_CHANNEL_ID = "sender-available";
+
+/**
  * the accent Android tints the notification's small icon with.
  *
  * Read from the theme rather than restated as a hex, so the notification
@@ -90,6 +96,13 @@ export async function ensureNotificationsReady(): Promise<void> {
           // per-channel settings.
           enableLights: true,
           lightColor: NOTIFICATION_ACCENT,
+        });
+        await Notifications.setNotificationChannelAsync(SENDER_AVAILABLE_CHANNEL_ID, {
+          name: "Senders coming online",
+          importance: Notifications.AndroidImportance.DEFAULT,
+          enableLights: true,
+          lightColor: NOTIFICATION_ACCENT,
+          showBadge: true,
         });
       } catch {
         // Best-effort: a channel we couldn't register just means the
@@ -218,6 +231,63 @@ export async function notifyTransferComplete(options: {
       // Android files the notification under whatever default the library
       // supplies. `{ channelId }` is the documented immediate-delivery
       // trigger that also names the channel — same timing, right bucket.
+      trigger: { channelId: TRANSFER_CHANNEL_ID },
+    });
+  } catch {
+    // Best-effort; never let a notification error interrupt UI flow.
+  }
+}
+
+/** The data key a tap is routed by. The response handler reads it and nothing else. */
+export const SENDER_AVAILABLE_LINK_KEY = "peardropLink";
+
+/**
+ * A sender a row was waiting for has answered. Posted only from the background: in the
+ * foreground the row updates itself and a toast already says so.
+ */
+export async function notifySenderAvailable(options: {
+  title: string;
+  body: string;
+  /** The deep link to open, or null for the coalesced alert, which opens the app. */
+  link: string | null;
+  /** Distinct per share key, so one notification's tap cannot open another's share. */
+  identifier: string;
+}): Promise<void> {
+  try {
+    if (AppState.currentState === "active") return;
+    if (!(await hasPermission())) return;
+    await Notifications.scheduleNotificationAsync({
+      identifier: options.identifier,
+      content: {
+        title: options.title,
+        body: options.body,
+        sound: true,
+        color: NOTIFICATION_ACCENT,
+        autoDismiss: true,
+        data: options.link ? { [SENDER_AVAILABLE_LINK_KEY]: options.link } : {},
+      },
+      trigger: { channelId: SENDER_AVAILABLE_CHANNEL_ID },
+    });
+  } catch {
+    // Best-effort; never let a notification error interrupt the loop that posted it.
+  }
+}
+
+/**
+ * Background waiting has ended, because the rolling-day cap or the platform's own timeout ran
+ * out. It reports a stop and never a failure: the rows are untouched and still waiting.
+ */
+export async function notifyWaitingStopped(): Promise<void> {
+  try {
+    if (AppState.currentState === "active") return;
+    if (!(await hasPermission())) return;
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "PearDrop stopped checking",
+        body: "Stopped waiting in the background. Open PearDrop to keep waiting.",
+        sound: false,
+        color: NOTIFICATION_ACCENT,
+      },
       trigger: { channelId: TRANSFER_CHANNEL_ID },
     });
   } catch {

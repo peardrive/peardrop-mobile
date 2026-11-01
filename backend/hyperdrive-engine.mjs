@@ -313,6 +313,14 @@ function sweepIdleHostGrace(now) {
   }
 }
 
+/**
+ * The waiting loop's cadence while the app is backgrounded, where RN's own timers do not run.
+ * A wake, never a verdict: which rows are due is RN's to decide, and only RN can read the rows.
+ */
+function emitWaitingTick(now) {
+  emitEvent({ type: "waiting-tick", tick: aliveTicks, at: now });
+}
+
 function startAliveTicker() {
   if (aliveTimer) return;
   // Seeded here rather than on the first tick: a freeze beginning one second after `engineInit`
@@ -326,6 +334,7 @@ function startAliveTicker() {
     // Placed ABOVE the gap guard, which early-returns on a backwards clock step. A moved clock is
     // a reason to distrust a gap measurement, not to stop asking whether a share has been idle.
     sweepIdleHostGrace(now);
+    emitWaitingTick(now);
     // Covers a backwards clock step and NaN both, and does it here rather than at the point of
     // interpretation: a threshold comparison used as a validity check admits NaN.
     if (!(gapMs > 0)) return;

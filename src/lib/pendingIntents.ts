@@ -62,6 +62,9 @@ export function intentAgeMs(intent: DeliveredIntent, now = Date.now()): number {
 /** A validated `peardrop://<key>` link that arrived from outside the app. */
 export const INTENT_SHARE_LINK = "share-link";
 
+/** Bring the list of shares forward, for an alert that names several. */
+export const INTENT_SHOW_SHARES = "show-shares";
+
 /**
  * Backstop against the same intent being delivered twice in quick
  * succession *after* the gate is already open.

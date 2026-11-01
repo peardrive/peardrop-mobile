@@ -463,6 +463,13 @@ export function shareView(input: ShareViewInput): ShareView {
       break;
 
     case "done": {
+      // Nothing held and no selection is a row that stopped waiting; calling it saved would claim a file that never arrived.
+      if (selection.size === 0 && !record.files.some((f) => f.isDownloaded)) {
+        rowLine = "Stopped waiting";
+        header = "Stopped waiting.";
+        hint = DONE_HINT;
+        break;
+      }
       const n = filesDone > 0 ? filesDone : selection.size;
       // One file keeps today's `File · Saved`; the row prepends the type
       // prefix, which is what `prefixWithType` below reports.

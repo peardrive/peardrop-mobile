@@ -1,4 +1,5 @@
 import { baseName } from "./files";
+import { heldChoice } from "./grabSettle";
 import type { OpenLinkResult } from "../state/types";
 
 /**
@@ -127,11 +128,8 @@ export function partitionGrabNames(
    * file the user already has, and `uniquePath` writes each one a second time as
    * `photo (1).jpg`.
    */
-  const heldSet = new Set(heldNames(files));
-  return {
-    fetch: targets.filter((n) => !heldSet.has(n)),
-    keep: targets.filter((n) => heldSet.has(n)),
-  };
+  const { held, missing } = heldChoice(targets, heldNames(files));
+  return { fetch: missing, keep: held };
 }
 
 /**

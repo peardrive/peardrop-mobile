@@ -155,12 +155,16 @@ export function joinNames(names: readonly string[]): string {
 export function describeNotificationRows(
   list: readonly NotificationTransferInput[],
   now: number,
-  namesFor: DriveNamesResolver
+  namesFor: DriveNamesResolver,
+  rowsWaiting = 0
 ): NotificationRows {
   const active = activeTransfers(list, now);
   // A row must never outlive the service; enforced here as well as in Kotlin.
   if (active.length === 0) {
-    return { receiving: null, sharing: null, serviceRow: null };
+    const waiting = buildWaitingRow(rowsWaiting);
+    if (!waiting) return { receiving: null, sharing: null, serviceRow: null };
+    // Waiting shows on Receiving rather than a row of its own, so the service keeps two rows and `serviceRow` keeps two states.
+    return { receiving: waiting, sharing: null, serviceRow: "receiving" };
   }
 
   const downloads: NotificationTransferInput[] = [];
@@ -182,9 +186,10 @@ export function describeNotificationRows(
     }
   }
 
+  // A download replaces the waiting text on the same row; waiting only shows when no download holds it.
   const receiving = downloads.length > 0 || connecting > 0
     ? buildReceivingRow(downloads, namesFor)
-    : null;
+    : buildWaitingRow(rowsWaiting);
   const sharing = buildSharingRow(list, servingHosts, namesFor);
 
   // Receiving owns the service row while a download runs: it has the bar and
@@ -196,6 +201,19 @@ export function describeNotificationRows(
       : null;
 
   return { receiving, sharing, serviceRow };
+}
+
+/** The Receiving row while rows wait for their senders. No bar: nothing is transferring yet. */
+export function buildWaitingRow(rowsWaiting: number): NotificationRow | null {
+  const count = finiteOrNull(rowsWaiting);
+  if (count === null || count < 1) return null;
+  const n = Math.floor(count);
+  return {
+    title: `Waiting for ${n} ${n === 1 ? "sender" : "senders"}`,
+    text: "Checking for them in the background…",
+    subline: "",
+    percent: PROGRESS_NONE,
+  };
 }
 
 function buildReceivingRow(

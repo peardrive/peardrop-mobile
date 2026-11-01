@@ -361,6 +361,17 @@ export function activeTransfers(
   return out;
 }
 
+/** A row waiting for an offline sender holds the service too, and this is the whole of that rule. */
+// Deliberately beside `classifyTransfer` rather than inside it: that function answers about a transfer record, and a waiting row has none, so a branch there would have nothing to classify.
+export function holdsForWaiting(args: {
+  rowsWaiting: number;
+  waitingBudgetExhausted: boolean;
+}): boolean {
+  if (args.waitingBudgetExhausted) return false;
+  const rows = args.rowsWaiting;
+  return typeof rows === "number" && Number.isFinite(rows) && rows > 0;
+}
+
 /**
  * THE predicate. Everything downstream calls this and nothing else.
  */
@@ -396,6 +407,10 @@ export function decideServiceTransition(args: {
   serviceStartedForWindow: boolean;
   transfers: readonly TransferActivityInput[];
   now: number;
+  /** Rows still waiting for a sender. Absent reads as none, so an un-updated caller cannot hold the service by accident. */
+  rowsWaiting?: number;
+  /** The rolling-day waiting cap, spent. It ends waiting and never a transfer. */
+  waitingBudgetExhausted?: boolean;
 }): ServiceTransition {
   // Foreground needs no service, but the release is NOT this function's to
   // order: the resume handler already stops it unconditionally, on purpose,
@@ -405,7 +420,12 @@ export function decideServiceTransition(args: {
   // per event.
   if (args.appActive) return "none";
 
-  const active = isTransferActive(args.transfers, args.now);
+  const active =
+    isTransferActive(args.transfers, args.now) ||
+    holdsForWaiting({
+      rowsWaiting: args.rowsWaiting ?? 0,
+      waitingBudgetExhausted: args.waitingBudgetExhausted === true,
+    });
   if (active && !args.serviceStartedForWindow) return "start";
   if (!active && args.serviceStartedForWindow) return "stop";
   return "none";
@@ -450,9 +470,15 @@ export function msUntilActivityCouldChange(
  */
 export function describeActivity(
   list: readonly TransferActivityInput[],
-  now: number
+  now: number,
+  rowsWaiting?: number
 ): string {
   const active = activeTransfers(list, now);
+  // Always printed once the caller supplies it: a hold with no transfers and no count is unreadable afterwards.
+  const waiting =
+    typeof rowsWaiting === "number" && Number.isFinite(rowsWaiting)
+      ? ` waiting=${rowsWaiting}`
+      : "";
 
   // `forced=true` whenever the override is in effect, so no
   // exported log can show an `active=true` that was really a test override.
@@ -466,7 +492,7 @@ export function describeActivity(
   const forced = forcedActive ? "forced=true " : "";
 
   if (active.length === 0) {
-    return `${forced}active=${forcedActive} transfers=${list.length}`;
+    return `${forced}active=${forcedActive} transfers=${list.length}${waiting}`;
   }
   const counts: Record<string, number> = {};
   for (const { reason } of active) counts[reason] = (counts[reason] ?? 0) + 1;
@@ -474,5 +500,5 @@ export function describeActivity(
     .sort()
     .map((k) => `${k}=${counts[k]}`)
     .join(" ");
-  return `${forced}active=true transfers=${list.length} ${detail}`;
+  return `${forced}active=true transfers=${list.length}${waiting} ${detail}`;
 }

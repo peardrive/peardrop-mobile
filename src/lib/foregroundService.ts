@@ -37,6 +37,7 @@ type ServiceModule = {
   ) => Promise<string>;
   drainServiceLog: () => Promise<string[]>;
   drainPendingCancel: () => Promise<boolean>;
+  drainPendingTimeout?: () => Promise<boolean>;
   isScreenInteractive: () => Promise<boolean>;
 };
 
@@ -45,6 +46,9 @@ type ServiceModule = {
  * shared across the boundary, so a rename has to touch both.
  */
 export const EVENT_CANCEL_RECEIVING = "PeardropCancelReceiving";
+
+/** Must match `EVENT_SERVICE_TIMEOUT` in `TransferService.kt`, for the same reason. */
+export const EVENT_SERVICE_TIMEOUT = "PeardropServiceTimeout";
 
 const native: ServiceModule | undefined = (
   NativeModules as { PeardropTransferService?: ServiceModule }
@@ -220,6 +224,25 @@ export async function drainPendingCancel(): Promise<boolean> {
       "error",
       TAG,
       `fgs drainPendingCancel THREW ${String((err as Error)?.message || err)}`
+    );
+    return false;
+  }
+}
+
+/** The same fallback for a platform timeout whose live emit found no ReactContext. */
+export async function drainPendingTimeout(): Promise<boolean> {
+  if (!native?.drainPendingTimeout) return false;
+  try {
+    const pending = await native.drainPendingTimeout();
+    if (pending) {
+      debugLog("warn", TAG, `fgs pending timeout drained at=${Date.now()}`);
+    }
+    return !!pending;
+  } catch (err: unknown) {
+    debugLog(
+      "error",
+      TAG,
+      `fgs drainPendingTimeout THREW ${String((err as Error)?.message || err)}`
     );
     return false;
   }

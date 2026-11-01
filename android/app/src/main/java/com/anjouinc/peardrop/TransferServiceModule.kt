@@ -25,6 +25,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
       val context = reactApplicationContext
       TransferService.ensureChannels(context)
       val intent = Intent(context, TransferService::class.java)
+      TransferService.noteStartRequested()
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.startForegroundService(intent)
       } else {
@@ -32,6 +33,7 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
       }
       promise.resolve("started")
     } catch (e: Exception) {
+      TransferService.noteStartFailed()
       promise.resolve("error:${e.javaClass.simpleName}:${e.message ?: ""}")
     }
   }
@@ -40,7 +42,11 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
   fun stop(promise: Promise) {
     try {
       val context = reactApplicationContext
-      context.stopService(Intent(context, TransferService::class.java))
+      if (!TransferService.requestStop(context)) {
+        // The service stops itself once promoted, and its `onDestroy` clears both rows.
+        promise.resolve("deferred")
+        return
+      }
       // `stopService` is asynchronous, so both rows are cleared here too;
       // `cancel` on an already-cancelled id is a no-op.
       TransferService.clearRows(context)
@@ -108,6 +114,16 @@ class TransferServiceModule(reactContext: ReactApplicationContext) :
   fun drainPendingCancel(promise: Promise) {
     try {
       promise.resolve(TransferService.drainPendingCancel())
+    } catch (e: Exception) {
+      promise.resolve(false)
+    }
+  }
+
+  /** Drains a platform timeout that could not be delivered to JS. Clears as it reads, so the notice is posted once. */
+  @ReactMethod
+  fun drainPendingTimeout(promise: Promise) {
+    try {
+      promise.resolve(TransferService.drainPendingTimeout())
     } catch (e: Exception) {
       promise.resolve(false)
     }

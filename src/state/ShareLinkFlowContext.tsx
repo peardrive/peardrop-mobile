@@ -68,6 +68,7 @@ import { useToast } from "../ui/Toast";
 import { useDevMode } from "./devModeStorage";
 import RNFS from "react-native-fs";
 import { baseName } from "../lib/files";
+import { heldChoice, recordAutoGrab, type AutoGrabGuard } from "../lib/grabSettle";
 import { healShareFiles } from "../lib/receivedFileHealth";
 import { errorCause } from "../lib/errorMessage";
 import { ensurePermission as ensureNotificationPermission } from "../lib/notifications";
@@ -93,6 +94,19 @@ import {
   type WaitingLoop,
   type WaitingRow,
 } from "../lib/waitingLoop";
+import { subscribeWaitingTick } from "../lib/waitingTick";
+import {
+  describeSenderAlert,
+  EMPTY_SENDER_ALERT_STATE,
+  recordAlerts,
+  selectAlertable,
+  senderAlertId,
+  type SenderAlertCandidate,
+  type SenderAlertState,
+} from "../lib/senderAvailable";
+// A second statement against the same module on purpose: the aliased import above is pinned by a tripwire as an exact standalone line.
+import { notifySenderAvailable } from "../lib/notifications";
+import { senderAvailableAlertsSync } from "./senderAvailableStorage";
 import { previewHandoffFor, type ResolveHandoffKind } from "../lib/previewHandoff";
 import {
   disposeResolve,
@@ -276,6 +290,11 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   /** The loop is built once and reads its deps through refs, because a loop recreated on every render would restart its own round. */
   const lookupPeersRef = useRef(lookupPeers);
   lookupPeersRef.current = lookupPeers;
+  const appActiveRef = useRef(appActive);
+  appActiveRef.current = appActive;
+  /** Senders that answered in this round, held until the round ends so several become one alert. */
+  const senderAlertBatchRef = useRef<SenderAlertCandidate[]>([]);
+  const senderAlertStateRef = useRef<SenderAlertState>(EMPTY_SENDER_ALERT_STATE);
 
   /** Dismissing a preview tears the session down. Leaving it up keeps a peer attached on the host, which mints an
    *  upload transfer there and pins its foreground service for a share that was only ever looked at. */
@@ -928,6 +947,19 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   // Landed files are tracked per share and keyed by path, because the sweep re-runs every second.
   const landedAppliedRef = useRef<Map<string, Set<string>>>(new Map());
 
+  /** Names the engine reported saved, per share; the loop never re-fetches these. */
+  const engineSavedRef = useRef<Map<string, Set<string>>>(new Map());
+  const noteEngineSaved = useCallback((shareKey: string, names: readonly string[]) => {
+    const key = String(shareKey || "").toLowerCase();
+    if (!key || names.length === 0) return;
+    const set = engineSavedRef.current.get(key) ?? new Set<string>();
+    for (const n of names) set.add(baseName(n));
+    engineSavedRef.current.set(key, set);
+  }, []);
+
+  /** Consecutive automatic grabs the engine finished without the row settling. */
+  const autoGrabGuardRef = useRef<AutoGrabGuard>(new Map());
+
   /** A file is marked saved only on the engine's completion event, one file at a time as it lands. */
   // The saved count derives from the record's flags, whose only writer ran after the whole grab returned, so the count sat at zero and then jumped.
   const applyFilesLanded = useCallback(
@@ -946,6 +978,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         // Claimed before the await: the sweep can re-enter while this promise is open, and a claim made on completion would let the second pass rewrite the file.
         applied.add(file.localPath);
         try {
+          noteEngineSaved(key, [file.name]);
           await markFilesDownloaded(key, [
             { name: file.name, localPath: file.localPath, size: file.size },
           ]);
@@ -958,7 +991,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         }
       }
     },
-    [applyRowEvent],
+    [applyRowEvent, noteEngineSaved],
   );
 
   /** Bytes seen on the previous progress tick, per share. */
@@ -1021,22 +1054,24 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
   /** Where a grab ends, decided from the disk and nowhere else, through the one terminal both grab paths share. */
   // The engine's reply reports what it attempted; only the record knows what survived to disk. Short of the selection is a pause, never a failure.
   const settleGrabTerminal = useCallback(
-    async (shareKey: string, chosenNames: readonly string[]): Promise<void> => {
+    async (shareKey: string, chosenNames: readonly string[]): Promise<boolean> => {
       const chosen = chosenNames.map((n) => baseName(n));
-      if (chosen.length === 0) return;
-      const settled = await loadShare(shareKey);
-      const held = new Set(
-        (settled?.files ?? [])
-          .filter((f) => f.isDownloaded && f.localPath)
-          .map((f) => baseName(f.name)),
-      );
-      const savedCount = chosen.filter((n) => held.has(n)).length;
+      if (chosen.length === 0) return false;
+      const record = await loadShare(shareKey);
+      const key = String(shareKey || "").toLowerCase();
+      // The engine's own report that a file reached disk counts too, so one lost record write cannot reopen a finished grab.
+      const heldNamesNow = [
+        ...(record?.files ?? []).filter((f) => f.isDownloaded && f.localPath).map((f) => f.name),
+        ...(engineSavedRef.current.get(key) ?? []),
+      ];
+      const { held } = heldChoice(chosen, heldNamesNow);
+      const allHeld = held.length >= chosen.length;
       await applyRowEvent(
         shareKey,
-        savedCount >= chosen.length
-          ? { type: "ALL_DONE", filesDone: savedCount }
-          : { type: "PEER_LOST" },
+        allHeld ? { type: "ALL_DONE", filesDone: held.length } : { type: "PEER_LOST" },
       );
+      if (allHeld) engineSavedRef.current.delete(key);
+      return allHeld;
     },
     [applyRowEvent],
   );
@@ -1356,6 +1391,10 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         // The engine carries on past a stalled file and returns success with the survivors, so a non-empty failure list is the only in-band signal the sender went away.
         const terminalKey = lastResolvedLink ? extractKey(lastResolvedLink) : null;
         if (terminalKey) {
+          noteEngineSaved(
+            terminalKey,
+            fetchedFiles.map((f) => f.name),
+          );
           // A cancel drops the selection and leaves the after-grab cycle.
           if (wasCancelled) {
             // A user stop keeps the selection and the percentage so the picker can offer Resume.
@@ -1427,6 +1466,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       applyRowEvent,
       armGrabToast,
       bindDriveToShare,
+      noteEngineSaved,
       // `linkError` was here solely for the no-session guard's `if (!linkError)`.
       // That read is gone, so the dep is too.
     ],
@@ -1500,10 +1540,12 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
 
       /** The same fetch-and-keep split the user-started grab does. */
       // Handing the whole surviving selection over on every resumed round re-fetched files already on disk, which collide into suffixed names and a new record entry each time.
-      const { fetch: resumeFetch, keep: resumeKeep } = partitionGrabNames(
+      const { fetch: partitioned, keep: resumeKeep } = partitionGrabNames(
         share.files,
         present,
       );
+      const reported = Array.from(engineSavedRef.current.get(share.shareKey) ?? []);
+      const resumeFetch = heldChoice(partitioned, reported).missing;
       if (resumeFetch.length === 0) {
         // Everything selected is held, so settle here rather than call the engine and re-fetch what is on disk.
         await settleGrabTerminal(share.shareKey, present);
@@ -1521,6 +1563,10 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         return;
       }
       const got = dl?.files ?? [];
+      noteEngineSaved(
+        share.shareKey,
+        got.map((f) => f.name),
+      );
       if (got.length > 0) {
         try {
           await markFilesDownloaded(
@@ -1540,7 +1586,23 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       }
       /** The one terminal, measured against the whole selection rather than the engine's reply, which reports what was attempted and not what reached disk. */
       // The kept files are part of the answer to "do I hold everything the user chose", even though this round did not request them.
-      await settleGrabTerminal(share.shareKey, present);
+      const settled = await settleGrabTerminal(share.shareKey, present);
+      const engineComplete =
+        dl?.ok === true && dl.cancelled !== true && (dl.failed?.length ?? 0) === 0;
+      const verdict = recordAutoGrab(autoGrabGuardRef.current, share.shareKey, {
+        engineComplete,
+        settled,
+      });
+      autoGrabGuardRef.current = verdict.guard;
+      if (verdict.stop) {
+        // A guard, not a cure: the loop stops grabbing this row and the selection waits for the user.
+        debugLog(
+          "warn",
+          "rn.waiting",
+          `auto-grab stopped ${share.shareKey.slice(0, 8)} - ${verdict.streak} finished grabs did not settle`,
+        );
+        await applyRowEvent(share.shareKey, { type: "USER_STOP" });
+      }
     },
     [
       openLink,
@@ -1549,6 +1611,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       applyRowEvent,
       settleGrabTerminal,
       bindDriveToShare,
+      noteEngineSaved,
     ],
   );
 
@@ -1564,6 +1627,16 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
           return;
         }
         await reconcileShareRecord(out, share.shareLink);
+        /** Backgrounded, and the row still needs the user to choose: the alert is the only way they learn, and it is batched so several senders are one notification. */
+        // A queued row never reaches here; it falls through to the resume below and the Receiving row shows it.
+        if (!appActiveRef.current) {
+          senderAlertBatchRef.current.push({
+            shareKey: share.shareKey,
+            shareName: out.shareName || share.shareName,
+            shareLink: share.shareLink,
+          });
+          return;
+        }
         showToast(senderAvailableToast(out.shareName || share.shareName), { kind: "info" });
         haptics.actionDone();
         return;
@@ -1572,6 +1645,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     },
     [openLink, reconcileShareRecord, resumeWaitingRow, showToast],
   );
+
+  /** Assigned below, once the flush exists; the loop is built before it. */
+  const flushSenderAlertsRef = useRef<() => Promise<void>>(async () => {});
 
   const onSenderFoundRef = useRef(onSenderFound);
   onSenderFoundRef.current = onSenderFound;
@@ -1611,19 +1687,66 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
         await patchShare(shareKey, { emptyChecks: 0, lastCheckedAt: undefined, touch: false });
       },
       isBusy: (shareKey) => busyRowsRef.current.has(shareKey),
+      // One flush per finished round, so a tick that lands mid-round cannot split its senders into separate alerts.
+      onRoundEnd: () => flushSenderAlertsRef.current(),
       log: (level, msg) => debugLog(level, "rn.waiting", msg),
     });
   }
 
-  // The loop runs only while the app is visible — mode A. `releaseLookup` on
-  // the background transition is the engine half of the same rule.
+  /** The loop runs whenever the engine is up, in either app state. Its own timer is the foreground cadence; the worklet's `waiting-tick` is the background one. */
+  // Not gated on `appActive`: a stop on backgrounding would retire the loop in the one state the tick exists to cover.
   useEffect(() => {
     const loop = waitingLoopRef.current;
     if (!loop) return;
-    if (ready && appActive) loop.start();
+    if (ready) loop.start();
     else loop.stop();
     return () => loop.stop();
-  }, [ready, appActive]);
+  }, [ready]);
+
+  /** One notification for the senders a round found, so ten waiting rows against one flaky sender are not ten alerts. */
+  const flushSenderAlerts = useCallback(async () => {
+    const batch = senderAlertBatchRef.current;
+    senderAlertBatchRef.current = [];
+    if (batch.length === 0) return;
+    if (!senderAvailableAlertsSync()) {
+      debugLog("info", "rn.waiting", `sender alerts off — ${batch.length} suppressed`);
+      return;
+    }
+    const now = Date.now();
+    const allowed = selectAlertable(batch, senderAlertStateRef.current, now);
+    if (allowed.length === 0) {
+      debugLog("info", "rn.waiting", `sender alerts rate-limited — ${batch.length} suppressed`);
+      return;
+    }
+    const alert = describeSenderAlert(allowed);
+    if (!alert) return;
+    senderAlertStateRef.current = recordAlerts(
+      senderAlertStateRef.current,
+      allowed.map((c) => c.shareKey),
+      now,
+    );
+    debugLog("info", "rn.waiting", `sender alert posted for ${allowed.length} row(s)`);
+    await notifySenderAvailable({
+      title: alert.title,
+      body: alert.body,
+      link: alert.link,
+      identifier: senderAlertId(alert.shareKey),
+    });
+  }, []);
+  flushSenderAlertsRef.current = flushSenderAlerts;
+
+  /** The worklet's wake, which is the loop's only cadence while backgrounded. */
+  // Foreground rounds are left to the loop's own timer: running both would double every lookup round the moment the app came back.
+  useEffect(() => {
+    if (!ready) return;
+    return subscribeWaitingTick((tick) => {
+      if (appActiveRef.current) return;
+      const loop = waitingLoopRef.current;
+      if (!loop) return;
+      debugLog("info", "rn.waiting", `worklet wake tick=${tick}`);
+      void loop.runOnce();
+    });
+  }, [ready]);
 
   /** A record stored in flight when the process died is paused as a restart, not blamed on the sender. */
   // Once per process, gated through a ref, or a second sweep re-pauses a row that had legitimately resumed.
