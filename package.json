@@ -16,7 +16,8 @@
     "lint": "eslint . --ext .ts,.tsx,.js,.mjs",
     "check:encoding": "node scripts/check-encoding.mjs",
     "check:copy": "node scripts/check-copy.mjs",
-    "check:copy:selftest": "node scripts/check-copy.mjs --selftest"
+    "check:copy:selftest": "node scripts/check-copy.mjs --selftest",
+    "deliver:android": "bash scripts/deliver-apk.sh"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^2.2.0",

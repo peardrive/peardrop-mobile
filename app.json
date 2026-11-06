@@ -25,7 +25,11 @@
         "backgroundColor": "#201e1f"
       },
       "package": "com.anjouinc.peardrop",
-      "versionCode": 9
+      "versionCode": 9,
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "plugins": [
       [
