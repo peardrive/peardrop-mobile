@@ -185,8 +185,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // These two are prebuild output: the app manifest is the source of truth and a regeneration rewrites them from it.
         // Bumping them here and not there is reverted by the next prebuild without a word, so keep them identical to what it would emit.
-        versionCode 9
-        versionName "0.4.0"
+        versionCode 10
+        versionName "0.4.1"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
         buildConfigField "boolean", "DEV_INSTRUMENTATION", "${devInstrumentation}"

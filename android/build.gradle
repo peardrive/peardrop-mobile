@@ -12,17 +12,8 @@ buildscript {
   }
 }
 
-// react-native-b4a, react-native-bare-kit and react-native-fs each declare
-// their own buildscript with `classpath 'com.android.tools.build:gradle:+'`
-// (or an ancient pin) resolved against mavenCentral() only. Two things are
-// needed to tame them:
-//   1. force the AGP the app module already uses (was: resolves to an alpha
-//      that requires Gradle 9 and fails this Gradle 8.x build), and
-//   2. give those subproject buildscripts google() — AGP is published there,
-//      NOT on mavenCentral, so without this the forced version can't be found
-//      ("Could not find com.android.tools.build:gradle:8.11.0"). It only built
-//      before on machines that already had AGP cached under ~/.gradle.
-// Remove once those packages pin their own selector + repo upstream.
+// react-native-b4a, -bare-kit and -fs ask for AGP `+` from mavenCentral only: force the app's AGP,
+// and add google() because AGP is not on mavenCentral, so an uncached machine cannot resolve it.
 subprojects {
   buildscript {
     repositories {

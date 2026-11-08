@@ -177,7 +177,9 @@ export type BackendEvent =
   | { type: "host-idle-grace-elapsed"; driveId?: string; idleMs?: number; at?: number }
   /** The waiting loop's cadence while backgrounded, on the engine's alive ticker because RN's timers are dead in that state. */
   // A wake and not a verdict: which rows are due stays with the loop, and every field is optional so an older worklet reads as no wake.
-  | { type: "waiting-tick"; tick?: number; at?: number };
+  | { type: "waiting-tick"; tick?: number; at?: number }
+  /** A DHT node saw the interfaces change, coalesced per change across swarms. */
+  | { type: "network-changed"; at?: number };
 
 /**
  * The canonical drive-file shape: one concept, one type. Several shapes spell

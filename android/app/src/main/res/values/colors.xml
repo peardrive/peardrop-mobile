@@ -1,5 +1,6 @@
 <resources>
-  <color name="splashscreen_background">#0f2238</color>
+  <!-- black in every theme by owner choice, independent of the intro's theme colours -->
+  <color name="splashscreen_background">#000000</color>
   <!-- adaptive-icon background, matching icon.png's own corners
        and app.json's android.adaptiveIcon.backgroundColor. Mirrored by hand
        because the mipmaps are regenerated in-tree rather than by prebuild;

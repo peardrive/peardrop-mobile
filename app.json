@@ -2,7 +2,7 @@
   "expo": {
     "name": "PearDrop",
     "slug": "peardrop-mobile",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "newArchEnabled": true,
     "orientation": "portrait",
     "scheme": ["peardrop.mobile", "peardrop"],
@@ -12,7 +12,7 @@
     "splash": {
       "image": "./assets/images/splash.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0f2238"
+      "backgroundColor": "#000000"
     },
     "ios": {
       "supportsTablet": true,
@@ -24,8 +24,17 @@
         "monochromeImage": "./assets/images/monochrome-icon.png",
         "backgroundColor": "#201e1f"
       },
+      "splash": {
+        "image": "./assets/images/splash.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#000000",
+        "dark": {
+          "image": "./assets/images/splash.png",
+          "backgroundColor": "#000000"
+        }
+      },
       "package": "com.anjouinc.peardrop",
-      "versionCode": 9,
+      "versionCode": 10,
       "blockedPermissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.SYSTEM_ALERT_WINDOW"

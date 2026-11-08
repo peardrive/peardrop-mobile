@@ -919,11 +919,75 @@ function ensureDownloadTracking(session) {
   bindHyperdriveDownloadTracking(session);
 }
 
+// Every host swarm's DHT node watches the interfaces, so one change arrives once per swarm.
+const NETWORK_CHANGE_COALESCE_MS = 1000;
+let lastNetworkChangeAt = 0;
+
+function noteNetworkChange() {
+  const now = Date.now();
+  if (now - lastNetworkChangeAt < NETWORK_CHANGE_COALESCE_MS) return;
+  lastNetworkChangeAt = now;
+  binfo("engine.swarm", `interface change seen at=${now}`);
+  emitEvent({ type: "network-changed", at: now });
+}
+
+const SWARM_KEYPAIR_FILE = "swarm-keypair.json";
+
+function isSwarmKeyPair(kp) {
+  return (
+    kp.publicKey.byteLength === 32 &&
+    kp.secretKey.byteLength === 64 &&
+    b4a.equals(kp.secretKey.subarray(32), kp.publicKey)
+  );
+}
+
+// One keypair per drive, inside the drive's folder so every purge removes it with the storage.
+// A stable host identity overwrites its own DHT record on restart instead of adding a dead one.
+async function swarmKeyPairFor(driveId, storagePath) {
+  if (!storagePath) return null;
+  const file = path.join(storagePath, SWARM_KEYPAIR_FILE);
+  try {
+    const raw = JSON.parse(b4a.toString(await fs.readFile(file), "utf8"));
+    const kp = {
+      publicKey: b4a.from(String(raw?.publicKey ?? ""), "hex"),
+      secretKey: b4a.from(String(raw?.secretKey ?? ""), "hex"),
+    };
+    if (isSwarmKeyPair(kp)) {
+      binfo(
+        "engine.swarm",
+        `swarm keypair loaded drive=${driveId} pub=${b4a.toString(kp.publicKey, "hex").slice(0, 12)}`,
+      );
+      return kp;
+    }
+    bwarn("engine.swarm", `swarm keypair invalid, replacing drive=${driveId} path=${file}`);
+  } catch (err) {
+    // Path only: a parse error message can quote the file's contents.
+    if (err?.code !== "ENOENT") {
+      bwarn("engine.swarm", `swarm keypair unreadable, replacing drive=${driveId} path=${file}`);
+    }
+  }
+  const kp = HyperDHT.keyPair();
+  try {
+    await atomicWriteJson(file, {
+      publicKey: b4a.toString(kp.publicKey, "hex"),
+      secretKey: b4a.toString(kp.secretKey, "hex"),
+    });
+  } catch {
+    bwarn("engine.swarm", `swarm keypair not saved drive=${driveId} path=${file}; hosting with it anyway`);
+  }
+  binfo(
+    "engine.swarm",
+    `swarm keypair created drive=${driveId} pub=${b4a.toString(kp.publicKey, "hex").slice(0, 12)}`,
+  );
+  return kp;
+}
+
 // Attach a fresh Hyperswarm session to a hosted or rehydrated drive, hooking the same upload and
 // peer lifecycle `engineShareFromPaths` installs so the two behave identically.
-function attachHostSwarm(session) {
+function attachHostSwarm(session, keyPair) {
   const { driveId, drive, store, totalBytes } = session;
-  const swarm = new Hyperswarm();
+  const swarm = new Hyperswarm(keyPair ? { keyPair } : {});
+  swarm.dht.on("network-change", noteNetworkChange);
 
   swarm.on("connection", (socket, peerInfo) => {
     const hex = peerInfo?.publicKey?.toString?.("hex");
@@ -1322,7 +1386,10 @@ export async function engineHydrateDrives() {
               `files=${Array.isArray(entry.files) ? entry.files.length : 0} — re-share`,
           );
         }
-        session.swarm = attachHostSwarm(session);
+        session.swarm = attachHostSwarm(
+          session,
+          await swarmKeyPairFor(entry.driveId, entry.storagePath),
+        );
       }
 
       activeDrives.set(entry.driveId, session);
@@ -1343,10 +1410,6 @@ export async function engineHydrateDrives() {
       recordHydrateFailure(entry.driveId, String(err?.message || err), err);
       failed++;
     }
-
-    if (targetState === DriveState.ACTIVE) {
-      await new Promise((r) => setTimeout(r, 500));
-    }
   }
 
   binfo(
@@ -1366,7 +1429,7 @@ export async function engineRefreshSwarm() {
   const flushes = [];
   let reannounced = 0;
 
-  // Runs on a 90 s foreground interval and every background→active transition, and it used to be
+  // Runs on the foreground interval, a network change and every background→active transition, and it used to be
   // silent. "It worked, then peers stopped finding me" is answered from this loop.
   bdebug("engine.swarm", `refresh start: ${activeDrives.size} active drive(s)`);
 
@@ -1809,7 +1872,7 @@ export async function engineShareFromPaths(paths, relPaths, shareName) {
       shareLink: createShareLink(key),
     };
 
-    const swarm = attachHostSwarm(session);
+    const swarm = attachHostSwarm(session, await swarmKeyPairFor(driveId, drivePath));
     session.swarm = swarm;
 
     activeDrives.set(driveId, session);
@@ -3824,7 +3887,12 @@ export async function engineActivateDrive(driveId, opts) {
     let mode = previousMode;
     try {
       if (!existing.swarm) {
-        existing.swarm = attachHostSwarm(existing);
+        const keyPair = await swarmKeyPairFor(
+          driveId,
+          existing.metadata?.storagePath ?? entry?.storagePath,
+        );
+        // Re-checked after the await, so two overlapping activates never attach two swarms.
+        if (!existing.swarm) existing.swarm = attachHostSwarm(existing, keyPair);
         mode = currentSwarmMode(existing);
       } else if (existing.discovery && !existing.discovery.destroyed) {
         await existing.discovery.refresh({ server: serve, client: true });
@@ -3944,7 +4012,7 @@ export async function engineActivateDrive(driveId, opts) {
       files: toDriveFileRefs(entry.files),
       shareName: entry.name,
     };
-    const swarm = attachHostSwarm(session);
+    const swarm = attachHostSwarm(session, await swarmKeyPairFor(driveId, entry.storagePath));
     session.swarm = swarm;
 
     activeDrives.set(driveId, session);

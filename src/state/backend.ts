@@ -131,6 +131,11 @@ import { notifyWaitingTick } from "../lib/waitingTick";
 import { countRowsWaiting } from "../lib/waitingStatus";
 import { WAITING_WAKE_MAX_GAP_MS } from "../lib/waitingBudget";
 import {
+  FOREGROUND_REFRESH_MS,
+  createNetworkRefresh,
+  type NetworkRefresh,
+} from "../lib/networkRefresh";
+import {
   advanceWaitingSpan,
   describeWaitingBudget,
   hydrateWaitingBudget,
@@ -346,6 +351,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
   // received via a link. Backend events do not reliably distinguish them.
   const hostedIdsRef = useRef<Set<string>>(new Set());
   const receivedIdsRef = useRef<Set<string>>(new Set());
+  const networkRefreshRef = useRef<NetworkRefresh | null>(null);
   /**
    * Drive ids belonging to a simulated download. Read only by the
    * foreground-service decision line, so an exported log can never show a
@@ -1557,6 +1563,13 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
               handleWaitingWakeRef.current(typeof evt.tick === "number" ? evt.tick : 0);
               return;
             }
+            // Foreground only: background behaviour is the waiting loop's, and stays as it is.
+            if (evt.type === "network-changed") {
+              const active = AppState.currentState === "active";
+              debugLog("info", "rn.netchange", `network change at=${evt.at ?? "?"} foreground=${active}`);
+              if (active) networkRefreshRef.current?.note();
+              return;
+            }
             if (evt.type === "listening") {
               setStatus("listening");
               appendStateLog("Backend listening.");
@@ -2396,21 +2409,26 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
 
   // AppState-driven swarm refresh. On background → active, one immediate
   // refresh so a returning user sees announces propagate. While active, a
-  // heartbeat keeps DHT presence fresh at an interval short enough to feel
-  // responsive after a Wi-Fi roam and long enough not to provoke aggressive
-  // battery-saver throttling. On active → background, clear the interval:
-  // the OS may suspend the process anyway, and a resumed app catches up on
-  // the next active transition.
+  // heartbeat keeps DHT presence fresh, and a network change (a Wi-Fi roam)
+  // earns one debounced refresh at once rather than waiting for the next beat.
+  // On active → background, clear both: the OS may suspend the process
+  // anyway, and a resumed app catches up on the next active transition.
   useEffect(() => {
     if (!ready) return;
     let intervalId: ReturnType<typeof setInterval> | null = null;
+    const networkRefresh = createNetworkRefresh(() => {
+      debugLog("info", "rn.netchange", `refresh after network change at=${Date.now()}`);
+      void refreshSwarm();
+    });
+    networkRefreshRef.current = networkRefresh;
     const startInterval = () => {
       if (intervalId) return;
       intervalId = setInterval(() => {
         void refreshSwarm();
-      }, 90_000);
+      }, FOREGROUND_REFRESH_MS);
     };
     const stopInterval = () => {
+      networkRefresh.cancel();
       if (intervalId) {
         clearInterval(intervalId);
         intervalId = null;
@@ -2487,6 +2505,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     const sub = AppState.addEventListener("change", onChange);
     return () => {
       stopInterval();
+      networkRefreshRef.current = null;
       sub.remove();
     };
   }, [
@@ -2497,7 +2516,7 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
     markBackgrounded,
     applyServiceForBackground,
     // Stable: its only dep is `appendErrorLog`, which is `useCallback(…, [])`.
-    // An unstable value here would re-arm the 90 s interval on every render.
+    // An unstable value here would re-arm the refresh interval on every render.
     releaseLookup,
     rowsWaitingNow,
   ]);

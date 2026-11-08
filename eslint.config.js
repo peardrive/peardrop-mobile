@@ -47,6 +47,9 @@ module.exports = [
       "scripts/**/*.{js,mjs,cjs}",
       "backend/__poc__/**/*.{js,mjs,cjs}",
       "agent-pack/fix-2026-09/harness/**/*.{js,mjs,cjs}",
+      "agent-pack/desktop-2026-11/harness/**/*.{js,mjs,cjs}",
+      "agent-pack/engine-2026-11/harness/**/*.{js,mjs,cjs}",
+      "agent-pack/parity-2026-11/harness/**/*.{js,mjs,cjs}",
     ],
     languageOptions: {
       globals: {

@@ -1,1 +1,4 @@
-<resources/>
+<resources>
+  <!-- black in every theme by owner choice, independent of the intro's theme colours -->
+  <color name="splashscreen_background">#000000</color>
+</resources>
