@@ -30,8 +30,17 @@ function countRefused() {
 }
 
 /** Wire the emitter. Called once from backend.mjs at RPC construction. */
+let emitWired = false;
+
 export function setLogEmit(fn) {
   emitLog = typeof fn === "function" ? fn : () => {};
+  emitWired = typeof fn === "function";
+  if (!emitWired) return;
+  while (early.length > 0) {
+    try {
+      emitLog(early.shift());
+    } catch {}
+  }
 }
 
 /**
@@ -81,19 +90,34 @@ function clamp(s) {
   return str.length <= MAX_MSG ? str : `${str.slice(0, MAX_MSG - 13)}…[truncated]`;
 }
 
+/** Warnings and errors are always recorded, so a user who never turned Debugging on still has
+ *  something to send when PearDrop fails. The flag adds the detailed (debug/info) trace. */
+function alwaysRecorded(level) {
+  return level === "warn" || level === "error";
+}
+
+/** Problem lines written before RN wired the emitter (a boot failure), held until it is. */
+const early = [];
+const EARLY_MAX = 50;
+
 export function blog(level, tag, msg) {
-  if (!enabled) {
+  if (!enabled && !alwaysRecorded(level)) {
     countRefused();
     return;
   }
+  const entry = {
+    type: "log",
+    level,
+    tag: String(tag || "backend"),
+    msg: clamp(msg),
+    at: Date.now(),
+  };
+  if (!emitWired) {
+    if (early.length < EARLY_MAX) early.push(entry);
+    return;
+  }
   try {
-    emitLog({
-      type: "log",
-      level,
-      tag: String(tag || "backend"),
-      msg: clamp(msg),
-      at: Date.now(),
-    });
+    emitLog(entry);
   } catch {
     // Never let instrumentation break the path it's instrumenting.
   }

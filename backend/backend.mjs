@@ -1,3 +1,5 @@
+// Must stay the first import: it installs the crash handlers before anything else can fail.
+import "./crash-guard.mjs";
 import b4a from "b4a";
 import RPC from "bare-rpc";
 

@@ -972,8 +972,8 @@ export default function SettingsScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.followLabel}>Debugging</Text>
             <Text style={styles.followHint}>
-              Record a detailed log so a bug can be traced. Leave this off
-              unless you&apos;re chasing a problem.
+              PearDrop always keeps a small log of problems. Turn this on to
+              record every step too, when you&apos;re chasing a bug.
             </Text>
           </View>
           <Switch
@@ -983,48 +983,48 @@ export default function SettingsScreen() {
           />
         </View>
 
-        {debugEnabled ? (
-          <View style={styles.debugPanel}>
-            <Text style={styles.debugMeta}>
-              {logBytes > 0
-                ? `Log size ${formatBytes(logBytes)} · caps at ${formatBytes(
-                    maxOnDiskBytes(),
-                  )}`
-                : "Nothing logged yet."}
-            </Text>
-            <Text style={styles.debugWarn}>
-              Exported logs are raw — they can include file names, folder
-              paths and share keys.
-            </Text>
-            <View style={styles.debugActions}>
-              <Pressable
-                onPress={() => setLabelPromptOpen(true)}
-                disabled={exportBusy}
-                style={[styles.debugBtn, exportBusy && styles.debugBtnDisabled]}
-                accessibilityRole="button"
-                accessibilityLabel="Export log"
-              >
-                <Ionicons
-                  name="share-outline"
-                  size={16}
-                  color={theme.onPrimary}
-                />
-                <Text style={styles.debugBtnText}>
-                  {exportBusy ? "Exporting…" : "Export log"}
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void onManualReset()}
-                style={styles.debugBtnGhost}
-                accessibilityRole="button"
-                accessibilityLabel="Reset log"
-              >
-                <Ionicons name="trash-outline" size={16} color={theme.danger} />
-                <Text style={styles.debugBtnGhostText}>Reset</Text>
-              </Pressable>
-            </View>
+        {/* Always shown: problems are logged even with Debugging off, and a user hit by a crash
+            needs a way to send the log without being told about a switch first. */}
+        <View style={styles.debugPanel}>
+          <Text style={styles.debugMeta}>
+            {logBytes > 0
+              ? `Log size ${formatBytes(logBytes)} · caps at ${formatBytes(
+                  maxOnDiskBytes(),
+                )}`
+              : "Nothing logged yet."}
+          </Text>
+          <Text style={styles.debugWarn}>
+            Exported logs are raw — they can include file names, folder
+            paths and share keys.
+          </Text>
+          <View style={styles.debugActions}>
+            <Pressable
+              onPress={() => setLabelPromptOpen(true)}
+              disabled={exportBusy}
+              style={[styles.debugBtn, exportBusy && styles.debugBtnDisabled]}
+              accessibilityRole="button"
+              accessibilityLabel="Export log"
+            >
+              <Ionicons
+                name="share-outline"
+                size={16}
+                color={theme.onPrimary}
+              />
+              <Text style={styles.debugBtnText}>
+                {exportBusy ? "Exporting…" : "Export log"}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => void onManualReset()}
+              style={styles.debugBtnGhost}
+              accessibilityRole="button"
+              accessibilityLabel="Reset log"
+            >
+              <Ionicons name="trash-outline" size={16} color={theme.danger} />
+              <Text style={styles.debugBtnGhostText}>Reset</Text>
+            </Pressable>
           </View>
-        ) : null}
+        </View>
 
         {/* The version row is ungated, because "read me the version" has to
             be answerable on the build someone actually runs. Three

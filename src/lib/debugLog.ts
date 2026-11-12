@@ -23,7 +23,8 @@ import { buildIdentity, describeBuild } from "./devGate";
  * its lines over the RPC event channel and `logFromBackend()` feeds them in
  * here. The file is never written from the worklet — two realms appending to
  * one path with no lock produce interleaved, torn lines. Write policy is
- * buffer + flush. Flag OFF means off: no buffer, no timer, no file handle.
+ * buffer + flush. Warnings and errors are always written; the Debugging flag
+ * adds the detailed debug/info trace.
  */
 
 const LIVE_PATH = `${RNFS.DocumentDirectoryPath}/peardrop-debug.log`;
@@ -106,12 +107,18 @@ const changeGates: Map<string, { signature: string; at: number }> = new Map();
 /** BLAKE2b content hash of the packed worklet bundle, once someone parses it. */
 let workletBundleId: string | null = null;
 
+/** Warnings and errors are always recorded, so a user who never turned Debugging on still has a
+ *  log to send when something breaks. The flag adds the detailed debug/info trace on top. */
+function accepts(level: LogLevel): boolean {
+  return enabled || level === "warn" || level === "error";
+}
+
 // Hot path
 
 /** Record one entry. No-ops when debugging is off, which is what makes "flag
  *  OFF = zero overhead" true and lets every call site stay unconditional. */
 export function log(level: LogLevel, tag: string, msg: string): void {
-  if (!enabled) return;
+  if (!accepts(level)) return;
   push(formatEntry(Date.now(), level, tag, msg), level, tag, msg);
 }
 
@@ -163,7 +170,6 @@ export const logError = (tag: string, msg: string) => log("error", tag, msg);
  *  Flattening to `String(err.message)` loses the taxonomy at exactly the
  *  moment it is useful; `formatStructuredError` keeps all four fields. */
 export function logStructuredError(tag: string, context: string, err: unknown): void {
-  if (!enabled) return;
   const rendered = formatStructuredError(err);
   const msg = `${context} — ${rendered}`;
   push(formatEntry(Date.now(), "error", tag, msg), "error", tag, msg);
@@ -176,10 +182,10 @@ export function logFromBackend(entry: {
   msg?: string;
   at?: number;
 }): void {
-  if (!enabled) return;
   const level = (["debug", "info", "warn", "error"].includes(String(entry.level))
     ? entry.level
     : "info") as LogLevel;
+  if (!accepts(level)) return;
   const at = typeof entry.at === "number" ? entry.at : Date.now();
   // Backend lines already carry their own tag (e.g. "engine.open"); prefix
   // so the realm is obvious when reading a mixed stream.
@@ -190,7 +196,7 @@ export function logFromBackend(entry: {
 
 /** Convenience for logging arbitrary structured payloads. */
 export function logValue(level: LogLevel, tag: string, label: string, value: unknown): void {
-  if (!enabled) return;
+  if (!accepts(level)) return;
   const msg = `${label} ${stringifyDetail(value)}`;
   push(formatEntry(Date.now(), level, tag, msg), level, tag, msg);
 }
@@ -337,8 +343,66 @@ async function readIfPresent(path: string): Promise<string> {
 export function initDebugLog(): void {
   if (initialized) return;
   initialized = true;
+  // Problems are recorded even with Debugging off, so the writer always runs.
+  startTimer();
+  attachAppState();
+  void statSize(LIVE_PATH).then((n) => {
+    liveBytes = n;
+  });
+  installGlobalErrorHandler();
+  void importWorkletCrashes();
   subscribeDebugLogging((next) => {
     void applyEnabled(next);
+  });
+}
+
+/** Written by the worklet's crash guard (backend/crash-guard.mjs) when it may not be able to
+ *  reach RN, e.g. a native addon failing during boot. */
+const WORKLET_CRASH_PATH = `${RNFS.DocumentDirectoryPath}/peardrop-crash.log`;
+
+/** Fold any crash the worklet recorded into the log, then remove the file. */
+async function importWorkletCrashes(): Promise<void> {
+  const text = await readIfPresent(WORKLET_CRASH_PATH);
+  if (!text) return;
+  log("error", "crash", `worklet crash file from an earlier run:\n${text.trim()}`);
+  log("warn", "build", describeBuild());
+  await flush();
+  try {
+    await RNFS.unlink(WORKLET_CRASH_PATH);
+  } catch {}
+}
+
+type GlobalHandler = (error: unknown, isFatal?: boolean) => void;
+
+/** Record any JS error that reaches React Native's global handler, then hand it on unchanged.
+ *  For a fatal one the default handler is delayed until the line is on disk (bounded). */
+function installGlobalErrorHandler(): void {
+  const eu = (globalThis as { ErrorUtils?: { getGlobalHandler(): GlobalHandler; setGlobalHandler(h: GlobalHandler): void } })
+    .ErrorUtils;
+  if (!eu) return;
+  const previous = eu.getGlobalHandler();
+  eu.setGlobalHandler((error, isFatal) => {
+    try {
+      const e = error as { name?: string; message?: string; stack?: string };
+      log(
+        "error",
+        "crash",
+        `${isFatal ? "fatal" : "non-fatal"} JS error: ${e?.name ?? "Error"}: ${e?.message ?? String(error)}\n${e?.stack ?? ""}`
+      );
+      if (isFatal) log("warn", "build", describeBuild());
+    } catch {}
+    if (!isFatal) {
+      previous(error, isFatal);
+      return;
+    }
+    let handed = false;
+    const handOn = () => {
+      if (handed) return;
+      handed = true;
+      previous(error, isFatal);
+    };
+    void flush().then(handOn, handOn);
+    setTimeout(handOn, 500);
   });
 }
 
@@ -365,8 +429,7 @@ async function applyEnabled(next: boolean): Promise<void> {
     log("info", "debug", "=== debug logging disabled ===");
     await flush();
     enabled = false;
-    stopTimer();
-    detachAppState();
+    // The timer and AppState drain stay up: warnings and errors are still recorded.
     buffer = [];
     bufferBytes = 0;
     // Off means off: holding the carry-forward set across an off period would
@@ -384,11 +447,6 @@ function startTimer(): void {
   }, FLUSH_INTERVAL_MS);
 }
 
-function stopTimer(): void {
-  if (!flushTimer) return;
-  clearInterval(flushTimer);
-  flushTimer = null;
-}
 
 function attachAppState(): void {
   if (appStateSub) return;
@@ -400,13 +458,6 @@ function attachAppState(): void {
   appStateSub = AppState.addEventListener("change", onChange);
 }
 
-function detachAppState(): void {
-  if (!appStateSub) return;
-  try {
-    appStateSub.remove();
-  } catch {}
-  appStateSub = null;
-}
 
 export function isDebugLogEnabled(): boolean {
   return enabled;
