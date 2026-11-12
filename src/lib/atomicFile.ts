@@ -40,6 +40,14 @@ async function bestEffortUnlink(path: string): Promise<void> {
   }
 }
 
+async function existsSafe(path: string): Promise<boolean> {
+  try {
+    return await RNFS.exists(path);
+  } catch {
+    return false;
+  }
+}
+
 async function writeOnce(path: string, json: string): Promise<void> {
   const tmp = tempPathFor(path);
   try {
@@ -51,6 +59,20 @@ async function writeOnce(path: string, json: string): Promise<void> {
   try {
     await RNFS.moveFile(tmp, path);
   } catch (err) {
+    // iOS's moveFile (NSFileManager moveItemAtPath) refuses to replace an existing file, so on
+    // iOS every write after a store's first one failed here and the store never changed again.
+    // Replace it by hand. A crash between the unlink and the move leaves only `<path>.tmp`,
+    // which `readJsonFile` promotes back into place.
+    if (await existsSafe(path)) {
+      try {
+        await RNFS.unlink(path);
+        await RNFS.moveFile(tmp, path);
+        return;
+      } catch (retryErr) {
+        await bestEffortUnlink(tmp);
+        throw retryErr;
+      }
+    }
     await bestEffortUnlink(tmp);
     throw err;
   }
@@ -99,7 +121,18 @@ async function preserveUnreadable(
  *  see `JsonReadResult` and `preserveUnreadable`. */
 export async function readJsonFile<T = unknown>(path: string): Promise<JsonReadResult<T>> {
   try {
-    if (!(await RNFS.exists(path))) return { status: "missing" };
+    if (!(await RNFS.exists(path))) {
+      // A write interrupted between removing the old file and moving the new one into place
+      // (iOS path in writeOnce) leaves the complete new copy at `<path>.tmp`. Promote it.
+      const tmp = tempPathFor(path);
+      if (!(await existsSafe(tmp))) return { status: "missing" };
+      try {
+        await RNFS.moveFile(tmp, path);
+        logWarn("rn.store", `recovered ${path} from its temp file`);
+      } catch {
+        return { status: "missing" };
+      }
+    }
   } catch (err) {
     // `exists` itself failing is an I/O condition, not evidence of absence.
     return { status: "unreadable", movedAside: await preserveUnreadable(path, "unreadable", err) };
