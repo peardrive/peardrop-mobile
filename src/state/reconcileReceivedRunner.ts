@@ -6,7 +6,9 @@ import {
 } from "../lib/reconcileReceived";
 import { appendDownloadResults, loadDownloaded } from "./receivedFilesStorage";
 // The recovery must reach the store the rendered list is built from.
-import { markFilesDownloaded } from "./receivedSharesStorage";
+import { loadShares, markFilesDownloaded } from "./receivedSharesStorage";
+import type { DownloadedItem } from "./receivedFilesStorage";
+import { baseName } from "../lib/files";
 import { extractKey } from "../lib/links";
 import { log as debugLog } from "../lib/debugLog";
 
@@ -22,6 +24,7 @@ export async function runReceivedReconcile(
     // `loadDownloaded` drops entries whose file is gone, which is also why a user-deleted file
     // cannot be resurrected here even if it is briefly re-proposed.
     const recorded = await loadDownloaded();
+    await healShareFlags(recorded, reason);
     const { groups, totalFiles } = reconcileReceivedFiles({ drives, recorded });
     if (totalFiles === 0) return 0;
 
@@ -82,5 +85,43 @@ export async function runReceivedReconcile(
       `reconcile failed on ${reason} — ${String((err as Error)?.message || err)}`,
     );
     return 0;
+  }
+}
+
+/**
+ * A received share whose file is on disk and in the downloads index, but whose own record still
+ * says `isDownloaded: false`, cannot be opened: tapping it re-runs the link, which then reports
+ * "You've already got these". Seen on iOS after the very first download. The reconcile pass above
+ * never repairs it, because it only proposes files missing from the index. Mark them here.
+ * `recorded` comes from `loadDownloaded`, which already dropped entries whose file is gone.
+ */
+async function healShareFlags(recorded: DownloadedItem[], reason: string): Promise<void> {
+  try {
+    const shares = await loadShares();
+    let healed = 0;
+    for (const share of shares) {
+      const key = String(share.shareKey || "").toLowerCase();
+      if (!key) continue;
+      const found: { name: string; localPath: string; size?: number }[] = [];
+      for (const f of share.files) {
+        if (f.isDownloaded) continue;
+        const name = baseName(f.name);
+        const hit = recorded.find(
+          (r) =>
+            !!r.shareLink &&
+            String(extractKey(r.shareLink) || "").toLowerCase() === key &&
+            baseName(r.name) === name,
+        );
+        if (hit) found.push({ name, localPath: hit.path, size: hit.size ?? f.size });
+      }
+      if (found.length === 0) continue;
+      await markFilesDownloaded(key, found);
+      healed += found.length;
+    }
+    if (healed > 0) {
+      debugLog("warn", "rn.reconcile", `marked ${healed} file(s) downloaded that were on disk but flagged missing (${reason})`);
+    }
+  } catch (err: unknown) {
+    debugLog("error", "rn.reconcile", `share flag repair failed on ${reason} — ${String((err as Error)?.message || err)}`);
   }
 }
