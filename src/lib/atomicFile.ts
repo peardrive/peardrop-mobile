@@ -1,4 +1,5 @@
 import RNFS from "react-native-fs";
+import { rebaseContainerPaths } from "./appContainerPath";
 import { logStructuredError, logWarn } from "./debugLog";
 
 /**
@@ -112,7 +113,9 @@ export async function readJsonFile<T = unknown>(path: string): Promise<JsonReadR
   }
 
   try {
-    return { status: "ok", value: JSON.parse(raw) as T };
+    // Re-point paths saved under an older iOS app folder (see appContainerPath.ts).
+    const parsed = rebaseContainerPaths(JSON.parse(raw), RNFS.DocumentDirectoryPath).value;
+    return { status: "ok", value: parsed as T };
   } catch (err) {
     return { status: "corrupt", movedAside: await preserveUnreadable(path, "corrupt", err) };
   }

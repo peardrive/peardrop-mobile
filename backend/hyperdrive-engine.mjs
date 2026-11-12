@@ -13,6 +13,7 @@ import {
   loadManifest as readManifestFromDisk,
   isManifestUnavailable,
 } from "./manifest-recovery.mjs";
+import { rebaseContainerPaths } from "./app-container-path.mjs";
 import { atomicWriteJson } from "./atomic-save.mjs";
 import { safePathWithin, PathTraversalError } from "./path-safe.mjs";
 import {
@@ -158,6 +159,13 @@ async function loadManifest() {
   // entries. Per-drive missing storage is handled at hydrate time.
   try {
     manifest = await readManifestFromDisk(manifestPath);
+    // iOS moves the app to a new folder on every update; re-point saved paths at the current
+    // one, or every drive's corestore and every download look missing (app-container-path.mjs).
+    const rebased = rebaseContainerPaths(manifest, manifestPath);
+    if (rebased.changed > 0) {
+      manifest = rebased.value;
+      binfo("engine.boot", `re-pointed ${rebased.changed} saved path(s) at the current app folder`);
+    }
     // Read the unavailable flag from the loader, the only thing that knows whether the file was
     // readable. A load that succeeds clears it, so this is an assignment, not an |=.
     manifestUnavailable = isManifestUnavailable(manifestPath);
