@@ -9,7 +9,7 @@ import React, {
 } from "react";
 import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useInsetsHere } from "./useScreenInsets";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 
@@ -207,7 +207,7 @@ export function useToast(): ToastApi {
  */
 export function ToastOutlet() {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useInsetsHere();
   const ctx = useContext(ToastOutletContext);
   if (!ctx) throw new Error("ToastOutlet must be used inside ToastProvider");
   const {

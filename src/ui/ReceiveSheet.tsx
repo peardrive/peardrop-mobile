@@ -5,7 +5,6 @@ import {
   AppState,
   KeyboardAvoidingView,
   Linking,
-  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -13,6 +12,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import * as Clipboard from "expo-clipboard";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { CameraView, useCameraPermissions } from "expo-camera";

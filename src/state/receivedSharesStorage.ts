@@ -4,6 +4,7 @@ import { PINNING_ENABLED, stripStoredPins } from "../lib/pinning";
 import { planReceivedDelete } from "../lib/deleteReceivedPlan";
 import { demoteMissingFile } from "../lib/receivedFileHealth";
 import { baseName } from "../lib/files";
+import { findCollisionCopies, foldCollisionCopies, matchLandedName } from "../lib/collisionName";
 import { extractKey, normalizeShareLink } from "../lib/links";
 import { waitingRowName } from "../lib/waitingDisposition";
 import {
@@ -199,10 +200,43 @@ function sanitize(raw: unknown): ReceivedShare[] {
  */
 async function readFromDisk(): Promise<ReceivedShare[]> {
   const result = await readJsonFile(STORAGE_FILE);
-  if (result.status === "ok") return sanitize(await retirePins(result.value));
+  if (result.status === "ok") return foldStoredCopies(sanitize(await retirePins(result.value)));
   // `missing`, `corrupt` and `unreadable` all yield an empty list, but the last
   // two have already been logged and preserved by `readJsonFile`.
   return [];
+}
+
+/**
+ * A record written before second copies were matched to their file can list one file twice
+ * (`clip.mp4` and `clip (1).mp4`). Fold those on the way in and save the result, so the list
+ * shows what the share really holds. The disk is probed only for the few paths involved.
+ */
+async function foldStoredCopies(shares: ReceivedShare[]): Promise<ReceivedShare[]> {
+  let changed = false;
+  const next: ReceivedShare[] = [];
+  for (const share of shares) {
+    const pairs = findCollisionCopies(share.files);
+    if (pairs.length === 0) {
+      next.push(share);
+      continue;
+    }
+    const onDisk = new Map<string, boolean>();
+    for (const idx of pairs.flat()) {
+      const path = share.files[idx]?.localPath;
+      if (!path || onDisk.has(path)) continue;
+      try {
+        onDisk.set(path, await RNFS.exists(path));
+      } catch {
+        // Could not check: left unset, which the fold reads as "keep what the record says".
+      }
+    }
+    const folded = foldCollisionCopies(share.files, (p) => onDisk.get(p));
+    changed = true;
+    next.push(withConsistentStatus({ ...share, files: folded.files }));
+  }
+  if (!changed) return shares;
+  await writeToDisk(next);
+  return next;
 }
 
 /**
@@ -574,8 +608,10 @@ async function markFilesDownloadedBody(
   if (!share) return list;
   const byName = new Map(share.files.map((f) => [baseName(f.name), f]));
   const now = Date.now();
+  const shareNames = new Set(byName.keys());
   for (const df of files) {
-    const key = baseName(df.name);
+    // A second copy saved as `name (1).ext` belongs to the share's own `name.ext`.
+    const key = matchLandedName(shareNames, df.name) ?? baseName(df.name);
     const existing = byName.get(key);
     if (existing) {
       byName.set(key, {

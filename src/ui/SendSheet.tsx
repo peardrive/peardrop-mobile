@@ -1,12 +1,12 @@
 import React, { useMemo } from "react";
 import {
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";

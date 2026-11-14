@@ -34,6 +34,13 @@ async function generate(uri: string): Promise<string | null> {
   }
 }
 
+/** The thumbnails made since the app opened: the ones a row may be showing. Storage → Clean up keeps these. */
+export function liveVideoThumbnails(): string[] {
+  const out: string[] = [];
+  for (const uri of cache.values()) if (uri) out.push(uri);
+  return out;
+}
+
 export function getCachedVideoThumbnail(uri: string): string | null | undefined {
   return cache.get(uri);
 }

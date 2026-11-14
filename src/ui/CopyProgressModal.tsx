@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
-import { Modal, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import { useAppTheme } from "../state/ThemeContext";
 import { formatBytes } from "../lib/format";
 import type { AppTheme } from "./themes";

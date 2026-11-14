@@ -17,6 +17,8 @@
     "check:encoding": "node scripts/check-encoding.mjs",
     "check:copy": "node scripts/check-copy.mjs",
     "check:copy:selftest": "node scripts/check-copy.mjs --selftest",
+    "pearkit:sync": "node scripts/pearkit-sync.mjs",
+    "pearkit:check": "node scripts/pearkit-sync.mjs --check",
     "deliver:android": "bash scripts/deliver-apk.sh"
   },
   "dependencies": {
@@ -31,6 +33,7 @@
     "corestore": "^7.9.2",
     "expo": "~54.0.37",
     "expo-audio": "~1.1.1",
+    "expo-blur": "~15.0.8",
     "expo-build-properties": "^1.0.9",
     "expo-camera": "~17.0.10",
     "expo-clipboard": "~8.0.8",
@@ -44,6 +47,7 @@
     "expo-linking": "~8.0.12",
     "expo-notifications": "~0.32.17",
     "expo-router": "~6.0.24",
+    "expo-screen-orientation": "~9.0.9",
     "expo-sharing": "~14.0.8",
     "expo-splash-screen": "~31.0.13",
     "expo-system-ui": "^6.0.7",

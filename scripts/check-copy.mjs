@@ -50,6 +50,11 @@ const EMOJI =
 // Deliberately not applied to element text, where existing paragraphs exceed it in containers that cannot truncate.
 const MAX_PROSE_LENGTH = 120;
 
+// The outline of a drawn icon (the `d` of an svg path) is long and is never read as words: only
+// drawing commands and numbers. The length cap is about prose, so these are left alone. The banned
+// words and emoji rules still run on them, and cannot match.
+const SVG_PATH_DATA = /^[Mm][MmZzLlHhVvCcSsQqTtAa0-9eE.,\s-]+$/;
+
 /**
  * Files deliberately not scanned. **Every entry names a reason.** A silent
  * skip list is how a banned string survives a check that reports green.
@@ -382,7 +387,7 @@ function violationsIn(rel, src) {
         ? "raw-engine-text"
         : EMOJI.test(text) && !inAnySpan(emojiExempt, cand.index)
           ? "emoji"
-          : cand.kind === "string" && text.length > MAX_PROSE_LENGTH
+          : cand.kind === "string" && text.length > MAX_PROSE_LENGTH && !SVG_PATH_DATA.test(text)
             ? "too-long"
             : null;
     if (!rule) continue;
@@ -434,6 +439,10 @@ const KNOWN_CLEAN = [
 const TOO_LONG_CONTROL =
   "This sentence is the planted too-long positive control for the length cap and it rambles on well past the hundred and twenty mark.";
 
+/** Icon outline control: over the cap, only drawing commands and numbers. Must be skipped. */
+const SVG_PATH_CONTROL =
+  "M212.92,17.71a7.89,7.89,0,0,0-6.86-1.46l-128,32A8,8,0,0,0,72,56V166.1A36,36,0,1,0,88,196V102.25l112-28V134.1A36,36,0,1,0,216,164V24A8,8,0,0,0,212.92,17.71Z";
+
 /** Emoji positive control, carrying none of the banned words, so a report of it can only have come from the emoji rule. */
 const EMOJI_CONTROL = "Sending your files \u{1F680}";
 
@@ -458,6 +467,8 @@ const FIXTURE = [
   "  );",
   "}",
   "const cmp = a > b && c < d;",
+  // An icon outline: far over the length cap, and not prose, so it must not be flagged.
+  `const outline = "${SVG_PATH_CONTROL}";`,
 ].join("\n");
 
 function selftest() {
@@ -534,7 +545,7 @@ function selftest() {
       "extractor: found exactly the 6 planted offenders (string, template, " +
         "JSX text, one sitting right after a debugLog call, the too-long " +
         "control and the emoji control) and skipped the 2 comments, the " +
-        "Ionicons token, the regex literal, the debugLog argument and the " +
+        "Ionicons token, the icon outline, the regex literal, the debugLog argument and the " +
         "em-dash/middot/ellipsis typography line",
     );
   } else {

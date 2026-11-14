@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from "react";
 import {
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -8,8 +7,9 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import { LinearGradient } from "expo-linear-gradient";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
@@ -49,7 +49,7 @@ export default function GrabIntoFolderSheet({
   onGrab,
 }: GrabIntoFolderSheetProps) {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   const [folderName, setFolderName] = useState(defaultFolderName);

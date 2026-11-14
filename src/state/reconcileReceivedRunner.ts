@@ -9,6 +9,7 @@ import { appendDownloadResults, loadDownloaded } from "./receivedFilesStorage";
 import { loadShares, markFilesDownloaded } from "./receivedSharesStorage";
 import type { DownloadedItem } from "./receivedFilesStorage";
 import { baseName } from "../lib/files";
+import { stripCollisionSuffix } from "../lib/collisionName";
 import { extractKey } from "../lib/links";
 import { log as debugLog } from "../lib/debugLog";
 
@@ -110,7 +111,7 @@ async function healShareFlags(recorded: DownloadedItem[], reason: string): Promi
           (r) =>
             !!r.shareLink &&
             String(extractKey(r.shareLink) || "").toLowerCase() === key &&
-            baseName(r.name) === name,
+            (baseName(r.name) === name || stripCollisionSuffix(r.name) === name),
         );
         if (hit) found.push({ name, localPath: hit.path, size: hit.size ?? f.size });
       }

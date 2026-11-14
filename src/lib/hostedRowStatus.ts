@@ -1,9 +1,11 @@
 /**
- * A cancelled hosted row must read as cancelled rather than fall past `transferring` to `completed`.
+ * Which of the universal states a share of this phone's own is in. The word, the colour and the
+ * bar for each state come from Pearkit (`ShareState`), the same list the desktop app uses.
  * No react-native imports: jest runs this under `testEnvironment: "node"`.
  */
 
-import { cancelledRowLabel, clampReceivePercent } from "./receiveProgress";
+import type { ShareStateInput } from "../vendor/pearkit/ShareState/shareState";
+import { clampReceivePercent } from "./receiveProgress";
 
 /** Minimal shape read off a `TransferSummary`. */
 export type HostedTransferLike = {
@@ -16,56 +18,29 @@ export type HostedTransferLike = {
   cancelled: boolean;
 };
 
-export type HostedRowState =
-  | "idle"
-  | "sharing"
-  | "cancelled"
-  | "completed"
-  | "active";
-
-export type HostedRowStatus = {
-  state: HostedRowState;
-  /** Rendered after the `<Type> · ` prefix the row already builds. */
-  label: string;
-  tone: "warning" | "primary" | "danger" | "muted";
-};
-
 /**
- * Maps a hosted transfer plus its activation onto a row status. `state: "idle"` means render
- * nothing — the caller drops the sub-line and falls back to the row's `meta`.
+ * - Someone is taking the files right now: Sharing, with how far.
+ * - Switched on: Active. A finished upload is Active again, not "Completed".
+ * - Switched off: Inactive.
  */
-export function hostedRowStatus(
+export function hostedShareState(
   transfer: HostedTransferLike | null | undefined,
   opts: { isActive: boolean },
-): HostedRowStatus {
+): ShareStateInput {
   const t = transfer ?? null;
+  const resting: ShareStateInput = { kind: opts.isActive ? "active" : "inactive" };
 
-  // FIRST, ahead of everything: `markCancelled` writes `completed: true` alongside `cancelled`, so
-  // this branch placed below `completed` is unreachable code that looks like a fix.
-  if (t?.cancelled) {
-    return { state: "cancelled", label: cancelledRowLabel(null), tone: "muted" };
-  }
+  // FIRST, ahead of everything: `markCancelled` writes `completed: true` alongside `cancelled`,
+  // and a stopped upload must never read as one that is still moving.
+  if (t?.cancelled) return resting;
 
-  // Same guard as the chain this replaces: strictly between 0 and 100, and
-  // not yet complete. `percent >= 100` is excluded on purpose — a hosted
-  // drive's byte counter is unreliable (UDX sockets expose no
-  // `bytesWritten`), so a pinned 100 is not evidence of anything.
+  // Strictly between 0 and 100, and not yet complete. `percent >= 100` is excluded on purpose: a
+  // hosted drive's byte counter is unreliable (UDX sockets expose no `bytesWritten`), so a pinned
+  // 100 is not evidence of anything.
   const raw = t?.percent ?? 0;
   if (t && !t.completed && raw > 0 && raw < 100) {
-    return {
-      state: "sharing",
-      label: `Sharing (${clampReceivePercent(raw)}%)`,
-      tone: "warning",
-    };
+    return { kind: "sharing", percent: clampReceivePercent(raw) };
   }
 
-  if (t?.completed) {
-    return { state: "completed", label: "Completed", tone: "primary" };
-  }
-
-  if (opts.isActive) {
-    return { state: "active", label: "Active", tone: "primary" };
-  }
-
-  return { state: "idle", label: "", tone: "muted" };
+  return resting;
 }

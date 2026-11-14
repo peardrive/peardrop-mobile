@@ -10,14 +10,37 @@ import {
   type StyleProp,
   type ViewStyle,
 } from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
+import { haptics } from "../lib/haptics";
+import {
+  REVEAL_WIDTH,
+  SELECT_WIDTH,
+  swipeRelease,
+  swipeTravel,
+  wantsSwipe,
+} from "../lib/swipeRow";
 
 type Props = {
   children: React.ReactNode;
   onDelete: () => void;
   /** Label shown on the reveal button. Defaults to "Delete". */
   deleteLabel?: string;
+  /**
+   * Given, a swipe to the right selects the row: it travels a short way over a tick and, let go
+   * past the mark, calls this. Left out, the row does not move right at all.
+   */
+  onSelect?: () => void;
+  /** What a screen reader calls the select action. Defaults to "Select". */
+  selectLabel?: string;
+  /**
+   * True from the moment the row takes the finger until it lets go. The list must stop scrolling
+   * for that time (`setNativeProps({ scrollEnabled: false })`): on iPhone a row holding the finger
+   * does not stop the list taking it back, and the list does so as soon as the finger has drifted
+   * a few points up or down, which every thumb swipe does. The row then snapped shut mid-swipe.
+   */
+  onSwipeActive?: (active: boolean) => void;
   /** A11y label for the row itself; the action menu reuses it. */
   accessibilityLabel?: string;
   containerStyle?: StyleProp<ViewStyle>;
@@ -37,18 +60,18 @@ type Props = {
   closeSignal?: number | string | boolean;
 };
 
-const REVEAL_WIDTH = 96;
-const REVEAL_THRESHOLD = -REVEAL_WIDTH * 0.4;
-const COMMIT_THRESHOLD = -REVEAL_WIDTH * 1.6;
-
 /**
- * Swipe-to-delete on Animated and PanResponder, to avoid a native gesture dependency. The responder
- * claims movement only when horizontal motion dominates, so the list keeps its vertical scroll.
+ * Swipe left for Delete, right to select, on Animated and PanResponder, to avoid a native gesture
+ * dependency. The rules (when a finger counts as swiping, how far the row goes, what letting go
+ * means) are in `src/lib/swipeRow.ts`, where jest can reach them.
  */
 export default function SwipeableRow({
   children,
   onDelete,
   deleteLabel = "Delete",
+  onSelect,
+  selectLabel = "Select",
+  onSwipeActive,
   accessibilityLabel,
   containerStyle,
   frontBackground,
@@ -64,6 +87,10 @@ export default function SwipeableRow({
   // Tracked so a re-render while `peek` is still true does not re-trigger
   // the one-shot sequence.
   const peekRunning = useRef(false);
+  // The pan responder is made once, so it reads what the row was last given from here rather
+  // than from the first render's props.
+  const latest = useRef({ onDelete, onSelect, onSwipeActive });
+  latest.current = { onDelete, onSelect, onSwipeActive };
 
   const commit = () => {
     Animated.timing(translateX, {
@@ -73,7 +100,7 @@ export default function SwipeableRow({
     }).start(() => {
       offsetRef.current = 0;
       translateX.setValue(0);
-      onDelete();
+      latest.current.onDelete();
     });
   };
 
@@ -91,31 +118,33 @@ export default function SwipeableRow({
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: (_, gs) =>
-        Math.abs(gs.dx) > 12 && Math.abs(gs.dx) > Math.abs(gs.dy) * 1.4,
+      onMoveShouldSetPanResponder: (_, gs) => wantsSwipe(gs.dx, gs.dy),
+      // Once the row has the finger nothing else in the app may ask for it back.
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
+        latest.current.onSwipeActive?.(true);
         translateX.setOffset(offsetRef.current);
         translateX.setValue(0);
       },
       onPanResponderMove: (_, gs) => {
-        // Cap so the combined translation never passes the resting position.
-        // From a revealed state this still lets the user drag back to close.
-        const maxDx = -offsetRef.current;
-        const dx = Math.min(maxDx, gs.dx);
-        translateX.setValue(dx);
+        translateX.setValue(swipeTravel(offsetRef.current, gs.dx, !!latest.current.onSelect));
       },
       onPanResponderRelease: (_, gs) => {
+        latest.current.onSwipeActive?.(false);
         translateX.flattenOffset();
-        const maxDx = -offsetRef.current;
-        const dx = Math.min(maxDx, gs.dx);
-        const final = offsetRef.current + dx;
-        if (final < COMMIT_THRESHOLD) {
+        const outcome = swipeRelease(offsetRef.current, gs.dx, !!latest.current.onSelect);
+        if (outcome === "delete") {
           commit();
           return;
         }
-        snapTo(final < REVEAL_THRESHOLD ? -REVEAL_WIDTH : 0);
+        if (outcome === "select") {
+          haptics.selection();
+          latest.current.onSelect?.();
+        }
+        snapTo(outcome === "reveal" ? -REVEAL_WIDTH : 0);
       },
       onPanResponderTerminate: () => {
+        latest.current.onSwipeActive?.(false);
         translateX.flattenOffset();
         snapTo(0);
       },
@@ -124,6 +153,7 @@ export default function SwipeableRow({
 
   const onAccessibilityAction = (e: AccessibilityActionEvent) => {
     if (e.nativeEvent.actionName === "delete") commit();
+    if (e.nativeEvent.actionName === "select") latest.current.onSelect?.();
   };
 
   // Force the row closed when the parent toggles closeSignal. The first
@@ -166,10 +196,20 @@ export default function SwipeableRow({
     };
   }, [peek, onPeekDone, translateX]);
 
+  // The row sits on red, for Delete. The moment it moves right instead, this covers the red with
+  // the select colour; at rest and to the left it is not there at all.
+  const selectShown = useMemo(
+    () => translateX.interpolate({ inputRange: [0, 1], outputRange: [0, 1], extrapolate: "clamp" }),
+    [translateX],
+  );
+
   return (
     <View
       style={[styles.row, containerStyle]}
-      accessibilityActions={[{ name: "delete", label: deleteLabel }]}
+      accessibilityActions={[
+        { name: "delete", label: deleteLabel },
+        ...(onSelect ? [{ name: "select", label: selectLabel }] : []),
+      ]}
       onAccessibilityAction={onAccessibilityAction}
       {...(accessibilityLabel ? { accessibilityLabel } : null)}
     >
@@ -183,6 +223,18 @@ export default function SwipeableRow({
           <Text style={styles.deleteText}>{deleteLabel}</Text>
         </Pressable>
       </View>
+      {onSelect ? (
+        <Animated.View
+          style={[styles.selectBacker, { opacity: selectShown }]}
+          pointerEvents="none"
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        >
+          <View style={styles.selectMark}>
+            <Ionicons name="checkbox" size={26} color={theme.onPrimary} />
+          </View>
+        </Animated.View>
+      ) : null}
       <Animated.View
         style={[styles.front, { backgroundColor: frontBg, transform: [{ translateX }] }]}
         {...panResponder.panHandlers}
@@ -219,5 +271,15 @@ function createStyles(theme: AppTheme) {
       paddingHorizontal: 12,
     },
     deleteText: { color: "#fff", fontWeight: "700", fontSize: 13 },
+    selectBacker: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: theme.primary,
+      justifyContent: "center",
+    },
+    selectMark: {
+      width: SELECT_WIDTH,
+      alignItems: "center",
+      justifyContent: "center",
+    },
   });
 }

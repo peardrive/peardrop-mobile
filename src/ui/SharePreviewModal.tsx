@@ -2,18 +2,18 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useAppTheme } from "../state/ThemeContext";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
 import type { AppTheme } from "./themes";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import { formatBytes } from "../lib/format";
 import { baseName } from "../lib/files";
 import FileTypeIcon from "./FileTypeIcon";
@@ -29,6 +29,8 @@ import FileTypeIcon from "./FileTypeIcon";
 import {
   DRAFT_HINT,
   draftButton,
+  initialTicks,
+  selectAllControl,
   draftDiff,
   isMarkedToStop,
   type DraftInput,
@@ -153,6 +155,13 @@ function createStyles(theme: AppTheme, bottomInset: number) {
     },
     hintText: { color: theme.muted, fontSize: 13, flexShrink: 1 },
     selectAll: { color: theme.primary, fontWeight: "600", fontSize: 13 },
+    selectAllRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingBottom: 8,
+    },
+    selectAllCount: { color: theme.muted, fontSize: 12 },
     fileRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -322,7 +331,7 @@ function createStyles(theme: AppTheme, bottomInset: number) {
 
 export default function SharePreviewModal() {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const styles = useMemo(
     () => createStyles(theme, insets.bottom),
     [theme, insets.bottom],
@@ -410,11 +419,34 @@ export default function SharePreviewModal() {
    * button where `Looks good` belonged (device run, step 3) — the draft is
    * one-shot, so the real selection arriving a tick later never re-seeded it.
    */
+  /** The files with a checkbox: the ones "Select all" and "Grab all" are about. */
+  const pickable = useMemo(
+    () => files.filter((f) => f.control === "checkbox").map((f) => f.name),
+    [files],
+  );
+  const hasGrabbed = useMemo(() => files.some((f) => f.state === "done"), [files]);
+  /** Has the person changed a tick since this window opened? Until they do, a share nobody has grabbed from stays fully ticked. */
+  const touchedRef = useRef(false);
   useEffect(() => {
-    if (previewVisible && !pickerHydrating && ticked === null && files.length > 0) {
-      setTicked(saved);
+    if (!previewVisible) touchedRef.current = false;
+  }, [previewVisible]);
+  /**
+   * A share nobody has grabbed from opens with every file ticked (`initialTicks`),
+   * so scan and one tap gets the lot. Anything else opens on what is saved.
+   */
+  useEffect(() => {
+    if (!previewVisible || pickerHydrating || files.length === 0) return;
+    const status = view?.status ?? "ready";
+    if (ticked === null) {
+      setTicked(initialTicks({ status, saved, hasGrabbed, pickable }));
+      return;
     }
-  }, [previewVisible, pickerHydrating, ticked, files.length, saved]);
+    // The list grew before the person touched anything: the new files are ticked too.
+    if (!touchedRef.current) {
+      const fresh = initialTicks({ status, saved, hasGrabbed, pickable });
+      if (fresh.length > ticked.length && saved.length === 0) setTicked(fresh);
+    }
+  }, [previewVisible, pickerHydrating, ticked, files.length, saved, hasGrabbed, pickable, view?.status]);
 
   const draft: DraftInput = useMemo(
     () => ({
@@ -428,14 +460,17 @@ export default function SharePreviewModal() {
       files: files.map((f) => ({ name: f.name, size: f.size })),
       // Straight off the model: a share holding any saved file is past its
       // first grab, whatever the status says. See `DraftInput.hasGrabbed`.
-      hasGrabbed: files.some((f) => f.state === "done"),
+      hasGrabbed,
+      pickable,
       // What is actually on disk, so `Looks good` can never appear over a file
       // that is still outstanding. See `DraftInput.held`.
       held: files.filter((f) => f.state === "done").map((f) => f.name),
     }),
-    [view?.status, files, saved, ticked, willStop],
+    [view?.status, files, saved, ticked, willStop, hasGrabbed, pickable],
   );
   const button = draftButton(draft);
+  /** "Select all" or "Deselect all", or null when there is nothing to choose between. */
+  const selectAll = selectAllControl(draft);
 
   /** Clause 6: open a saved file, through the one shared open path. */
   async function onOpenSavedFile(path: string) {
@@ -444,6 +479,7 @@ export default function SharePreviewModal() {
 
   /** A tick. Draft only — nothing is written and no engine call is made. */
   function onToggle(key: string) {
+    touchedRef.current = true;
     setTicked((prev) => {
       const base = prev ?? saved;
       return base.includes(key) ? base.filter((k) => k !== key) : [...base, key];
@@ -583,6 +619,27 @@ export default function SharePreviewModal() {
                 <Text style={styles.waitBannerText}>{linkError.text}</Text>
               </View>
             )}
+          {/* The one line above the list. It says what a tap will do, so it
+              reads "Deselect all" while everything is ticked. */}
+          {!!selectAll && (
+            <View style={styles.selectAllRow}>
+              <Text style={styles.selectAllCount}>
+                {`${draft.ticked.length} of ${files.length} selected`}
+              </Text>
+              <Pressable
+                onPress={() => {
+                  touchedRef.current = true;
+                  haptics.selection();
+                  setTicked(selectAll.next);
+                }}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={selectAll.label}
+              >
+                <Text style={styles.selectAll}>{selectAll.label}</Text>
+              </Pressable>
+            </View>
+          )}
           <ScrollView style={styles.list} showsVerticalScrollIndicator={false}>
             {files.map((f, index) => {
               const name = baseName(f.name);

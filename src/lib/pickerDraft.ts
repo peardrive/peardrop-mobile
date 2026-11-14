@@ -32,7 +32,59 @@ export type DraftInput = {
   /** The ticked keys already on disk, which decide whether the no-op label is honest. */
   // Omitted means not known, treated as satisfied, so this cannot manufacture a dead button for a caller that never opted in.
   readonly held?: readonly string[];
+  /** The keys that have a checkbox: every file that can still be asked for. Omitted means every file in `files`. */
+  readonly pickable?: readonly string[];
 };
+
+/** The keys with a checkbox, whichever way the caller gave them. */
+function pickableOf(input: DraftInput): readonly string[] {
+  return input.pickable ?? (input.files ?? []).map((f) => f.name);
+}
+
+/** Is this the first grab? Nothing asked for yet and nothing saved yet. */
+export function isFirstGrab(input: Pick<DraftInput, "status" | "hasGrabbed">): boolean {
+  return (input.status === "ready" || input.status === "waiting") && !input.hasGrabbed;
+}
+
+/**
+ * The ticks a freshly opened picker starts with.
+ *
+ * A share nobody has grabbed from opens with EVERYTHING ticked: scan, tap, done. It opened with
+ * nothing ticked, so the commonest thing a person wants (all of it) took a tap per file.
+ * After a first grab the picker shows what is saved, because by then the ticks are a choice
+ * the person made and overwriting it would undo their work.
+ */
+export function initialTicks(input: Pick<DraftInput, "status" | "saved" | "hasGrabbed" | "pickable" | "files">): string[] {
+  if (isFirstGrab(input) && input.saved.length === 0) {
+    return [...(input.pickable ?? (input.files ?? []).map((f) => f.name))];
+  }
+  return [...input.saved];
+}
+
+/** The one line above the list: "Select all" until everything is ticked, "Deselect all" once it is. */
+export type SelectAllControl = {
+  readonly label: "Select all" | "Deselect all";
+  /** The draft after the tap. */
+  readonly next: string[];
+};
+
+/**
+ * Null when there is nothing to choose between: no checkbox, or only one.
+ *
+ * It touches the files with a checkbox only. A file already arriving is ticked without having
+ * a checkbox, and "Deselect all" leaves it alone: stopping a file is the red x, on purpose.
+ */
+export function selectAllControl(input: Pick<DraftInput, "ticked" | "pickable" | "files">): SelectAllControl | null {
+  const pickable = input.pickable ?? (input.files ?? []).map((f) => f.name);
+  if (pickable.length < 2) return null;
+  const ticked = new Set(input.ticked);
+  const all = pickable.every((k) => ticked.has(k));
+  if (all) {
+    const drop = new Set(pickable);
+    return { label: "Deselect all", next: input.ticked.filter((k) => !drop.has(k)) };
+  }
+  return { label: "Select all", next: [...input.ticked, ...pickable.filter((k) => !ticked.has(k))] };
+}
 
 /** Bytes as a short label, local because the button's rounding is its own question. */
 function shortBytes(bytes: number): string {
@@ -52,9 +104,17 @@ function shortBytes(bytes: number): string {
 export function grabLabelFor(input: DraftInput): string {
   const sizes = new Map((input.files ?? []).map((f) => [f.name, f.size]));
   const n = input.ticked.length;
+  // Nothing ticked: the button says what to do, not "Grab 0 (0 B)".
+  if (n === 0) return "Select files to grab";
   let bytes = 0;
   for (const key of input.ticked) bytes += sizes.get(key) ?? 0;
-  return `Grab ${n} (${shortBytes(bytes)})`;
+  const size = shortBytes(bytes);
+  const pickable = pickableOf(input);
+  const ticked = new Set(input.ticked);
+  const everything = pickable.length > 0 && pickable.every((k) => ticked.has(k));
+  // Everything ticked is the usual case and gets the plain words. One file has no "all" to speak of.
+  if (everything) return pickable.length === 1 ? `Grab (${size})` : `Grab all (${size})`;
+  return `Grab ${n} (${size})`;
 }
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {
@@ -94,9 +154,7 @@ export function draftDiff(input: DraftInput): SelectionDiff {
 /** The button. A ready row keeps the first-grab label, but only while it really is the first grab. */
 // A stopped row reads as a resume when nothing changed and a confirm when the draft did, because the change is the news.
 export function draftButton(input: DraftInput): DraftButton {
-  const firstGrab =
-    (input.status === "ready" || input.status === "waiting") && !input.hasGrabbed;
-  if (firstGrab) {
+  if (isFirstGrab(input)) {
     return {
       kind: "grab",
       label: grabLabelFor(input),

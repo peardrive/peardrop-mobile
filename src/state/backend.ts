@@ -244,10 +244,11 @@ export type BackendAPI = {
     driveId?: string
   ) => Promise<{ ok: boolean; aborted?: number; error?: string }>;
   /**
-   * Bring an inactive drive back online. Hosted drives announce, received
-   * drives join client-only, and `{ serve: true }` is the explicit opt-in that
-   * makes a received copy announce. Only `mode === "server"` means a peer can
-   * find it; `already` means the swarm was already in the requested mode.
+   * Bring an inactive drive back online. With no `opts`, a hosted drive
+   * announces and a finished received copy is shared unless the user stopped
+   * it. `{ serve: false }` is Stop sharing and `{ serve: true }` is Share, and
+   * both are saved. Only `mode === "server"` means a peer can find it;
+   * `already` means the swarm was already in the requested mode.
    */
   activateDrive: (
     driveId: string,
@@ -1684,9 +1685,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                 // The receive path is not handled here: it emits
                 // `download-outcome`, and one terminal branch must decide a
                 // grab's success. The haptic and the notification are
-                // hosted-only. A non-hosted drive reaching this means the
-                // packed worklet is older than this JS, so it is logged
-                // loudly while the row below still settles.
+                // hosted-only. A non-hosted drive reaching this is a finished
+                // download that this phone is sharing onward, and somebody
+                // just took a copy from it: expected, so it is noted quietly.
                 const isHosted = hostedIdsRef.current.has(evt.driveId);
                 if (isHosted) {
                   // Pulse a success haptic at the moment a hosted transfer
@@ -1700,11 +1701,9 @@ export function BackendProvider({ children }: { children: React.ReactNode }) {
                   });
                 } else {
                   debugLog(
-                    "warn",
+                    "info",
                     "rn.event",
-                    `upload-complete for a NON-HOSTED drive=${evt.driveId} — the receive path ` +
-                      `moved to download-outcome. This means the packed worklet is older ` +
-                      `than this JS; re-run npm run bundle:backend.`
+                    `passed a received share onward drive=${evt.driveId} bytes=${evt.totalBytes ?? "?"}`
                   );
                 }
                 upsertTransfer(evt.driveId, (prev) => ({

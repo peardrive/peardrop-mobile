@@ -5,9 +5,15 @@
     "version": "0.4.1",
     "newArchEnabled": true,
     "orientation": "portrait",
-    "scheme": ["peardrop.mobile", "peardrop"],
+    "scheme": [
+      "peardrop.mobile",
+      "peardrop"
+    ],
     "userInterfaceStyle": "automatic",
-    "assetBundlePatterns": ["**/*", "assets/demo/**/*"],
+    "assetBundlePatterns": [
+      "**/*",
+      "assets/demo/**/*"
+    ],
     "icon": "./assets/images/icon.png",
     "splash": {
       "image": "./assets/images/splash.png",
@@ -16,7 +22,14 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anjouinc.peardrop"
+      "bundleIdentifier": "com.anjouinc.peardrop",
+      "infoPlist": {
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -78,6 +91,12 @@
         "expo-image-picker",
         {
           "photosPermission": "Allow PearDrop to access your photos so you can share them."
+        }
+      ],
+      [
+        "expo-screen-orientation",
+        {
+          "initialOrientation": "PORTRAIT_UP"
         }
       ]
     ]

@@ -1,17 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import QRCode from "react-native-qrcode-svg";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
@@ -19,11 +17,13 @@ import { formatAbsoluteDate, formatBytes } from "../lib/format";
 import { type IconName } from "../lib/files";
 import { useVideoThumbnail } from "../lib/videoThumbnail";
 import ConfirmModal from "./ConfirmModal";
+import CopyGlyph from "./CopyGlyph";
 import { ToastOutlet } from "./Toast";
 
-/** QR box side length. Kept equal to the placeholder tile size so the
- *  modal footprint is identical whether or not a live link is present. */
+/** QR box side length. */
 const QR_SIZE = 200;
+/** How long the copy mark stays a tick after a copy. */
+const COPIED_MS = 1500;
 
 export type ShareQrModalInfoFile = {
   /** Storage path or bare filename. The modal calls `baseName` on it so
@@ -56,6 +56,16 @@ export type ShareQrModalProps = {
   /** Persistent share link. Always rendered as a QR when non-empty,
    *  regardless of whether the drive is currently seeding. */
   link: string;
+  /**
+   * Which of its two faces this window shows.
+   *
+   * "share" is for handing the thing to someone: the QR code, the link under it, a button that
+   * sends the link through the phone's own share sheet, and nothing about the file itself.
+   *
+   * "info" (the default) is about the file: a Copy link and a Show QR button, the link, then
+   * Details and Share info. The QR code stays folded away until Show QR is pressed.
+   */
+  mode?: "share" | "info";
   /** Header title. Defaults to "File info" / "Folder info". */
   title?: string;
   /** Item identity block rendered directly under the title. */
@@ -99,9 +109,12 @@ export type ShareQrModalProps = {
    */
   presentation?: "hosted" | "received";
   onClose: () => void;
-  /** Copy the link to the clipboard. Rendered as the primary bottom
-   *  action when the drive is active. */
+  /** Copy the link to the clipboard. The QR code, the link line and the
+   *  Copy link button all call it. */
   onCopy?: () => void;
+  /** Hand the link to the phone's share sheet (messages and the like).
+   *  The "Send link" button of the share face; left out, no button. */
+  onSendLink?: () => void;
   /** Delete the (inactive) drive. Rendered as the "Remove" outline-red
    *  button; only shown when the drive is inactive. */
   onRemove?: () => void;
@@ -145,6 +158,7 @@ function formatStatus(s?: "live" | "dormant" | "failed") {
 export default function ShareQrModal({
   visible,
   link,
+  mode = "info",
   title,
   header,
   isActive,
@@ -152,13 +166,15 @@ export default function ShareQrModal({
   presentation = "hosted",
   onClose,
   onCopy,
+  onSendLink,
   onRemove,
   onActivate,
   info,
 }: ShareQrModalProps) {
   const isReceivedPresentation = presentation === "received";
+  const isShareMode = mode === "share";
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   // Top inset: safe-area (status bar) + a fixed 24 breathing gap so the
   // card floats clear of the top edge of the app instead of butting up
   // against the status bar / notch.
@@ -186,12 +202,34 @@ export default function ShareQrModal({
   useEffect(() => {
     if (!visible) setConfirming(false);
   }, [visible]);
-  // Actions row is absolutely positioned so it can never eat into the
-  // ScrollView's flex allocation (the RN flex + ScrollView interaction
-  // was previously overlapping the last section). Measuring its height
-  // lets us reserve exactly the right paddingBottom on the scroll body
-  // so the tail of the content clears the pinned buttons.
-  const [actionsHeight, setActionsHeight] = useState(0);
+
+  // The info face keeps its QR code folded away until asked for. Folded again
+  // each time the window opens or turns to another share.
+  const [qrOpen, setQrOpen] = useState(false);
+  useEffect(() => {
+    setQrOpen(false);
+  }, [visible, link, mode]);
+
+  // The copy mark turns into a tick for a moment after a copy, so the press
+  // is answered where the finger is as well as by the toast.
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!visible) setCopied(false);
+  }, [visible]);
+  const copyNow = () => {
+    if (!onCopy) return;
+    onCopy();
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), COPIED_MS);
+  };
 
   const statusLabel = formatStatus(info?.status);
   const statusColor =
@@ -249,7 +287,11 @@ export default function ShareQrModal({
     onClose();
   };
 
-  const defaultTitle = isBundle ? "Folder info" : "File info";
+  const defaultTitle = isShareMode
+    ? "Share"
+    : isBundle
+      ? "Folder info"
+      : "File info";
   const headerTitle = title ?? defaultTitle;
 
   const hasLink = link.length > 0;
@@ -259,6 +301,234 @@ export default function ShareQrModal({
    * exactly the received rows this gate exists for.
    */
   const linkOfferable = (canOfferLink ?? isActive) === true;
+  /** There is a link, and this row may hand it out. */
+  const showLink = linkOfferable && hasLink;
+  /**
+   * Start sharing and Remove follow `isActive`; the link follows the link gate.
+   * They agree on a hosted row. On a received row that is active but announces
+   * nothing they differ, and the answer is no link and no Start sharing.
+   */
+  const showStartRemove = !linkOfferable && !isActive;
+
+  const qrCode = (
+    <Pressable
+      style={styles.qrWrap}
+      onPress={copyNow}
+      disabled={!onCopy}
+      accessibilityRole="button"
+      accessibilityLabel="QR code. Tap to copy the link"
+    >
+      <QRCode
+        value={link}
+        size={QR_SIZE}
+        backgroundColor="#ffffff"
+        color="#000000"
+        ecl="M"
+      />
+    </Pressable>
+  );
+
+  // The link on one line, cut in the middle so both ends can be told apart,
+  // with the copy mark at its right. The whole line copies.
+  const linkRow = (
+    <Pressable
+      style={({ pressed }) => [styles.linkRow, pressed && styles.linkRowPressed]}
+      onPress={copyNow}
+      disabled={!onCopy}
+      accessibilityRole="button"
+      accessibilityLabel="Tap to copy the link"
+    >
+      <Text style={styles.linkRowText} numberOfLines={1} ellipsizeMode="middle">
+        {link}
+      </Text>
+      <CopyGlyph
+        size={20}
+        color={copied ? theme.primary : theme.text}
+        done={copied}
+      />
+    </Pressable>
+  );
+
+  const startRemove = showStartRemove ? (
+    <View style={styles.stack}>
+      {onActivate ? (
+        <Pressable
+          style={styles.startBtn}
+          onPress={onActivate}
+          accessibilityRole="button"
+          accessibilityLabel="Start sharing"
+        >
+          <Ionicons name="share-outline" size={16} color={theme.primary} />
+          <Text style={styles.startBtnText}>Start sharing</Text>
+        </Pressable>
+      ) : null}
+      {onRemove ? (
+        <Pressable
+          style={styles.removeBtn}
+          onPress={onPressRemove}
+          accessibilityRole="button"
+          accessibilityLabel="Remove"
+        >
+          <Ionicons name="trash-outline" size={16} color={theme.danger} />
+          <Text style={styles.removeBtnText}>Remove</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  ) : null;
+
+  // Shown in place of the link when there is none to give.
+  const noLinkNote = (
+    <View
+      style={styles.note}
+      accessible
+      accessibilityLabel={
+        isReceivedPresentation ? "Received share" : "Not currently sharing"
+      }
+    >
+      <Ionicons
+        name={isReceivedPresentation ? "download" : "link"}
+        size={22}
+        color={theme.muted}
+      />
+      <View style={styles.noteMain}>
+        <Text style={styles.noteTitle}>
+          {isReceivedPresentation ? "Received share" : "Not currently sharing"}
+        </Text>
+        <Text style={styles.noteBody}>
+          {isReceivedPresentation
+            ? "A copy someone sent you. There's no link to hand on from here."
+            : "Start sharing to generate a link and QR you can hand to another pear."}
+        </Text>
+      </View>
+    </View>
+  );
+
+  const shareFace = showLink ? (
+    <>
+      <View style={styles.qrBlock}>{qrCode}</View>
+      {linkRow}
+      {onSendLink ? (
+        <Pressable
+          style={styles.primaryBtn}
+          onPress={onSendLink}
+          accessibilityRole="button"
+          accessibilityLabel="Send link"
+        >
+          <Ionicons name="paper-plane" size={17} color={theme.onPrimary} />
+          <Text style={styles.primaryBtnText}>Send link</Text>
+        </Pressable>
+      ) : null}
+    </>
+  ) : (
+    <>
+      {noLinkNote}
+      {startRemove}
+    </>
+  );
+
+  const infoFace = (
+    <>
+      {showLink ? (
+        <>
+          <View style={styles.buttonRow}>
+            <Pressable
+              style={[styles.primaryBtn, styles.buttonRowItem]}
+              onPress={copyNow}
+              disabled={!onCopy}
+              accessibilityRole="button"
+              accessibilityLabel="Copy link"
+            >
+              <CopyGlyph size={18} color={theme.onPrimary} done={copied} />
+              <Text style={styles.primaryBtnText}>Copy link</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.outlineBtn, styles.buttonRowItem]}
+              onPress={() => setQrOpen((open) => !open)}
+              accessibilityRole="button"
+              accessibilityLabel={qrOpen ? "Hide QR" : "Show QR"}
+              accessibilityState={{ expanded: qrOpen }}
+            >
+              <Ionicons name="qr-code" size={17} color={theme.text} />
+              <Text style={styles.outlineBtnText}>
+                {qrOpen ? "Hide QR" : "Show QR"}
+              </Text>
+            </Pressable>
+          </View>
+          {qrOpen ? <View style={styles.qrBlock}>{qrCode}</View> : null}
+          {linkRow}
+        </>
+      ) : (
+        <>
+          {noLinkNote}
+          {startRemove}
+        </>
+      )}
+
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>Details</Text>
+        {sizeLabel ? (
+          <View style={styles.infoRow}>
+            <Text style={styles.infoRowLabel}>Size</Text>
+            <Text style={styles.infoRowValue}>{sizeLabel}</Text>
+          </View>
+        ) : null}
+        {typeLabel && !isBundle ? (
+          <View style={styles.infoRow}>
+            <Text style={styles.infoRowLabel}>Type</Text>
+            <Text style={styles.infoRowValue}>{typeLabel}</Text>
+          </View>
+        ) : null}
+        {addedLabel ? (
+          <View style={styles.infoRow}>
+            <Text style={styles.infoRowLabel}>Added</Text>
+            <Text style={styles.infoRowValue}>{addedLabel}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {/* Share info section is single-file only — folders carry
+        *  their live/dormant/transferring signal via the header
+        *  status chip and don't need a duplicated row block. */}
+      {!isBundle ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Share info</Text>
+          {/* Status and Peers are suppressed on a
+            *  received row. Both describe seeding. A received synth row
+            *  has the id `share:<shareKey>`, which is never in
+            *  `activeDriveIds` and never a key in `transferByDriveId`,
+            *  so Status was a hardcoded "Inactive" and Peers a
+            *  hardcoded 0 — two fields that could not vary presented as
+            *  if they were readings. Source stays; it is the one row
+            *  here that says something true about a received copy. */}
+          {statusLabel && !isReceivedPresentation ? (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoRowLabel}>Status</Text>
+              <View style={styles.infoStatusValue}>
+                <View
+                  style={[styles.statusDot, { backgroundColor: statusColor }]}
+                />
+                <Text style={[styles.infoRowValue, { color: statusColor }]}>
+                  {statusLabel}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+          {sourceLabel ? (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoRowLabel}>Source</Text>
+              <Text style={styles.infoRowValue}>{sourceLabel}</Text>
+            </View>
+          ) : null}
+          {!isReceivedPresentation ? (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoRowLabel}>Peers</Text>
+              <Text style={styles.infoRowValue}>{peerCount}</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </>
+  );
 
   return (
     <Modal
@@ -268,26 +538,32 @@ export default function ShareQrModal({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
+      <View style={styles.screen}>
+        {/* The dimmed area that closes the window is a SIBLING of the card,
+            never its parent. Two things broke while pressables wrapped the
+            card. On iPhone the scroll area would not scroll when the finger
+            went down on a plain part of it (a line of text, the QR picture):
+            the pressable round it took the finger, and iOS will not scroll
+            an area that sits inside whatever holds the finger. And a
+            pressable makes everything inside it one element for VoiceOver
+            and for the test robot. See _publishing/lessons. */}
         <Pressable
           style={styles.backdrop}
           onPress={onClose}
+          accessibilityRole="button"
           accessibilityLabel="Close"
-        >
-          <Pressable
-            style={styles.card}
-            onPress={() => {
-              // Absorb inner taps so tapping the card doesn't close it.
-            }}
-          >
-            {/* Pinned header: title bar + item identity. Consistent
-              *  across every state (folder/file × active/inactive). */}
+        />
+        <View style={styles.frame} pointerEvents="box-none">
+          {/* A plain View on purpose (see above): nothing round the scroll
+              area may take the finger, Pressable or onStartShouldSetResponder. */}
+          <View style={styles.card}>
             <View style={styles.titleRow}>
               <View style={styles.titleSlot} />
-              <Text style={styles.title} numberOfLines={1}>
+              <Text
+                style={styles.title}
+                numberOfLines={1}
+                accessibilityRole="header"
+              >
                 {headerTitle}
               </Text>
               <Pressable
@@ -337,10 +613,7 @@ export default function ShareQrModal({
                   ) : null}
                   {isBundle ? (
                     <View
-                      style={[
-                        styles.statusChip,
-                        { borderColor: chipColor },
-                      ]}
+                      style={[styles.statusChip, { borderColor: chipColor }]}
                     >
                       <View
                         style={[
@@ -349,10 +622,7 @@ export default function ShareQrModal({
                         ]}
                       />
                       <Text
-                        style={[
-                          styles.statusChipText,
-                          { color: chipColor },
-                        ]}
+                        style={[styles.statusChipText, { color: chipColor }]}
                       >
                         {chipLabel}
                       </Text>
@@ -362,221 +632,32 @@ export default function ShareQrModal({
               </View>
             ) : null}
 
-            {/* Scrolling middle: QR + Details + Share info + Files. */}
+            {/* Everything under the header scrolls as one piece. The card is
+                as tall as what is in it, up to the room on the screen; past
+                that this area shrinks and scrolls. */}
             <ScrollView
               style={styles.scroll}
-              contentContainerStyle={[
-                styles.body,
-                // Reserve the actions row's height plus a margin, so the
-                // last section stays visible above the pinned buttons.
-                { paddingBottom: actionsHeight + 12 },
-              ]}
+              contentContainerStyle={styles.body}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
-              {/* QR + link block is rendered for both files and folders.
-                *  Active drives show the live QR; inactive drives show
-                *  the same-sized placeholder tile so the modal footprint
-                *  stays consistent across states. */}
-              {linkOfferable && hasLink ? (
-                <View style={styles.qrBlock}>
-                  <View style={styles.qrWrap}>
-                    <QRCode
-                      value={link}
-                      size={QR_SIZE}
-                      backgroundColor="#ffffff"
-                      color="#000000"
-                      ecl="M"
-                    />
-                  </View>
-                  <Text
-                    style={styles.linkText}
-                    numberOfLines={2}
-                    selectable
-                  >
-                    {link}
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.qrBlock}>
-                  <View
-                    style={styles.hintTile}
-                    accessibilityLabel={
-                      isReceivedPresentation
-                        ? "Received share"
-                        : "Not currently sharing"
-                    }
-                  >
-                    <Ionicons
-                      name={
-                        isReceivedPresentation
-                          ? "download-outline"
-                          : "link-outline"
-                      }
-                      size={64}
-                      color={theme.muted}
-                    />
-                    <Text style={styles.hintTileTitle}>
-                      {isReceivedPresentation
-                        ? "Received share"
-                        : "Not currently sharing"}
-                    </Text>
-                  </View>
-                  <Text style={styles.hintBody}>
-                    {isReceivedPresentation
-                      ? "A copy someone sent you. There's no link to hand on from here."
-                      : "Start sharing to generate a link and QR you can hand to another pear."}
-                  </Text>
-                </View>
-              )}
-
-              <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Details</Text>
-                {sizeLabel ? (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoRowLabel}>Size</Text>
-                    <Text style={styles.infoRowValue}>{sizeLabel}</Text>
-                  </View>
-                ) : null}
-                {typeLabel && !isBundle ? (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoRowLabel}>Type</Text>
-                    <Text style={styles.infoRowValue}>{typeLabel}</Text>
-                  </View>
-                ) : null}
-                {addedLabel ? (
-                  <View style={styles.infoRow}>
-                    <Text style={styles.infoRowLabel}>Added</Text>
-                    <Text style={styles.infoRowValue}>{addedLabel}</Text>
-                  </View>
-                ) : null}
-              </View>
-
-              {/* Share info section is single-file only — folders carry
-                *  their live/dormant/transferring signal via the header
-                *  status chip and don't need a duplicated row block. */}
-              {!isBundle ? (
-                <View style={styles.section}>
-                  <Text style={styles.sectionLabel}>Share info</Text>
-                  {/* Status and Peers are suppressed on a
-                    *  received row. Both describe seeding. A received synth row
-                    *  has the id `share:<shareKey>`, which is never in
-                    *  `activeDriveIds` and never a key in `transferByDriveId`,
-                    *  so Status was a hardcoded "Inactive" and Peers a
-                    *  hardcoded 0 — two fields that could not vary presented as
-                    *  if they were readings. Source stays; it is the one row
-                    *  here that says something true about a received copy. */}
-                  {statusLabel && !isReceivedPresentation ? (
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoRowLabel}>Status</Text>
-                      <View style={styles.infoStatusValue}>
-                        <View
-                          style={[
-                            styles.statusDot,
-                            { backgroundColor: statusColor },
-                          ]}
-                        />
-                        <Text
-                          style={[
-                            styles.infoRowValue,
-                            { color: statusColor },
-                          ]}
-                        >
-                          {statusLabel}
-                        </Text>
-                      </View>
-                    </View>
-                  ) : null}
-                  {sourceLabel ? (
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoRowLabel}>Source</Text>
-                      <Text style={styles.infoRowValue}>
-                        {sourceLabel}
-                      </Text>
-                    </View>
-                  ) : null}
-                  {!isReceivedPresentation ? (
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoRowLabel}>Peers</Text>
-                      <Text style={styles.infoRowValue}>{peerCount}</Text>
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-
-              {/* Files list retired — the folder-contents modal is the
-                *  canonical surface for per-file browsing, and the
-                *  folder more-info modal is intentionally trimmed to
-                *  Details + status. */}
+              {isShareMode ? shareFace : infoFace}
             </ScrollView>
 
-            {/* Pinned actions: status-driven, single button set per row.
-              *  Absolutely positioned at the bottom of the card so the
-              *  ScrollView above is never squeezed by these buttons. */}
-            <View
-              style={styles.actions}
-              onLayout={(e) =>
-                setActionsHeight(e.nativeEvent.layout.height)
-              }
-            >
-              {/* The Copy button follows the link gate; the Start/Remove pair
-                *  follows `isActive`. They agree on a hosted row. On a
-                *  received row that is active but not announcing they differ,
-                *  and the answer is no link and no Start sharing. */}
-              {linkOfferable ? (
-                onCopy ? (
-                  <Pressable
-                    style={styles.primaryBtn}
-                    onPress={onCopy}
-                    accessibilityRole="button"
-                    accessibilityLabel="Copy link"
-                  >
-                    <Ionicons
-                      name="link-outline"
-                      size={18}
-                      color={theme.onPrimary}
-                    />
-                    <Text style={styles.primaryBtnText}>Copy Link</Text>
-                  </Pressable>
-                ) : null
-              ) : isActive ? null : (
-                <>
-                  {onActivate ? (
-                    <Pressable
-                      style={styles.startBtn}
-                      onPress={onActivate}
-                      accessibilityRole="button"
-                      accessibilityLabel="Start sharing"
-                    >
-                      <Ionicons
-                        name="share-outline"
-                        size={16}
-                        color={theme.primary}
-                      />
-                      <Text style={styles.startBtnText}>Start sharing</Text>
-                    </Pressable>
-                  ) : null}
-                  {onRemove ? (
-                    <Pressable
-                      style={styles.removeBtn}
-                      onPress={onPressRemove}
-                      accessibilityRole="button"
-                      accessibilityLabel="Remove"
-                    >
-                      <Ionicons
-                        name="trash-outline"
-                        size={16}
-                        color={theme.danger}
-                      />
-                      <Text style={styles.removeBtnText}>Remove</Text>
-                    </Pressable>
-                  ) : null}
-                </>
-              )}
-            </View>
-          </Pressable>
-        </Pressable>
-      </KeyboardAvoidingView>
+            {isShareMode ? (
+              <Pressable
+                style={styles.doneBtn}
+                onPress={onClose}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Done"
+              >
+                <Text style={styles.doneBtnText}>Done</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      </View>
       <ConfirmModal
         visible={confirming}
         title="Remove this share?"
@@ -603,29 +684,31 @@ function createStyles(
   bottomClearance: number,
 ) {
   return StyleSheet.create({
+    screen: { flex: 1 },
+    // Behind the card, edge to edge. A press on it closes the window.
     backdrop: {
-      flex: 1,
+      position: "absolute",
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
       backgroundColor: theme.scrim,
-      // Horizontal centering only. Vertical layout is driven by the
-      // explicit paddings below + card's flex:1, so justifyContent
-      // must NOT be "center" — that collapses the card's flex growth
-      // in some RN versions and lets the pinned actions overlap the
-      // scrolling middle.
+    },
+    // Where the card may be: clear of the status bar above and of the
+    // floating Send / Receive / Settings toolbar below. It takes no presses
+    // itself (`box-none`), so the dimmed area around the card still closes.
+    frame: {
+      flex: 1,
       alignItems: "center",
+      justifyContent: "center",
       paddingHorizontal: theme.pad,
-      // Safe-area + breathing room above so the card never touches the
-      // status bar / top edge of the app.
       paddingTop: topInset,
-      // Reserve room at the bottom so the card never overlaps the
-      // floating BottomToolbar (Send / Receive / Settings buttons).
       paddingBottom: bottomClearance,
     },
-    // Card takes the full available vertical space (constrained by the
-    // backdrop's paddings above). That gives every state — folder/file ×
-    // active/inactive — the same modal footprint; only the middle
-    // ScrollView content differs.
+    // As tall as what is in it, and no taller than the frame: `flexShrink`
+    // lets it give way, and the scroll area inside takes the squeeze.
     card: {
-      flex: 1,
+      flexShrink: 1,
       width: "100%",
       maxWidth: 420,
       borderRadius: 20,
@@ -634,8 +717,6 @@ function createStyles(
       borderColor: theme.border,
       padding: theme.pad,
       gap: 12,
-      // Clip children at the card boundary so scroll content can't
-      // visually leak behind the pinned actions.
       overflow: "hidden",
     },
     titleRow: {
@@ -715,58 +796,61 @@ function createStyles(
       fontWeight: "700",
       letterSpacing: 0.4,
     },
-    // ScrollView occupies whatever the pinned regions leave over.
-    // `minHeight: 0` is a defensive-flex-basis hint so RN never
-    // grants the scroll a min-content height that would overlap
-    // the actions below.
-    scroll: { flex: 1, minHeight: 0 },
-    // Trailing padding so the last section (Share info or Files)
-    // isn't visually flush with the pinned actions row.
-    body: { gap: 14, paddingBottom: 16 },
-    qrBlock: {
-      alignItems: "center",
-      gap: 6,
-    },
+    // No taller than its content, and the one piece of the card that
+    // shrinks when the card runs out of screen.
+    scroll: { flexGrow: 0, flexShrink: 1 },
+    body: { gap: 14 },
+    qrBlock: { alignItems: "center" },
     qrWrap: {
       padding: 12,
       borderRadius: 12,
       backgroundColor: "#ffffff",
     },
-    linkText: {
-      color: theme.muted,
-      fontSize: 12,
-      textAlign: "center",
-      paddingHorizontal: 8,
-    },
-    // Same-sized rounded tile as the QR wrap, so the block stays balanced
-    // whether the item is active or dormant. The subtle surface keeps it
-    // reading as a placeholder rather
-    // than a scannable code.
-    hintTile: {
-      width: QR_SIZE + 24,
-      height: QR_SIZE + 24,
+    // The link on one line with the copy mark at its right.
+    linkRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      minHeight: 44,
+      paddingHorizontal: 14,
       borderRadius: 12,
       backgroundColor: theme.surfaceSubtle,
       borderWidth: 1,
       borderColor: theme.border,
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 10,
-      paddingHorizontal: 16,
     },
-    hintTileTitle: {
+    linkRowPressed: { backgroundColor: theme.cardStrong },
+    linkRowText: {
+      flex: 1,
+      minWidth: 0,
+      color: theme.muted,
+      fontSize: 13,
+      fontWeight: "500",
+    },
+    // In place of the link when there is none to give.
+    note: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 12,
+      padding: 14,
+      borderRadius: 12,
+      backgroundColor: theme.surfaceSubtle,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    noteMain: { flex: 1, minWidth: 0, gap: 3 },
+    noteTitle: {
       color: theme.text,
       fontSize: 14,
       fontWeight: "700",
-      textAlign: "center",
     },
-    hintBody: {
+    noteBody: {
       color: theme.muted,
       fontSize: 12,
-      textAlign: "center",
-      paddingHorizontal: 8,
       lineHeight: 16,
     },
+    stack: { gap: 8 },
+    buttonRow: { flexDirection: "row", gap: 10 },
+    buttonRowItem: { flex: 1, paddingHorizontal: 10 },
     section: {
       paddingTop: 12,
       borderTopWidth: StyleSheet.hairlineWidth,
@@ -806,18 +890,6 @@ function createStyles(
       height: 8,
       borderRadius: 4,
     },
-    // Actions row pinned at the bottom by absolute positioning, using the
-    // card's own padding so the buttons align with the rest of its chrome.
-    actions: {
-      gap: 8,
-      position: "absolute",
-      left: theme.pad,
-      right: theme.pad,
-      bottom: theme.pad,
-      // Solid card background so any scrolling content behind the
-      // buttons (during over-scroll) is cleanly masked.
-      backgroundColor: theme.bg,
-    },
     primaryBtn: {
       flexDirection: "row",
       alignItems: "center",
@@ -831,6 +903,34 @@ function createStyles(
     primaryBtnText: {
       color: theme.onPrimary,
       fontWeight: "700",
+      fontSize: 15,
+    },
+    outlineBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      borderWidth: 1,
+      borderColor: theme.border,
+      backgroundColor: theme.surfaceSubtle,
+      paddingHorizontal: 16,
+      paddingVertical: 13,
+      borderRadius: 14,
+    },
+    outlineBtnText: {
+      color: theme.text,
+      fontWeight: "700",
+      fontSize: 15,
+    },
+    // Quiet, under the scroll area of the share face.
+    doneBtn: {
+      alignSelf: "center",
+      paddingHorizontal: 24,
+      paddingVertical: 8,
+    },
+    doneBtnText: {
+      color: theme.muted,
+      fontWeight: "600",
       fontSize: 15,
     },
     startBtn: {

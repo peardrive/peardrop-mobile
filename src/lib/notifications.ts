@@ -34,7 +34,7 @@ export const SENDER_AVAILABLE_CHANNEL_ID = "sender-available";
  * the accent Android tints the notification's small icon with.
  *
  * Read from the theme rather than restated as a hex, so the notification
- * cannot drift away from the app. `paper` is `DEFAULT_THEME_ID`; a fixed
+ * cannot drift away from the app. `void` (Pear dark) is `DEFAULT_THEME_ID`; a fixed
  * theme is deliberate here — this value is read outside React (and, for
  * the channel, once at boot), so it cannot follow a live theme change, and
  * a notification whose tint depended on when the channel happened to be

@@ -17,6 +17,8 @@ import { useVideoThumbnail } from "../lib/videoThumbnail";
 import { PINNING_ENABLED } from "../lib/pinning";
 import { FileKindBadge } from "./FileTypeIcon";
 import { highlightPlan } from "../lib/readyHighlight";
+import { ShareProgressBar } from "../vendor/pearkit/ShareState/ShareProgressBar";
+import { shareBarColorsFrom, type ShareBar } from "../vendor/pearkit/ShareState/shareState";
 
 
 /**
@@ -85,17 +87,22 @@ function useReadyHighlight(tick: number): Animated.Value {
   return value;
 }
 
+/** How long a hold has to last. The Pearkit rows in the other two views use the same. */
+const LONG_PRESS_MS = 500;
+
 export type ShareRowStatus = {
-  /** Copy shown in the sub-line. Falls through to `meta` when null/undefined. */
+  /** The state, one word or two: "Active", "Downloading 48%". Drawn in its colour, ahead of `meta`. */
   label: string;
   /**
-   * Which theme token drives the color:
-   *  - "warning" → `theme.warning` (amber "Sharing (NN%)")
-   *  - "primary" → `theme.primary` (green "Active"/"Completed")
-   *  - "danger"  → `theme.danger` (failed)
-   *  - "muted"   → default sub-text
+   * Which theme token colours the state (the rule is Pearkit's, the same in every app):
+   *  - "primary" → green: finished and available ("Active")
+   *  - "warning" → amber: not finished yet ("Downloading 48%", "Waiting", "Paused")
+   *  - "muted"   → grey: switched off ("Inactive")
+   *  - "danger"  → red: needs the person
    */
   tone: "warning" | "primary" | "danger" | "muted";
+  /** The progress bar under the line, for a share that is not finished. */
+  bar?: ShareBar | null;
 };
 
 export type ShareRowProps = {
@@ -110,7 +117,7 @@ export type ShareRowProps = {
    *  Ignored when `previewUri` is already set. */
   videoUri?: string | null;
   name: string;
-  /** Secondary line shown when `status` is null (e.g. "38 KB · 2h ago"). */
+  /** Size and date ("38 KB · 2h ago"), in grey after the state, or alone when there is no state. */
   meta: string;
   status?: ShareRowStatus | null;
   isFavorite?: boolean;
@@ -119,13 +126,15 @@ export type ShareRowProps = {
   isBundle?: boolean;
   dim?: boolean;
   onPress: () => void;
+  /** Hold for about half a second. The list uses it to start choosing several. */
+  onLongPress?: () => void;
   onKebabPress: () => void;
   /** Row divider at top. `false` on the first row of the list. */
   showTopDivider?: boolean;
   /**
-   * Multi-select: the row swaps the kebab for a leading checkbox and
-   * forwards taps to `onPress` as a toggle. The chevron stays for bundles,
-   * which remain expandable.
+   * Multi-select: the kebab goes, a checkbox appears on the left ahead of the
+   * picture, and taps reach `onPress` as a toggle. The chevron stays for
+   * bundles, which remain expandable.
    */
   selectionMode?: boolean;
   /** Only meaningful when `selectionMode` is true. */
@@ -156,6 +165,7 @@ export default function ShareRow({
   isBundle,
   dim,
   onPress,
+  onLongPress,
   onKebabPress,
   showTopDivider = true,
   selectionMode,
@@ -175,7 +185,17 @@ export default function ShareRow({
         : status?.tone === "danger"
           ? theme.danger
           : theme.muted;
-  const subText = status?.label ?? meta;
+  const subText = status ? `${status.label} · ${meta}` : meta;
+  const barColors = useMemo(
+    () =>
+      shareBarColorsFrom({
+        busy: theme.warning,
+        good: theme.primary,
+        track: theme.border,
+        stopped: theme.muted,
+      }),
+    [theme],
+  );
   return (
     <Pressable
       style={[
@@ -184,6 +204,8 @@ export default function ShareRow({
         dim && !selectionMode && styles.rowDim,
       ]}
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={LONG_PRESS_MS}
       accessibilityRole={selectionMode ? "checkbox" : "button"}
       accessibilityState={selectionMode ? { checked: !!selected } : undefined}
       accessibilityLabel={`${name}, ${subText}`}
@@ -205,6 +227,21 @@ export default function ShareRow({
           },
         ]}
       />
+      {selectionMode ? (
+        <View
+          style={styles.checkSlot}
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+        >
+          <View
+            style={[styles.checkbox, selected && styles.checkboxChecked]}
+          >
+            {selected ? (
+              <Ionicons name="checkmark" size={14} color={theme.onPrimary} />
+            ) : null}
+          </View>
+        </View>
+      ) : null}
       <View style={styles.thumb}>
         {thumbUri ? (
           <Image
@@ -246,12 +283,20 @@ export default function ShareRow({
             />
           ) : null}
         </View>
-        <Text
-          style={[styles.sub, { color: subColor }]}
-          numberOfLines={1}
-        >
-          {subText}
+        {/* The state in its own colour, then the size and date in grey: the colour says how the
+            share is doing, and it is never the whole line that goes grey. */}
+        <Text style={styles.sub} numberOfLines={1}>
+          {status ? <Text style={{ color: subColor }}>{status.label}</Text> : null}
+          {status ? ` · ${meta}` : meta}
         </Text>
+        {status?.bar ? (
+          <ShareProgressBar
+            value={status.bar.value}
+            look={status.bar.look}
+            colors={barColors}
+            style={styles.bar}
+          />
+        ) : null}
       </View>
       {isBundle ? (
         <View
@@ -266,21 +311,7 @@ export default function ShareRow({
           />
         </View>
       ) : null}
-      {selectionMode ? (
-        <View
-          style={styles.checkSlot}
-          accessibilityElementsHidden
-          importantForAccessibility="no"
-        >
-          <View
-            style={[styles.checkbox, selected && styles.checkboxChecked]}
-          >
-            {selected ? (
-              <Ionicons name="checkmark" size={14} color={theme.onPrimary} />
-            ) : null}
-          </View>
-        </View>
-      ) : (
+      {selectionMode ? null : (
         <Pressable
           style={styles.kebab}
           hitSlop={8}
@@ -308,7 +339,8 @@ function createStyles(theme: AppTheme) {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: theme.border,
     },
-    rowDim: { opacity: 0.85 },
+    // Only a share that is switched off.
+    rowDim: { opacity: 0.55 },
     // Behind the content, inside the row's own bounds. `accent` at a low
     // opacity is the light tint; the overlay itself never changes size.
     highlight: {
@@ -316,8 +348,9 @@ function createStyles(theme: AppTheme) {
       backgroundColor: theme.primary,
       opacity: 0,
     },
+    // Narrower than the kebab it replaces, so the row's words move as little as they can.
     checkSlot: {
-      width: 32,
+      width: 24,
       height: 32,
       alignItems: "center",
       justifyContent: "center",
@@ -365,10 +398,12 @@ function createStyles(theme: AppTheme) {
     },
     nameMark: { marginLeft: 6 },
     sub: {
+      color: theme.muted,
       fontSize: 13,
       marginTop: 2,
       fontWeight: "500",
     },
+    bar: { marginTop: 6 },
     chevron: {
       width: 28,
       alignItems: "center",

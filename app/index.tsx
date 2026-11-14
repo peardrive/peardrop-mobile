@@ -1,6 +1,7 @@
 import React from "react";
 import { StatusBar, View } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import * as SystemUI from "expo-system-ui";
 import Tabs from "../src/navigation/Tabs";
 import { ensureNotificationsReady } from "../src/lib/notifications";
 import { BackendProvider } from "../src/state/backend";
@@ -43,6 +44,14 @@ import { LIGHT_THEME_IDS } from "../src/ui/themes";
 function ThemedRoot({ children }: { children: React.ReactNode }) {
   const { theme, themeId } = useAppTheme();
   const isLightTheme = LIGHT_THEME_IDS.includes(themeId);
+  // The strips above the status bar and below the home bar are outside everything drawn here:
+  // with no root layout file, expo-router keeps the app inside the safe area on iPhone, and what
+  // shows around it is the window itself, which is white. Paint the window in the theme colour.
+  React.useEffect(() => {
+    SystemUI.setBackgroundColorAsync(theme.bg).catch(() => {
+      // Cosmetic only: the strips stay the system colour.
+    });
+  }, [theme.bg]);
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg }}>
       <StatusBar

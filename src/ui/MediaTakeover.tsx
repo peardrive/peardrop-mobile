@@ -9,7 +9,6 @@ import {
   AccessibilityInfo,
   Animated,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,7 +16,8 @@ import {
   View,
 } from "react-native";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AppModal as Modal } from "./AppModal";
+import { useScreenInsets } from "./useScreenInsets";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
@@ -59,7 +59,7 @@ export default function MediaTakeover({
   onMenu,
 }: MediaTakeoverProps) {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   const audioPlayer = useAudioPlayer(mode === "audio" && uri ? uri : null);

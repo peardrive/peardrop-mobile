@@ -2,16 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Linking,
-  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import { useAppTheme } from "../state/ThemeContext";
 import { useShareLinkFlow } from "../state/ShareLinkFlowContext";
 import { haptics } from "../lib/haptics";
@@ -184,7 +184,7 @@ const AnimatedCorner = Animated.createAnimatedComponent(View);
 
 export default function QrScanModal() {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { qrVisible, setQrVisible, resolveFromScan, requestManualEntry } =
     useShareLinkFlow();

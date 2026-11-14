@@ -1,0 +1,33 @@
+{
+  "piece": "MediaPlayer",
+  "from": "pearkit/src/components/MediaPlayer",
+  "branch": "feat/media-player",
+  "commit": "dcd5b13",
+  "uncommitted": true,
+  "files": {
+    "MediaPlayer.tsx": {
+      "copy": "d868a5deab4224435672a1802607faf1dc494233d92412ca0369c2e6ca2ff9bf",
+      "source": "d1c45ca420cd85f021737c2f119cee22c66db19f10f0ac2dfa283eea8200299c"
+    },
+    "PlayerIcon.tsx": {
+      "copy": "0b985e50366213d752f79ebab619210d7c56151d02b512a44d63e5d142625001",
+      "source": "3cea8096c450173e51c13dc27f09c0d01cb929d733278325c769a803a93f2e0a"
+    },
+    "PlayerMenu.tsx": {
+      "copy": "302add7760b55a2738abefc714378c38003bcabbc15fa5bf1843baa5bbb0bd37",
+      "source": "d1a040b8ff92abb9bbaa74975ee68762da097d8203e29a9b8354892863c3be6b"
+    },
+    "README.md": {
+      "copy": "c06b1141dde64abffa29f71a6c5158cdb8aa2cb9ec6193d383faa0bf1c8f7f90",
+      "source": "c06b1141dde64abffa29f71a6c5158cdb8aa2cb9ec6193d383faa0bf1c8f7f90"
+    },
+    "playerLogic.test.ts": {
+      "copy": "6eb54c1819000baee0d076b4ec9a07b1a30df15e0f8d9c83949f5f5f5734f6b6",
+      "source": "cd91c95d24de858500c3332dc2a64b04f4f1044861e710ea8e4f9b6219ab25a8"
+    },
+    "playerLogic.ts": {
+      "copy": "7d0dbc6bf4fa542cfac9235280fb62b94fd42ea544f41d4d93d9773432779d1c",
+      "source": "1fd887e362e9898537a5c02ed73a0847febf447b439ac6f861b136b79615f798"
+    }
+  }
+}

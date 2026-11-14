@@ -1,0 +1,25 @@
+{
+  "piece": "ShareState",
+  "from": "pearkit/src/components/ShareState",
+  "branch": "feat/media-player",
+  "commit": "dcd5b13",
+  "uncommitted": true,
+  "files": {
+    "README.md": {
+      "copy": "1c23ab3efbb4b5a72ed354174b3ce900a8050590c5f6205adbbec252d706de82",
+      "source": "1c23ab3efbb4b5a72ed354174b3ce900a8050590c5f6205adbbec252d706de82"
+    },
+    "ShareProgressBar.tsx": {
+      "copy": "3fcaccd7ba69fdd490a3513576ac156f9fce133ab71392b9df6368edcaca0afd",
+      "source": "2f9d5ef49b83a500245b887c3af6d07439c28a09a3339fb9431cc395a08247c2"
+    },
+    "shareState.test.ts": {
+      "copy": "e4bf32b79ae866d13e81acaf3ced54b2607a2bd69cd1f0ca5b307bd9a75d7d31",
+      "source": "23b9204c58f74c49874667bb1f53a3e919cbde5dd2b5e335c4a271b86552c337"
+    },
+    "shareState.ts": {
+      "copy": "ac8ff785762890a2b47dff076084b5dee218b253852b811e08cc5649aae29396",
+      "source": "d34b254ec77e6a0e5040ffe352ac9f1d028f0b660fb7f2b05645c604393cd010"
+    }
+  }
+}

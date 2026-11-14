@@ -20,6 +20,9 @@ import {
   ensurePermission as ensureNotificationPermission,
 } from "../lib/notifications";
 import { useAppTheme } from "../state/ThemeContext";
+import SegmentedControl from "../ui/SegmentedControl";
+import { setGridSize, useGridSize } from "../state/gridSizeStorage";
+import { GRID_SIZES } from "../vendor/pearkit/FileViews/fileViewLogic";
 import { THEME_ORDER, themes } from "../ui/themes";
 import { loadStats, subscribeStats, type Stats } from "../state/statsStorage";
 import { formatBytes, formatSimulateDelay } from "../lib/format";
@@ -92,6 +95,13 @@ import {
   subscribeBackgroundStart,
 } from "../lib/foregroundServiceSpike";
 import ConfirmModal from "../ui/ConfirmModal";
+import {
+  STORAGE_GROUPS,
+  STORAGE_GROUP_LABEL,
+  type StorageReport,
+} from "../lib/storageReport";
+import { cleanStorage, measureStorage } from "../state/storageRunner";
+import { deleteShare, loadShares } from "../state/receivedSharesStorage";
 import NameShareModal from "../ui/NameShareModal";
 
 /**
@@ -203,6 +213,7 @@ export default function SettingsScreen() {
     updatedAt: 0,
   });
   const [themeExpanded, setThemeExpanded] = useState(false);
+  const gridSize = useGridSize();
 
   // ---------------------------------------------------------------
   // debug logging
@@ -266,6 +277,117 @@ export default function SettingsScreen() {
   useEffect(() => {
     void refreshLogSize();
   }, [refreshLogSize, debugEnabled]);
+
+  // ---------------------------------------------------------------
+  // storage
+  // ---------------------------------------------------------------
+  const [storage, setStorage] = useState<StorageReport | null>(null);
+  const [storageExpanded, setStorageExpanded] = useState(false);
+  const [storageBusy, setStorageBusy] = useState(false);
+
+  const refreshStorage = useCallback(async () => {
+    try {
+      setStorage(await measureStorage());
+    } catch {
+      // Leave the last figures up: a failed count is no reason to show nothing.
+    }
+  }, []);
+
+  // Counted each time Settings comes to the front, so the figures follow what happened on the
+  // main screen in between.
+  useEffect(() => {
+    void refreshStorage();
+    return navigation.addListener("focus", () => void refreshStorage());
+  }, [navigation, refreshStorage]);
+
+  const onCleanUp = useCallback(async () => {
+    if (storageBusy) return;
+    const bytes = storage?.cleanableBytes ?? 0;
+    if (!storage || bytes <= 0) {
+      showToast("Nothing to clean up.");
+      return;
+    }
+    const ok = await askConfirm({
+      title: "Clean up storage?",
+      body: `This frees ${formatBytes(bytes)}: leftover copies, old thumbnails and temporary files. Your received and shared files stay.`,
+      confirmLabel: "Clean up",
+      cancelLabel: "Cancel",
+      tone: "primary",
+    });
+    if (!ok) return;
+    setStorageBusy(true);
+    try {
+      const { freedBytes, failed } = await cleanStorage();
+      showToast(
+        failed === 0
+          ? `Freed ${formatBytes(freedBytes)}.`
+          : failed === 1
+            ? `Freed ${formatBytes(freedBytes)}. One file couldn't be removed.`
+            : `Freed ${formatBytes(freedBytes)}. ${failed} files couldn't be removed.`,
+      );
+    } catch {
+      showToast("Couldn't clean up. Nothing was removed.", { kind: "error" });
+    } finally {
+      await refreshStorage();
+      setStorageBusy(false);
+    }
+  }, [askConfirm, refreshStorage, showToast, storage, storageBusy]);
+
+  /**
+   * The same delete the main screen does for one row, for every received share: the record and
+   * the app's copies through `deleteShare`, then the engine's own purge for each received drive.
+   */
+  const onDeleteAllReceived = useCallback(async () => {
+    if (storageBusy) return;
+    const shares = await loadShares().catch(() => []);
+    const receivedDrives = (backend.drives ?? []).filter((d) => d.origin === "received");
+    if (shares.length === 0 && receivedDrives.length === 0) {
+      showToast("Nothing to delete.");
+      return;
+    }
+    const ok = await askConfirm({
+      title: "Delete all received files?",
+      body:
+        shares.length === 1
+          ? "This removes the share you received and its files from this phone. The files you're sharing stay."
+          : `This removes all ${shares.length} shares you received and their files from this phone. The files you're sharing stay.`,
+      confirmLabel: "Delete all",
+      cancelLabel: "Cancel",
+      tone: "destructive",
+    });
+    if (!ok) return;
+    setStorageBusy(true);
+    let failedFiles = 0;
+    try {
+      for (const share of shares) {
+        try {
+          const { failed } = await deleteShare(share.shareKey);
+          failedFiles += failed.length;
+        } catch {
+          failedFiles += 1;
+        }
+      }
+      for (const drive of receivedDrives) {
+        try {
+          await backend.cancelTransfer(drive.id, { purge: true });
+        } catch {
+          // The record and files are already gone; the engine drops what is left of this drive
+          // the next time the share is deleted or the app starts clean.
+        }
+      }
+      await backend.refreshDrives().catch(() => {});
+      showToast(
+        failedFiles === 0
+          ? "Deleted."
+          : failedFiles === 1
+            ? "Deleted. One file couldn't be removed."
+            : `Deleted. ${failedFiles} files couldn't be removed.`,
+      );
+    } finally {
+      await refreshStorage();
+      setStorageBusy(false);
+    }
+  }, [askConfirm, backend, refreshStorage, showToast, storageBusy]);
 
   /**
    * Export: label prompt, bundle, share sheet, then the shared confirm.
@@ -835,6 +957,22 @@ export default function SettingsScreen() {
             </View>
           </View>
         ) : null}
+        {/* How big the pictures in the grid are. Pearkit's three sizes, so every app offers the same ones. */}
+        <View style={styles.gridSizeRow}>
+          <Text style={styles.followLabel}>Grid size</Text>
+          <Text style={styles.followHint}>How many pictures fit across in the grid view.</Text>
+          <View style={styles.gridSizeControl}>
+            <SegmentedControl
+              options={GRID_SIZES.map((choice) => ({
+                value: choice.value,
+                label: choice.name,
+                accessibilityLabel: `${choice.name}, ${choice.columns} across`,
+              }))}
+              value={gridSize}
+              onChange={setGridSize}
+            />
+          </View>
+        </View>
       </View>
 
       {/* Notifications section */}
@@ -872,6 +1010,60 @@ export default function SettingsScreen() {
             />
           </View>
         ) : null}
+      </View>
+
+      {/* Storage section */}
+      <SectionLabel theme={theme}>Storage</SectionLabel>
+      <View style={styles.sectionCard}>
+        <SettingsRow
+          theme={theme}
+          icon="pie-chart-outline"
+          label="PearDrop is using"
+          value={storage ? formatBytes(storage.total) : "Counting…"}
+          onPress={() => setStorageExpanded((v) => !v)}
+          trailing={storageExpanded ? "chevron-up" : "chevron-down"}
+          first
+        />
+        {storageExpanded ? (
+          <View style={[styles.themePanel, styles.storagePanel]}>
+            {STORAGE_GROUPS.map((group) => (
+              <View key={group} style={styles.storageLine}>
+                <Text style={styles.storageLineLabel}>{STORAGE_GROUP_LABEL[group]}</Text>
+                <Text style={styles.storageLineValue}>
+                  {storage ? formatBytes(storage.groups[group]) : "…"}
+                </Text>
+              </View>
+            ))}
+            <Text style={styles.followHint}>
+              Transfer data is what PearDrop keeps to send and receive a share. It goes when you
+              delete the share.
+            </Text>
+          </View>
+        ) : null}
+        <SettingsRow
+          theme={theme}
+          icon="sparkles-outline"
+          label="Clean up"
+          subtitle="Leftover copies and temporary files"
+          value={
+            storageBusy
+              ? "Working…"
+              : !storage
+                ? undefined
+                : storage.cleanableBytes > 0
+                  ? formatBytes(storage.cleanableBytes)
+                  : "Nothing to clean"
+          }
+          onPress={() => void onCleanUp()}
+        />
+        <SettingsRow
+          theme={theme}
+          icon="trash-outline"
+          label="Delete all received files"
+          subtitle="Takes them off your list and off this phone"
+          value={storage && !storageBusy ? formatBytes(storage.groups.received) : undefined}
+          onPress={() => void onDeleteAllReceived()}
+        />
       </View>
 
       {/* Support section */}
@@ -1443,6 +1635,13 @@ function createStyles(theme: AppTheme) {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: theme.border,
     },
+    gridSizeRow: {
+      paddingHorizontal: 16,
+      paddingVertical: 14,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: theme.border,
+    },
+    gridSizeControl: { marginTop: 10 },
     followRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -1450,6 +1649,16 @@ function createStyles(theme: AppTheme) {
       gap: 12,
       paddingTop: 12,
     },
+    // The storage breakdown: one line per group inside the same panel the theme picker opens.
+    storagePanel: { paddingTop: 14, gap: 10 },
+    storageLine: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+    },
+    storageLineLabel: { color: theme.text, fontSize: 14, flex: 1 },
+    storageLineValue: { color: theme.muted, fontSize: 14, fontVariant: ["tabular-nums"] },
     followLabel: { color: theme.text, fontWeight: "600", fontSize: 14 },
     followHint: {
       color: theme.muted,

@@ -360,7 +360,7 @@ export const themes: Record<ThemeId, AppTheme> = {
   synth: synthTheme,
 };
 
-export const DEFAULT_THEME_ID: ThemeId = "paper";
+export const DEFAULT_THEME_ID: ThemeId = "void"; // "Pear dark": the icon and splash are designed on black (Guy, 2026-11-12)
 
 export const THEME_ORDER: ThemeId[] = [
   "void",

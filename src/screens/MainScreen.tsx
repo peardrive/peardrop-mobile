@@ -1,32 +1,34 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Animated,
   FlatList,
-  Image,
   KeyboardAvoidingView,
   LayoutAnimation,
   Linking,
   ListRenderItem,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   UIManager,
   View,
+  useWindowDimensions,
 } from "react-native";
+import { AppModal as Modal } from "../ui/AppModal";
 import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
-import * as ImagePicker from "expo-image-picker";
+import { beforeSystemScreen, launchDocumentPicker, launchPhotoPicker } from "../lib/systemPickers";
 import * as FileSystemLegacy from "expo-file-system/legacy";
 import * as IntentLauncher from "expo-intent-launcher";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useNavigation } from "@react-navigation/native";
-import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
-import { useVideoPlayer, VideoView } from "expo-video";
 import RNFS from "react-native-fs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "../ui/useScreenInsets";
+import { MediaPlayer } from "../ui/MediaPlayer";
+import { usePlayerRotation } from "../ui/usePlayerRotation";
+import type { PlayerKind } from "../lib/playerLogic";
 
 import { log as debugLog, logStructuredError } from "../lib/debugLog";
 import { INTENT_SHOW_SHARES, setIntentHandler } from "../lib/pendingIntents";
@@ -62,7 +64,8 @@ import {
   type PreviewMode,
 } from "../lib/files";
 import { describeOpenFailure } from "../lib/openFileResult";
-import { openSavedFile } from "../lib/openSavedFile";
+import { openSavedFile, shareSavedFile } from "../lib/openSavedFile";
+import { orderKebabItems } from "../lib/kebabOrder";
 import { canConfirmShareName, checkShareName } from "../lib/shareName";
 import {
   isUuidLikeName,
@@ -116,7 +119,7 @@ import {
   subscribeHostedFlags,
   type HostedShareFlags,
 } from "../state/hostedShareFlagsStorage";
-import { formatBytes, formatClock, formatRelativeOrDate } from "../lib/format";
+import { formatBytes, formatRelativeOrDate } from "../lib/format";
 import {
   describeHoldings,
   holdingsBytesLabel,
@@ -126,9 +129,7 @@ import {
 // three times, each time as one more ad-hoc branch. All four outcomes are named
 // and tested in this module now; a fifth belongs there, not here.
 import { rowTapRoute } from "../lib/receivedRowRoute";
-import { isLoopStatus, statusLines } from "../lib/waitingStatus";
 import {
-  rowLineTakesTypePrefix,
   shareView,
   type FlapHold,
   type ShareView,
@@ -170,6 +171,8 @@ import { extractKey } from "../lib/links";
 // the confirm wording lives in a pure module
 // so the suite can assert it; this file is unreachable from jest.
 import { describeDeleteConfirm } from "../lib/deleteReceivedPlan";
+import { describeCancelConfirm, downloadControls } from "../lib/downloadControls";
+import { keptCopyDir, planKeptCopies } from "../lib/sharedCopyKeep";
 // the row control decision, kept pure so
 // the "no control may stop a share" guarantee is assertable.
 import { folderRowControl } from "../lib/folderRowControl";
@@ -178,7 +181,13 @@ import {
   receiveRowStatus,
   resolveReceivedTransfer,
 } from "../lib/receiveProgress";
-import { hostedRowStatus } from "../lib/hostedRowStatus";
+import { compactRow, rowIndicator, rowState, rowTone, shareKind } from "../lib/fileViewRow";
+import { FILE_VIEW_MODES, setFileView, useFileView } from "../state/fileViewStorage";
+import ShareFileCell from "../ui/ShareFileCell";
+import { DARK_FILE_VIEW_COLORS, type FileViewColors } from "../vendor/pearkit/FileViews/FileRows";
+import { ViewMenu } from "../vendor/pearkit/FileViews/ViewMenu";
+import { gridColumns, gridMetrics, type FileViewItem } from "../vendor/pearkit/FileViews/fileViewLogic";
+import { useGridSize } from "../state/gridSizeStorage";
 import {
   canOfferStartSharing,
   isSyntheticShareRowId,
@@ -236,7 +245,6 @@ if (
  */
 const canSaveToDownloads = isSaveToDownloadsAvailable();
 
-/** The one line a waiting row shows, or null when the ordinary received chain answers. */
 /** The row's view comes from the model the picker renders, so nothing here decides a string, percentage or count. */
 function receivedRowView(
   share: ReceivedShare | undefined,
@@ -244,6 +252,7 @@ function receivedRowView(
   now: number,
   holds?: Map<string, FlapHold>,
   floors?: Map<string, RowFloor>,
+  sharingOff?: boolean,
 ): ShareView | null {
   if (!share) return null;
   // One shared reading: two inline readings made the row say sender offline while the picker said Starting.
@@ -255,26 +264,11 @@ function receivedRowView(
     // The anti-flap hold, because both inputs are edge-triggered on a link that can reset several times a minute.
     hold: holds?.get(share.shareKey) ?? null,
     floor: floors?.get(share.shareKey) ?? null,
+    sharingOff,
   });
   holds?.set(share.shareKey, view.hold);
   floors?.set(share.shareKey, view.floor);
   return view;
-}
-
-function waitingLine(share: ReceivedShare | undefined): string | null {
-  if (!share) return null;
-  const lines = statusLines({
-    status: share.status,
-    files: share.files,
-    selection: share.selection,
-    missing: share.missing,
-    lastUpdatedAt: share.lastUpdatedAt,
-    now: Date.now(),
-  });
-  const parts = [lines.primary, lines.missing].filter(
-    (x): x is string => typeof x === "string" && x.length > 0,
-  );
-  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 type DriveRow = DriveRecord & {
@@ -315,6 +309,12 @@ type PreviewState = {
   /** parent drive id (or share synth id) so the preview's
    *  three-dots menu can route "Show QR" back to the right drive record. */
   parentDriveId?: string;
+  /** Set when the file was reached by swiping in the player: the side it arrives from, and
+   *  whether the file before it was playing (so this one starts playing too). */
+  enterFrom?: "left" | "right";
+  autoPlay?: boolean;
+  /** Counts the swipes, so each file gets a player of its own even when two rows hold the same file. */
+  step?: number;
 };
 
 type PickerSheet = "share-files" | null;
@@ -346,10 +346,17 @@ async function deleteHostedShareCopies(driveId: string): Promise<void> {
   try {
     const entries = await loadSharedFilePaths();
     const entry = entries.find((e) => e.driveId === driveId);
-    const plan = planCopyDeletion(
-      (entry?.files ?? []).map((f) => f.localPath),
-      RNFS.CachesDirectoryPath,
-    );
+    const keptDir = keptCopyDir(RNFS.DocumentDirectoryPath, driveId);
+    const paths = (entry?.files ?? []).map((f) => f.localPath);
+    const inCaches = planCopyDeletion(paths, RNFS.CachesDirectoryPath);
+    // The copies kept for this share alone. Anything refused by both plans is somewhere else
+    // (the person's own file, or another share's copy) and stays.
+    const inKept = keptDir ? planCopyDeletion(paths, keptDir) : { remove: [], refused: [] };
+    const removable = new Set([...inCaches.remove, ...inKept.remove]);
+    const plan = {
+      remove: [...removable],
+      refused: inCaches.refused.filter((r) => !removable.has(r.path)),
+    };
     for (const refused of plan.refused) {
       debugLog("warn", "rn.share", `copy delete refused: ${refused.reason}`);
     }
@@ -358,6 +365,13 @@ async function deleteHostedShareCopies(driveId: string): Promise<void> {
         await RNFS.unlink(path);
       } catch {
         // Already gone, or the OS purged the cache first. Nothing left to remove either way.
+      }
+    }
+    if (keptDir) {
+      try {
+        if (await RNFS.exists(keptDir)) await RNFS.unlink(keptDir);
+      } catch {
+        // An empty folder left behind costs nothing and names nothing.
       }
     }
     debugLog(
@@ -369,6 +383,53 @@ async function deleteHostedShareCopies(driveId: string): Promise<void> {
     logStructuredError("rn.share", "could not delete a share's cache copies", e);
   }
   await removeSharedFilePaths(driveId);
+}
+
+/**
+ * Give a new share's picked files a home the system leaves alone, and record where they went.
+ *
+ * The pickers leave their copy in the caches, which iOS empties on every update: the share kept
+ * working for everyone else while this phone could no longer open its own file. The rule for
+ * what moves where is `planKeptCopies`; this only carries it out. A file that cannot be moved
+ * keeps the path it had, so nothing is worse than before.
+ */
+async function keepSharedCopies(driveId: string, files: SharedFilePath[]): Promise<void> {
+  const save = (list: SharedFilePath[]) =>
+    saveSharedFilePathsEntry({ driveId, files: list, savedAt: Date.now() });
+  // Recorded straight away with the paths as picked, so the row can open its file at once.
+  await save(files);
+  const dir = keptCopyDir(RNFS.DocumentDirectoryPath, driveId);
+  if (!dir) return;
+  const steps = planKeptCopies(files, {
+    purgeableRoots: [RNFS.CachesDirectoryPath, RNFS.TemporaryDirectoryPath],
+    keepDir: dir,
+  });
+  if (steps.length === 0) return;
+  try {
+    // Kept out of the phone's backup: the share itself already holds these bytes.
+    await RNFS.mkdir(dir, { NSURLIsExcludedFromBackupKey: true });
+  } catch (e: unknown) {
+    logStructuredError("rn.share", "could not make the folder for a share's copies", e);
+    return;
+  }
+  const kept = files.slice();
+  let moved = 0;
+  for (const step of steps) {
+    try {
+      // iPhone refuses a move or a copy onto a file that is already there. Nothing else writes
+      // in this share's folder, so anything in the way is a leftover of an earlier try.
+      if (await RNFS.exists(step.to)) await RNFS.unlink(step.to);
+      if (step.how === "copy") await RNFS.copyFile(step.from, step.to);
+      else await RNFS.moveFile(step.from, step.to);
+      const was = kept[step.index];
+      if (was) kept[step.index] = { ...was, localPath: step.to };
+      moved += 1;
+    } catch (e: unknown) {
+      logStructuredError("rn.share", "could not keep a copy of a shared file", e);
+    }
+  }
+  debugLog("info", "rn.share", `kept copies drive=${driveId} kept=${moved} of=${steps.length}`);
+  if (moved > 0) await save(kept);
 }
 
 function rowDisplayName(d: DriveRecord): string {
@@ -423,7 +484,9 @@ function createStyles(theme: AppTheme) {
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: theme.border,
     },
-    selectionHeaderBtn: { minWidth: 60 },
+    // Equal sides, so the count stays in the middle whatever each side holds.
+    selectionHeaderSide: { flex: 1, flexDirection: "row", alignItems: "center" },
+    selectionHeaderRight: { justifyContent: "flex-end", gap: 18 },
     selectionHeaderCancel: {
       color: theme.text,
       fontSize: 15,
@@ -615,13 +678,6 @@ function createStyles(theme: AppTheme) {
     audioTimeText: { color: theme.muted, fontSize: 11, fontVariant: ["tabular-nums"] },
     // fullscreen takeover styles. Pure black background,
     // chrome floats over the media via absolute positioning.
-    fsRoot: { flex: 1, backgroundColor: "#000" },
-    fsMediaWrap: { flex: 1, alignItems: "center", justifyContent: "center" },
-    fsVideo: { width: "100%", height: "100%" },
-    fsImage: { width: "100%", height: "100%" },
-    // Tap-surface that toggles play/pause + chrome. Sits over the video,
-    // below the chrome icons (z-order: video → tap layer → chrome).
-    fsTapLayer: { ...StyleSheet.absoluteFillObject as object },
     fsTopBar: {
       position: "absolute",
       top: 0,
@@ -629,12 +685,12 @@ function createStyles(theme: AppTheme) {
       right: 0,
       // extra horizontal padding so the back arrow sits inboard,
       // not flush with the screen edge. Top inset added at render-time
-      // via useSafeAreaInsets so the icon clears the status bar.
+      // via useScreenInsets so the icon clears the status bar.
       paddingHorizontal: 12,
       paddingBottom: 16,
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "flex-start",
+      justifyContent: "space-between",
       backgroundColor: "rgba(0,0,0,0.45)",
       // Make sure the chrome paints above the tap-layer regardless of any
       // child elevation quirks.
@@ -669,99 +725,6 @@ function createStyles(theme: AppTheme) {
       borderColor: "rgba(255,255,255,0.20)",
     },
     fsShareBtnText: { color: "#fff", fontSize: 13, fontWeight: "600" },
-    fsBottomBar: {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      bottom: 0,
-      paddingHorizontal: 16,
-      paddingTop: 14,
-      paddingBottom: 18,
-      backgroundColor: "rgba(0,0,0,0.45)",
-    },
-    fsScrubber: { height: 28, justifyContent: "center" },
-    fsScrubberTrack: {
-      height: 4,
-      borderRadius: 999,
-      backgroundColor: "rgba(255,255,255,0.25)",
-      overflow: "hidden",
-    },
-    fsScrubberFill: { height: "100%", backgroundColor: "#fff" },
-    fsTimeRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      marginTop: 6,
-    },
-    fsTimeText: {
-      color: "rgba(255,255,255,0.85)",
-      fontSize: 11,
-      fontVariant: ["tabular-nums"],
-    },
-    fsCenterPlay: {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    fsCenterPlayBtn: {
-      width: 76,
-      height: 76,
-      borderRadius: 38,
-      backgroundColor: "rgba(0,0,0,0.45)",
-      alignItems: "center",
-      justifyContent: "center",
-      borderWidth: 1,
-      borderColor: "rgba(255,255,255,0.35)",
-    },
-    // Audio takeover: centered cover + controls below. No auto-hide.
-    fsAudioShell: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      paddingHorizontal: 24,
-      gap: 18,
-    },
-    fsAudioCover: {
-      width: "60%",
-      aspectRatio: 1,
-      maxWidth: 320,
-      borderRadius: 16,
-      backgroundColor: "rgba(255,255,255,0.05)",
-      borderWidth: 1,
-      borderColor: "rgba(255,255,255,0.12)",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    fsAudioMeta: { color: "rgba(255,255,255,0.92)", fontSize: 15, fontWeight: "600" },
-    fsAudioControlsRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 28,
-      marginTop: 4,
-    },
-    fsAudioCtrlBtn: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: "rgba(255,255,255,0.08)",
-      borderWidth: 1,
-      borderColor: "rgba(255,255,255,0.18)",
-    },
-    fsAudioPlayBtn: {
-      width: 64,
-      height: 64,
-      borderRadius: 32,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: "#fff",
-    },
-    fsAudioScrubberRow: { alignSelf: "stretch", marginTop: 12 },
     // Text takeover uses theme.bg for readability rather than pure black.
     fsTextRoot: { flex: 1, backgroundColor: theme.bg },
     fsTextScroll: { flex: 1, paddingHorizontal: 20, paddingTop: 64 },
@@ -785,6 +748,8 @@ function createStyles(theme: AppTheme) {
 
 export default function MainScreen() {
   const insets = useSafeAreaInsets();
+  // The player is a modal: it covers the whole screen, so it needs the screen's own edges.
+  const screenInsets = useScreenInsets();
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const navigation = useNavigation<any>();
@@ -838,8 +803,10 @@ export default function MainScreen() {
     // already finished. See lib/receiveProgress.ts.
     sessionDriveId,
     lastResolvedLink,
-    retryWaitingRow,
     stopWaitingRow,
+    pauseRow,
+    resumeRow,
+    driveIdsForShare,
     flapHolds,
     rowFloors,
   } = useShareLinkFlow();
@@ -940,22 +907,17 @@ export default function MainScreen() {
     });
   }, []);
   const [qrDriveId, setQrDriveId] = useState<string | null>(null);
+  // Which of its two faces the share window shows for `qrDriveId`: "share" is the QR code and
+  // the link and nothing else (the menu's Share line, and a share just made); "info" is the
+  // details, with the QR folded away (More info, and a row with nothing else to open).
+  const [qrMode, setQrMode] = useState<"share" | "info">("info");
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [previewText, setPreviewText] = useState("");
   // Themed delete confirmation. Holds the drive pending deletion or null.
   // Replaces the native Alert.alert so the dialog matches the app theme.
   const [pendingDelete, setPendingDelete] = useState<DriveRow | null>(null);
-  const [audioPosition, setAudioPosition] = useState(0);
-  const [audioDuration, setAudioDuration] = useState(0);
-  const [scrubWidth, setScrubWidth] = useState(0);
-  // Fullscreen takeover preview state.
-  const [videoIsPlaying, setVideoIsPlaying] = useState(false);
-  const [videoPosition, setVideoPosition] = useState(0);
-  const [videoDuration, setVideoDuration] = useState(0);
-  const [videoScrubWidth, setVideoScrubWidth] = useState(0);
-  const [chromeVisible, setChromeVisible] = useState(true);
-  const chromeOpacity = useRef(new Animated.Value(1)).current;
-  const chromeHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The unfinished download whose Cancel is waiting for an answer. */
+  const [pendingCancel, setPendingCancel] = useState<DriveRow | null>(null);
   // Drive IDs hidden from the UI because the user just confirmed delete —
   // engine purge is in-flight. Removed from the set once the engine's
   // drives list no longer contains the ID (refreshDrives caught up).
@@ -971,18 +933,13 @@ export default function MainScreen() {
   // or null when the modal is dismissed.
   const [folderModalId, setFolderModalId] = useState<string | null>(null);
   /**
-   * The LIVE swarm mode of a
-   * received share, keyed by lower-cased shareKey.
+   * The swarm mode an `activate` reply has just reported for a received share,
+   * keyed by lower-cased shareKey.
    *
-   * Written only from an `activate` reply's `mode`, which is the one field that
-   * states what the engine actually set up. Nothing else in RN can observe the
-   * swarm: `activeDriveIds` holds every hydrated received drive and says
-   * nothing about announcing, and `engineListDrives` reports the persisted
-   * `reshared` intent rather than a live mode.
-   *
-   * Session-scoped by design. An empty map after a restart is the honest state
-   * "this session has not asked", and `receivedShareIsAnnouncing` falls back to
-   * `reshared` + completeness for exactly that window.
+   * It bridges one gap only: the reply arrives before the engine's list of
+   * drives has been read again. `onReshare` writes it, re-reads the list, and
+   * removes it, after which the list's own `swarmMode` is the answer. Kept any
+   * longer it would go stale the moment the engine changed mode by itself.
    */
   const [observedReshareModes, setObservedReshareModes] = useState<
     Record<string, ReshareMode>
@@ -991,6 +948,34 @@ export default function MainScreen() {
   const [receivedShares, setReceivedShares] = useState<ReceivedShare[]>([]);
   /** One tick per row that has just become ready, plus the list ref that brings it on screen. The tick is a counter, not a flag, so a re-render cannot replay the tint. */
   const listRef = useRef<FlatList<ListItem> | null>(null);
+  // List, expanded list or grid: the same shares, three layouts. The shapes are Pearkit's.
+  const fileView = useFileView();
+  const { width: windowWidth } = useWindowDimensions();
+  // How many across comes from Settings → Appearance: Large 3, Medium 4 (the default), Small 5.
+  const gridSize = useGridSize();
+  const grid = useMemo(
+    () => gridMetrics(windowWidth, { edge: theme.pad, columns: gridColumns(gridSize) }),
+    [windowWidth, theme.pad, gridSize],
+  );
+  const gridColumnsRef = useRef(1);
+  gridColumnsRef.current = fileView === "grid" ? grid.columns : 1;
+  const fileViewColors = useMemo<FileViewColors>(
+    () => ({
+      ...DARK_FILE_VIEW_COLORS,
+      text: theme.text,
+      muted: theme.muted,
+      good: theme.primary,
+      busy: theme.warning,
+      bad: theme.danger,
+      tile: theme.cardStrong,
+      glyph: theme.text,
+      line: theme.border,
+      stripe: theme.surfaceSubtle,
+      accent: theme.primary,
+      onAccent: theme.onPrimary,
+    }),
+    [theme],
+  );
   const [readyTicks, setReadyTicks] = useState<Record<string, number>>({});
   const prevReadyRef = useRef<ReadyRow[] | null>(null);
   const [hostedFlags, setHostedFlags] = useState<HostedShareFlags[]>([]);
@@ -1021,6 +1006,32 @@ export default function MainScreen() {
   const exitSelectionMode = useCallback(() => {
     setSelectionMode(false);
     setSelectedIds(new Set());
+  }, []);
+  /**
+   * A row picked by a hold or by a swipe to the right. Outside selection mode that starts it with
+   * this row chosen; inside, it ticks or unticks the row like a tap does. One function for both
+   * because `selectedIds` is empty whenever the mode is off.
+   */
+  const selectFromRow = useCallback((id: string) => {
+    haptics.selection();
+    setSelectionMode(true);
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  /**
+   * Stop the list scrolling while a row is being swiped sideways, and let it go after.
+   *
+   * On iPhone a row holding the finger does not stop the list taking it back, and it does so as
+   * soon as the finger has drifted a few points up or down. Every thumb swipe drifts, so Delete
+   * would start to appear and the row would snap shut. Set straight on the native list rather
+   * than through state, so a swipe does not re-render this whole screen as it begins.
+   */
+  const lockListScroll = useCallback((locked: boolean) => {
+    listRef.current?.setNativeProps({ scrollEnabled: !locked });
   }, []);
   // Watch the QR scanner's "Enter link manually" signal — open Receive
   // with the paste input focused. `manualEntryTick > 0` guard skips the
@@ -1277,6 +1288,21 @@ export default function MainScreen() {
   /** The anti-flap hold, taken from the flow context so the row and the picker share one per share key. */
   // A ref local to this screen was a second source of truth: the picker's hold initialised fresh on open while this one still held a value a window old.
   const rowHolds = flapHolds;
+  /**
+   * The links whose finished copy the person switched off with Stop sharing. The engine keeps
+   * that answer for good and reports it on every received drive, so a row can say Inactive and
+   * stay that way across launches. An empty set until the engine has answered: a finished copy
+   * reads Active until then, which is also the default.
+   */
+  const stoppedShareKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const d of drives ?? []) {
+      if (d.origin === "received" && d.reshared === false && d.key) {
+        keys.add(String(d.key).toLowerCase());
+      }
+    }
+    return keys;
+  }, [drives]);
   const rowFloorMap = rowFloors;
 
   const transferForRow = useCallback(
@@ -1305,20 +1331,34 @@ export default function MainScreen() {
     (row: DriveRow): ReshareSignals => {
       const shareKey = (row.share?.shareKey ?? "").toLowerCase();
       const holdings = row.share ? describeHoldings(row.share.files) : null;
-      const engine = shareKey
-        ? (drives ?? []).find(
+      // An old install can hold several engine drives for one link, and only
+      // one of them shares it, so every one is read: the share is announcing
+      // when any copy is.
+      const engines = shareKey
+        ? (drives ?? []).filter(
             (d) =>
               d.origin === "received" &&
               String(d.key ?? "").toLowerCase() === shareKey,
           )
-        : undefined;
+        : [];
+      const reported = engines
+        .map((d) => d.swarmMode)
+        .filter((m): m is ReshareMode => !!m);
+      const liveMode: ReshareMode | null = reported.includes("server")
+        ? "server"
+        : reported.includes("client")
+          ? "client"
+          : reported.length > 0
+            ? "none"
+            : null;
       return {
         origin: row.origin,
         complete: !!holdings?.allHeld,
         driveId:
           row.share?.driveId ?? shareKeyDriveIndex.get(shareKey) ?? null,
-        reshared: engine?.reshared === true,
-        sessionUp: !!engine && !failedHydrationIds.has(engine.id),
+        reshared: engines.some((d) => d.reshared === true),
+        sessionUp: engines.some((d) => !failedHydrationIds.has(d.id)),
+        liveMode,
         observedMode: observedReshareModes[shareKey] ?? null,
       };
     },
@@ -1468,7 +1508,12 @@ export default function MainScreen() {
       // `viewPosition: 0.5` centres it, and the failure handler is required:
       // `scrollToIndex` throws on a row it has not measured yet.
       try {
-        listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+        // In the grid the list counts lines of pictures, not single shares.
+        listRef.current?.scrollToIndex({
+          index: Math.floor(index / gridColumnsRef.current),
+          animated: true,
+          viewPosition: 0.5,
+        });
       } catch {
         // An unmeasured row is not worth an exception; the tint still plays.
       }
@@ -1525,6 +1570,14 @@ export default function MainScreen() {
     if (ready) void refreshDrives();
   }, [ready, refreshDrives]);
 
+  // The one row chosen in selection mode, when it is exactly one: the selection bar then offers
+  // that row's own menu.
+  const onlySelectedDrive = useMemo(() => {
+    if (!selectionMode || selectedIds.size !== 1) return undefined;
+    const [id] = selectedIds;
+    return sortedDrives.find((d) => d.id === id);
+  }, [selectionMode, selectedIds, sortedDrives]);
+
   // Resolve which drive is highlighted in the QR/info modal.
   const qrDrive = useMemo(
     () => (qrDriveId ? sortedDrives.find((d) => d.id === qrDriveId) : undefined),
@@ -1552,186 +1605,75 @@ export default function MainScreen() {
       ? preview.file.path
       : `file://${preview.file.path}`;
   }, [preview]);
-  const audioUri = preview?.mode === "audio" ? previewUri : null;
-  const videoUri = preview?.mode === "video" ? previewUri : null;
-  const audioPlayer = useAudioPlayer(audioUri);
-  const audioStatus = useAudioPlayerStatus(audioPlayer);
-  const videoPlayer = useVideoPlayer(videoUri, (p) => {
-    p.loop = false;
-  });
-
-  // Poll audio currentTime / duration at 4 Hz while audio preview is open.
-  // expo-audio exposes `playing` reactively but not currentTime; we read it
-  // directly from the player at a steady cadence to drive the scrubber.
-  useEffect(() => {
-    if (preview?.mode !== "audio" || !audioPlayer) {
-      setAudioPosition(0);
-      setAudioDuration(0);
-      return;
-    }
-    const tick = () => {
-      try {
-        const pos = Number(audioPlayer.currentTime || 0);
-        const dur = Number(audioPlayer.duration || 0);
-        if (Number.isFinite(pos)) setAudioPosition(pos);
-        if (Number.isFinite(dur) && dur > 0) setAudioDuration(dur);
-      } catch {
-        // expo-audio can throw mid-dispose; next tick resyncs.
-      }
-    };
-    tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-  }, [preview?.mode, audioPlayer]);
-
-  const onAudioSkip = useCallback(
-    (deltaSeconds: number) => {
-      if (!audioPlayer) return;
-      try {
-        const dur = Number(audioPlayer.duration || audioDuration || 0);
-        const cur = Number(audioPlayer.currentTime || audioPosition || 0);
-        const next = Math.max(0, Math.min(dur || cur + deltaSeconds, cur + deltaSeconds));
-        audioPlayer.seekTo(next);
-        setAudioPosition(next);
-      } catch {
-        // ignore — next poll tick will resync
-      }
-    },
-    [audioPlayer, audioDuration, audioPosition],
-  );
-
-  const onAudioSeekToFraction = useCallback(
-    (fraction: number) => {
-      if (!audioPlayer) return;
-      const dur = Number(audioPlayer.duration || audioDuration || 0);
-      if (!Number.isFinite(dur) || dur <= 0) return;
-      const target = Math.max(0, Math.min(dur, dur * fraction));
-      try {
-        audioPlayer.seekTo(target);
-        setAudioPosition(target);
-      } catch {
-        // ignore — next poll tick will resync
-      }
-    },
-    [audioPlayer, audioDuration],
-  );
-
-  // poll video currentTime / duration / playing at 4 Hz while
-  // the takeover is open, mirroring the audio pattern. expo-video doesn't
-  // expose a reactive playing flag we can subscribe to without useEvent.
-  useEffect(() => {
-    if (preview?.mode !== "video" || !videoPlayer) {
-      setVideoIsPlaying(false);
-      setVideoPosition(0);
-      setVideoDuration(0);
-      return;
-    }
-    const tick = () => {
-      try {
-        setVideoIsPlaying(!!videoPlayer.playing);
-        const pos = Number(videoPlayer.currentTime || 0);
-        const dur = Number(videoPlayer.duration || 0);
-        if (Number.isFinite(pos)) setVideoPosition(pos);
-        if (Number.isFinite(dur) && dur > 0) setVideoDuration(dur);
-      } catch {
-        // expo-video can throw mid-dispose; next tick resyncs.
-      }
-    };
-    tick();
-    const id = setInterval(tick, 250);
-    return () => clearInterval(id);
-  }, [preview?.mode, videoPlayer]);
-
-  // chrome auto-hide for the video takeover. Chrome stays
-  // visible while paused (the user is engaging); when playing, fades out
-  // after 3 s of no taps. Any tap on the video tap-surface fades it back
-  // in and resets the timer. Other media types (audio/image/text) keep
-  // chrome visible always — `scheduleChromeHide` is a no-op outside video.
-  const scheduleChromeHide = useCallback(() => {
-    if (chromeHideTimerRef.current) {
-      clearTimeout(chromeHideTimerRef.current);
-      chromeHideTimerRef.current = null;
-    }
-    if (preview?.mode !== "video" || !videoIsPlaying) return;
-    chromeHideTimerRef.current = setTimeout(() => {
-      Animated.timing(chromeOpacity, {
-        toValue: 0,
-        duration: 250,
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) setChromeVisible(false);
-      });
-    }, 3000);
-  }, [preview?.mode, videoIsPlaying, chromeOpacity]);
-
-  const showChrome = useCallback(() => {
-    setChromeVisible(true);
-    Animated.timing(chromeOpacity, {
-      toValue: 1,
-      duration: 150,
-      useNativeDriver: true,
-    }).start();
-    scheduleChromeHide();
-  }, [chromeOpacity, scheduleChromeHide]);
-
-  // Reset chrome state every time the preview opens / changes mode, and
-  // reschedule the hide whenever playing-state flips while in video mode.
-  useEffect(() => {
-    if (!preview) {
-      if (chromeHideTimerRef.current) {
-        clearTimeout(chromeHideTimerRef.current);
-        chromeHideTimerRef.current = null;
-      }
-      chromeOpacity.setValue(1);
-      setChromeVisible(true);
-      return;
-    }
-    chromeOpacity.setValue(1);
-    setChromeVisible(true);
-    scheduleChromeHide();
-  }, [preview, videoIsPlaying, scheduleChromeHide, chromeOpacity]);
+  const playerKind: PlayerKind | null =
+    preview?.mode === "video" || preview?.mode === "audio" || preview?.mode === "image"
+      ? preview.mode
+      : null;
+  // A video follows the Orientation choice, a picture turns with the phone, sound stays upright;
+  // the app is upright again the moment the player closes.
+  const playerRotation = usePlayerRotation(!!preview, playerKind);
 
   const closePreview = useCallback(() => {
-    if (audioPlayer?.playing) audioPlayer.pause();
-    if (videoPlayer?.playing) videoPlayer.pause();
     setPreview(null);
     setPreviewText("");
-    if (chromeHideTimerRef.current) {
-      clearTimeout(chromeHideTimerRef.current);
-      chromeHideTimerRef.current = null;
-    }
-  }, [audioPlayer, videoPlayer]);
+  }, []);
 
-  // Tap surface on the video toggles playback AND keeps chrome visible.
-  // OS-player-style: tapping the video is the primary pause/play gesture
-  // once a video is going. The center play button still works for the
-  // "I just opened this and it's paused" case.
-  const onVideoTap = useCallback(() => {
-    showChrome();
-    if (!videoPlayer) return;
-    try {
-      if (videoPlayer.playing) videoPlayer.pause();
-      else videoPlayer.play();
-    } catch {
-      // expo-video can throw mid-dispose; ignore.
+  // Swiping left or right in the player moves through every file it can show (video, sound,
+  // pictures), in the order the list shows them.
+  const playableFiles = useMemo(() => {
+    const out: { file: DriveLocalFile; parentDriveId: string }[] = [];
+    for (const d of visibleDrives) {
+      for (const file of d.localFiles ?? []) {
+        const mode = previewModeFor(file.name);
+        if (mode === "video" || mode === "audio" || mode === "image") {
+          out.push({ file, parentDriveId: d.id });
+        }
+      }
     }
-  }, [videoPlayer, showChrome]);
+    return out;
+  }, [visibleDrives]);
 
-  const onVideoSeekToFraction = useCallback(
-    (fraction: number) => {
-      if (!videoPlayer) return;
-      const dur = Number(videoPlayer.duration || videoDuration || 0);
-      if (!Number.isFinite(dur) || dur <= 0) return;
-      const target = Math.max(0, Math.min(dur, dur * fraction));
-      try {
-        videoPlayer.currentTime = target;
-        setVideoPosition(target);
-        showChrome();
-      } catch {
-        // ignore
+  const previewAt = useMemo(() => {
+    if (!preview) return -1;
+    const path = preview.file.path;
+    const exact = playableFiles.findIndex(
+      (p) => p.file.path === path && p.parentDriveId === preview.parentDriveId,
+    );
+    return exact >= 0 ? exact : playableFiles.findIndex((p) => p.file.path === path);
+  }, [preview, playableFiles]);
+  const previewHasPrevious = previewAt > 0;
+  const previewHasNext = previewAt >= 0 && previewAt < playableFiles.length - 1;
+
+  const stepPreview = useCallback(
+    async (direction: 1 | -1, playing: boolean) => {
+      // A file that has gone from the phone is passed over rather than shown as an empty player.
+      for (let at = previewAt + direction; at >= 0 && at < playableFiles.length; at += direction) {
+        const item = playableFiles[at];
+        if (!item) return;
+        let exists = false;
+        try {
+          exists = await RNFS.exists(item.file.path);
+        } catch {
+          exists = false;
+        }
+        if (!exists) continue;
+        const mode = previewModeFor(item.file.name);
+        setPreview((open) =>
+          open
+            ? {
+                file: item.file,
+                mode,
+                parentDriveId: item.parentDriveId,
+                enterFrom: direction === 1 ? "right" : "left",
+                autoPlay: playing,
+                step: (open.step ?? 0) + 1,
+              }
+            : open,
+        );
+        return;
       }
     },
-    [videoPlayer, videoDuration, showChrome],
+    [previewAt, playableFiles],
   );
 
   // The body moved to `src/lib/openSavedFile.ts` when the picker gained the
@@ -1739,6 +1681,15 @@ export default function MainScreen() {
   const onOpenFile = useCallback(
     async (path: string) => {
       await openSavedFile(path, (msg) => showToast(msg, "error"));
+    },
+    [showToast],
+  );
+  // The player's share button asks where the file should go (the system's own sheet) on both
+  // phones. `onOpenFile` on Android opens it in whatever app the system picks, which is right
+  // for tapping a file and wrong for a button that says share.
+  const onShareFile = useCallback(
+    async (path: string) => {
+      await shareSavedFile(path, (msg) => showToast(msg, "error"));
     },
     [showToast],
   );
@@ -1827,8 +1778,6 @@ export default function MainScreen() {
         await onOpenFile(file.path);
         return;
       }
-      if (audioPlayer?.playing) audioPlayer.pause();
-      if (videoPlayer?.playing) videoPlayer.pause();
       setPreview({ file, mode, parentDriveId });
       if (mode === "text") {
         try {
@@ -1842,7 +1791,7 @@ export default function MainScreen() {
         }
       }
     },
-    [audioPlayer, videoPlayer, onOpenFile, showToast],
+    [onOpenFile, showToast],
   );
 
   /**
@@ -1900,6 +1849,7 @@ export default function MainScreen() {
       // received presentation, which drops Start sharing and the seeding
       // fields (a `share:<shareKey>` id the engine cannot
       // resolve was being offered Start sharing).
+      setQrMode("info");
       setQrDriveId(drive.id);
     },
     [previewFile, openFolderModal, openStoredSharePicker],
@@ -1974,19 +1924,21 @@ export default function MainScreen() {
     // wait on an OS dialog, and a denial stays silent by design.
     void ensureNotificationPermission();
     if (out.driveId) {
-      void saveSharedFilePathsEntry({
-        driveId: out.driveId,
-        files: files.map((f, i) => ({
+      void keepSharedCopies(
+        out.driveId,
+        files.map((f, i) => ({
           name: relPaths?.[i] || f.name,
           localPath: normalizeLocalPath(f.uri),
           size: f.size,
         })),
-        savedAt: Date.now(),
-      });
+      );
     }
     haptics.success();
     void refreshDrives();
-    if (out.driveId) setQrDriveId(out.driveId);
+    if (out.driveId) {
+      setQrMode("share");
+      setQrDriveId(out.driveId);
+    }
   }
 
   /**
@@ -2058,7 +2010,7 @@ export default function MainScreen() {
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
-      const res = await DocumentPicker.getDocumentAsync({
+      const res = await launchDocumentPicker({
         type: "*/*",
         copyToCacheDirectory: true,
         multiple: true,
@@ -2092,6 +2044,7 @@ export default function MainScreen() {
     setInAppPickerOpen(false);
     setShareBusy(true);
     try {
+      await beforeSystemScreen();
       const dir = await pickFolder();
       // `pickFolder` returns null on a back-out. Route it through
       // the shared exit so the folder picker behaves like the other two.
@@ -2164,19 +2117,21 @@ export default function MainScreen() {
         return;
       }
       if (out.driveId) {
-        void saveSharedFilePathsEntry({
-          driveId: out.driveId,
-          files: enumerated.map((f) => ({
+        void keepSharedCopies(
+          out.driveId,
+          enumerated.map((f) => ({
             name: f.relPath || f.name,
             localPath: normalizeLocalPath(f.uri),
             size: f.size,
           })),
-          savedAt: Date.now(),
-        });
+        );
       }
       haptics.success();
       void refreshDrives();
-      if (out.driveId) setQrDriveId(out.driveId);
+      if (out.driveId) {
+        setQrMode("share");
+        setQrDriveId(out.driveId);
+      }
     } catch (e: unknown) {
       // A back-out that surfaced as a throw is not an error — exit cleanly
       // rather than showing the user a red "Folder error" for a cancel.
@@ -2212,7 +2167,7 @@ export default function MainScreen() {
       // dead-ending.
       let outcome: PickerOutcome;
       try {
-        const res = await ImagePicker.launchImageLibraryAsync({
+        const res = await launchPhotoPicker({
           // images AND videos. The photos entry point used to
           // pass MediaTypeOptions.Images, so a video was unreachable from
           // it at any tap count and had to be hunted down through Files.
@@ -2240,7 +2195,7 @@ export default function MainScreen() {
         if (isPickerCancellation(err)) {
           outcome = { kind: "cancelled" };
         } else {
-          const fallback = await DocumentPicker.getDocumentAsync({
+          const fallback = await launchDocumentPicker({
             // widened alongside the primary picker. This is the
             // OEM-throw escape hatch, so leaving it at "image/*" would
             // have meant videos were reachable on most devices and
@@ -2288,6 +2243,7 @@ export default function MainScreen() {
       return;
     }
     haptics.success();
+    setQrMode("share");
     setQrDriveId(drive.id);
     void refreshDrives();
   }
@@ -2335,6 +2291,7 @@ export default function MainScreen() {
     // path does not attempt that either. So open the QR/link modal, whose status ladder
     // at `:3062-3067` renders "failed" explicitly. Telling the user the truth beats
     // a button that does nothing.
+    setQrMode("info");
     setQrDriveId(drive.id);
   }
 
@@ -2361,17 +2318,15 @@ export default function MainScreen() {
    * Re-share a received copy, and stop.
    *
    * ONE handler for both directions, because they are one call with one
-   * argument flipped. `activate(driveId, { serve })` is a tri-state and the two
-   * booleans here are the only explicit ones in the app; `onShareIt` above
-   * passes **no `opts` at all**, which is the third state — "no opinion" — and
-   * is what keeps a hosted drive announcing and a received one client-only by
-   * default. Do not route `onShareIt` through here.
+   * argument flipped: `activate(driveId, { serve })`. `onShareIt` above passes
+   * no `opts`, which means "no opinion": a hosted drive announces, and a
+   * received one is shared unless the user has stopped it. Do not route
+   * `onShareIt` through here.
    *
-   * **Stop is `serve: false`, not `deactivateDrive`.** Deactivating tears the
-   * session down and leaves the persisted `reshared` intent set, so the
-   * engine's boot rule would re-announce the copy on the next launch — the
-   * user's "stop" would expire when they closed the app. `serve: false` demotes
-   * the swarm to client-only and clears the intent.
+   * **Stop is `serve: false`, not `deactivateDrive`.** A finished download is
+   * shared by default, so a stop that only tore the session down would be
+   * undone at the next launch. `serve: false` saves the answer, and the engine
+   * keeps to it until the user presses Share again.
    *
    * The engine `driveId` comes off the signals, never off `drive.id`: a
    * received row's id is `share:<shareKey>` and `engineActivateDrive` answers
@@ -2404,7 +2359,15 @@ export default function MainScreen() {
       }
       if (out.tone === "success") haptics.actionDone();
       showToast(out.text, out.tone);
-      void refreshDrives();
+      // The list read after the reply is at least as new as the reply, so from
+      // here its `swarmMode` answers and the bridge value is dropped.
+      await refreshDrives();
+      setObservedReshareModes((prev) => {
+        if (!(shareKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[shareKey];
+        return next;
+      });
     },
     [activateDrive, refreshDrives, reshareSignalsFor, showToast],
   );
@@ -2467,7 +2430,18 @@ export default function MainScreen() {
         // actually observe, and says something different when a file would
         // not go. The engine's corestore purge below stays fire-and-forget;
         // the row has already left the list either way.
+        //
+        // A download still running is stopped first, and the drive it runs on
+        // is purged with the rest. The engine's own list does not hold that
+        // drive until a first download has finished, so the ids come from the
+        // share flow, which is what started it.
+        const engineIds = new Set<string>(driveIdsForShare(shareKey));
+        for (const d of drives ?? []) {
+          if (d.origin === "received" && d.key === shareKey) engineIds.add(d.id);
+        }
         void (async () => {
+          // Stopped before the record goes, so no file can land for a row that no longer exists.
+          await pauseRow(shareKey);
           const { failed } = await deleteShare(shareKey);
           showToast(
             failed.length === 0
@@ -2476,14 +2450,11 @@ export default function MainScreen() {
                 ? "Deleted. One file couldn't be removed."
                 : `Deleted. ${failed.length} files couldn't be removed.`,
           );
+          await Promise.all(
+            [...engineIds].map((eid) => cancelTransfer(eid, { purge: true }).catch(() => undefined)),
+          );
+          void refreshDrives();
         })();
-        const matchingEngineIds = (drives ?? [])
-          .filter((d) => d.origin === "received" && d.key === shareKey)
-          .map((d) => d.id);
-        for (const eid of matchingEngineIds) {
-          void cancelTransfer(eid, { purge: true });
-        }
-        void refreshDrives();
       } else {
         showToast("Deleted.");
         // Hosted drive — the existing fire-and-forget engine purge.
@@ -2496,7 +2467,7 @@ export default function MainScreen() {
         void clearHostedShareFlags(id);
       }
     },
-    [cancelTransfer, drives, refreshDrives, showToast],
+    [cancelTransfer, drives, driveIdsForShare, pauseRow, refreshDrives, showToast],
   );
 
   /**
@@ -2536,7 +2507,14 @@ export default function MainScreen() {
 
   const onDelete = useCallback((drive: DriveRow) => {
     setKebabSheet(null);
-    setPendingDelete(drive);
+    // An unfinished download is cancelled, not deleted: the same row, asked a
+    // different question. Every way of removing a row comes through here, so
+    // the menu and the swipe cannot disagree about which one it is.
+    if (drive.share && downloadControls(drive.share).remove === "cancel") {
+      setPendingCancel(drive);
+    } else {
+      setPendingDelete(drive);
+    }
     // Whatever the user picks in the confirm, the swipe should snap closed.
     // Bump the signal now so SwipeableRow runs its close animation while the
     // modal is up — by the time the modal dismisses, the row is at rest.
@@ -2548,6 +2526,21 @@ export default function MainScreen() {
     await Clipboard.setStringAsync(link);
     haptics.actionDone();
     showToast("Link copied.", "success");
+  }
+
+  /**
+   * Hand the link to the system's share sheet, which puts messaging apps first and pastes the
+   * link into the chat the user picks. Only the link goes, with no words round it, so it arrives
+   * as something the other person can tap.
+   */
+  async function onSendLink(link: string) {
+    if (!link) return;
+    try {
+      await Share.share({ message: link });
+    } catch (e: unknown) {
+      logStructuredError("rn.share", "send link failed", e);
+      showToast("Couldn't open the share sheet. Copy the link instead.", "error");
+    }
   }
 
   const renderRow: ListRenderItem<ListItem> = useCallback(
@@ -2589,81 +2582,47 @@ export default function MainScreen() {
         (drive.files?.length ?? 0) > 1 ? null : badgeForName(driveSingleFileName(drive));
       const isBundle = !!drive.isBundle;
       const peers = t?.peersConnected ?? 0;
-      const indicatorState: ActiveIndicatorState = isActive
-        ? peers > 0
-          ? "active-broadcasting"
-          : "active-idle"
-        : "inactive";
 
-      // v5 status sub-line: `<Type> · <StateLabel>` pattern matching the
-      // design deck. Type prefix comes from the primary file's mode for
-      // single-file rows, or a "N files" summary for bundles.
-      const typePrefix = ((): string => {
-        const files = drive.files ?? [];
-        // A received bundle states how many of its files are actually here
-        // — "3 of 12 Files". A hosted bundle keeps the plain count, which is
-        // true of a share you are serving.
-        if (isBundle && holdings) return holdingsCountLabel(holdings, "Files");
-        if (isBundle) return `${files.length} Files`;
-        const firstName = drive.primaryFile?.name ?? files[0]?.name ?? "";
-        const mode = firstName ? previewModeFor(firstName) : "unsupported";
-        if (mode === "image") return "Picture";
-        if (mode === "video") return "Video";
-        if (mode === "audio") return "Music";
-        if (mode === "text") return "Document";
-        return "File";
-      })();
-      let status: ShareRowStatus | null = null;
-      /** Every received row's line comes from the one model. */
-      // The transfer-derived status is kept only for a received engine drive with no record at all.
+      /**
+       * The one state this row shows, from the universal list in Pearkit: the same word in the
+       * same colour here and on the desktop. A received share's state comes from its model; a
+       * share of this phone's own is Sharing while someone takes it, Active when switched on,
+       * Inactive when switched off. The kind of file is the picture's job, not the line's.
+       */
       const rowView = isReceived
-        ? receivedRowView(drive.share, t, listNow, rowHolds, rowFloorMap)
+        ? receivedRowView(
+            drive.share,
+            t,
+            listNow,
+            rowHolds,
+            rowFloorMap,
+            stoppedShareKeys.has((drive.share?.shareKey ?? "").toLowerCase()),
+          )
         : null;
-      if (isFailed) {
-        status = { label: `${typePrefix} · Couldn't restore`, tone: "danger" };
-      } else if (rowView) {
-        status = {
-          label: rowLineTakesTypePrefix(rowView)
-            ? `${typePrefix} · ${rowView.rowLine}`
-            : rowView.rowLine,
-          // `done` is the one status that is good news. Nothing else is an
-          // error - the model has no danger tone to return.
-          tone: rowView.status === "done" ? "primary" : "muted",
-        };
-      } else if (isReceived && waitingLine(drive.share)) {
-        // The waiting states come first, ahead of the transfer-derived line: a row waiting for a sender has no transfer, so that line would answer idle and the row would say nothing.
-        // No type prefix either, because a link-only row has no files to take a type from and would claim a file that has never been seen.
-        status = { label: waitingLine(drive.share) as string, tone: "muted" };
-      } else if (isReceived) {
-        // received rows get their own state machine. The hosted
-        // branch below says "Sharing", which is wrong wording for a grab,
-        // and — more importantly — its in-flight guard excludes
-        // percent >= 100, so a download sitting at 100 while the engine
-        // still pipes files to disk fell through to "Active" or to nothing
-        // at all. That made a finished download and a stalled one look
-        // identical, which was the actual complaint. `receiveRowStatus`
-        // separates "Finishing…" from the terminal "Saved".
-        const receive = receiveRowStatus(t);
-        status =
-          receive.state === "idle"
-            ? isActive
-              ? { label: `${typePrefix} · Active`, tone: "primary" }
-              : null
-            : { label: `${typePrefix} · ${receive.label}`, tone: receive.tone };
-      } else {
-        // The hosted chain that used to be inline here —
-        // Sharing / Completed / Active — moved to `hostedRowStatus`, with a
-        // `cancelled` branch AHEAD of it. `markCancelled` sets
-        // `completed: true` on both origins, so a hosted share the user
-        // stopped fell to the `completed` arm and read "Completed". Fixing
-        // it in place would have been a change no test could reach: this
-        // file is `.tsx`, and the suite collects only `*.test.ts`.
-        const hosted = hostedRowStatus(t, { isActive });
-        status =
-          hosted.state === "idle"
-            ? null
-            : { label: `${typePrefix} · ${hosted.label}`, tone: hosted.tone };
-      }
+      const state = rowState({
+        failed: isFailed,
+        received: rowView?.state ?? null,
+        // Kept only for a received engine drive with no record at all (an old install).
+        engineReceive:
+          isReceived && !rowView ? { status: receiveRowStatus(t), percent: t?.percent } : null,
+        hosted: isReceived ? null : t,
+        isActive,
+      });
+      const indicatorState: ActiveIndicatorState = rowIndicator(state.kind, peers);
+      const status: ShareRowStatus = {
+        label: state.label,
+        tone: rowTone(state.tone),
+        bar: state.bar,
+      };
+      // A bundle says how many files it has, and a received one how many of them are here, in
+      // the grey part of the line after the state.
+      const files = drive.files ?? [];
+      const count = isBundle
+        ? holdings
+          ? holdingsCountLabel(holdings, "Files")
+          : `${files.length} Files`
+        : null;
+      const detail = count ? `${count} · ${meta}` : meta;
 
       // v5 thumbnail: show the primary file's image directly for single-file
       // image rows; video rows generate a one-frame thumbnail via
@@ -2684,11 +2643,63 @@ export default function MainScreen() {
       const videoUri =
         primaryMode === "video" ? primaryFileUri ?? null : null;
 
+      if (fileView !== "expanded") {
+        const compact = compactRow(state);
+        const fileItem: FileViewItem = {
+          id: drive.id,
+          name,
+          kind: shareKind(primaryName, isBundle),
+          status: compact.status,
+          shortStatus: compact.shortStatus,
+          tone: compact.tone,
+          download: compact.download,
+          bar: compact.bar,
+          thumbnail: previewUri ?? null,
+          // Only a share that is switched off is drawn fainter.
+          dim: state.dim,
+          selected: selectionMode ? selectedIds.has(drive.id) : undefined,
+        };
+        const cell = (
+          <ShareFileCell
+            view={fileView}
+            item={fileItem}
+            videoUri={videoUri}
+            index={index}
+            tile={grid.tile}
+            colors={fileViewColors}
+            onPress={
+              selectionMode
+                ? () => toggleSelected(drive.id)
+                : () => void onTapRow(drive)
+            }
+            // A hold starts choosing several, in every view. These two views have no three-dots
+            // button, so the menu for one item is reached from the selection bar instead.
+            onLongPress={() => selectFromRow(drive.id)}
+          />
+        );
+        if (fileView === "grid") return cell;
+        return (
+          <SwipeableRow
+            onDelete={() => onDelete(drive)}
+            deleteLabel="Delete"
+            onSelect={() => selectFromRow(drive.id)}
+            onSwipeActive={lockListScroll}
+            accessibilityLabel={`${name}, ${compact.status}`}
+            frontBackground={theme.bg}
+            closeSignal={swipeCloseTick}
+          >
+            {cell}
+          </SwipeableRow>
+        );
+      }
+
       return (
         <SwipeableRow
           onDelete={() => onDelete(drive)}
           deleteLabel="Delete"
-          accessibilityLabel={`${name}, ${status?.label ?? meta}`}
+          onSelect={() => selectFromRow(drive.id)}
+          onSwipeActive={lockListScroll}
+          accessibilityLabel={`${name}, ${status.label}, ${detail}`}
           frontBackground={theme.bg}
           closeSignal={swipeCloseTick}
         >
@@ -2701,18 +2712,19 @@ export default function MainScreen() {
             previewUri={previewUri}
             videoUri={videoUri}
             name={name}
-            meta={meta}
+            meta={detail}
             status={status}
             isFavorite={drive.isFavorite}
             isPinned={drive.isPinned}
             indicatorState={indicatorState}
             isBundle={isBundle}
-            dim={!isActive}
+            dim={state.dim}
             onPress={
               selectionMode
                 ? () => toggleSelected(drive.id)
                 : () => void onTapRow(drive)
             }
+            onLongPress={() => selectFromRow(drive.id)}
             onKebabPress={() => setKebabSheet({ drive })}
             showTopDivider={index !== 0}
             selectionMode={selectionMode}
@@ -2725,12 +2737,18 @@ export default function MainScreen() {
       // The model is a function of `now`, so without this the pause and sender windows re-evaluate only by accident.
       listNow,
       activeDriveIds,
+      fileView,
+      fileViewColors,
+      grid.tile,
       readyTicks,
       failedHydrationIds,
+      lockListScroll,
       onDelete,
       onTapRow,
+      selectFromRow,
       selectedIds,
       selectionMode,
+      stoppedShareKeys,
       swipeCloseTick,
       theme,
       toggleSelected,
@@ -2882,10 +2900,10 @@ export default function MainScreen() {
       } else if (!folderModalIsReceived && folderModalTransferring) {
         // The received test is structural, not defensive: the percentage here is the engine's per-attempt figure, and a received surface takes its percentage from held bytes.
         // The branch was already unreachable for a received drive, but only by an argument, and an argued guard is the kind that goes stale.
-        statusLabel = `Sharing (${pct}%)`;
+        statusLabel = `Uploading ${pct}%`;
         statusTone = "warning";
       } else if (folderModalIsActive) {
-        statusLabel = "Active";
+        statusLabel = "Sharing";
         statusTone = "primary";
       } else if (hasLocal) {
         statusLabel = "Inactive";
@@ -3002,13 +3020,13 @@ export default function MainScreen() {
         ? {
             // Hosted only, structurally - see the same guard in
             // `folderModalFiles` above.
-            label: `Sharing (${Math.round(
+            label: `Uploading ${Math.round(
               Math.max(0, Math.min(100, folderModalTransfer?.percent ?? 0)),
-            )}%)`,
+            )}%`,
             tone: "warning" as const,
           }
         : folderModalIsActive
-          ? { label: "Active", tone: "primary" as const }
+          ? { label: "Sharing", tone: "primary" as const }
           : { label: "Inactive", tone: "muted" as const }
     : null;
   // received-share rows expose Share / Stop only through `kebabReshare`
@@ -3018,6 +3036,8 @@ export default function MainScreen() {
   // routes by the engine driveId instead.
   const kebabIsReceivedShare = !!kebabDrive?.share;
   const kebabWaitingStatus = kebabDrive?.share?.status ?? null;
+  /** Pause or Resume, and Cancel or Delete, for the row the menu is open on. */
+  const kebabControls = downloadControls(kebabDrive?.share);
   /**
    * The received row's Share / Stop control,
    * and the announcing flag the link surfaces are gated on.
@@ -3089,35 +3109,53 @@ export default function MainScreen() {
        *  swap for a "N Selected · Cancel · Delete" header. */}
       {selectionMode ? (
         <View style={styles.selectionHeader}>
-          <Pressable
-            onPress={exitSelectionMode}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Cancel selection"
-            style={styles.selectionHeaderBtn}
-          >
-            <Text style={styles.selectionHeaderCancel}>Cancel</Text>
-          </Pressable>
+          <View style={styles.selectionHeaderSide}>
+            <Pressable
+              onPress={exitSelectionMode}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel selection"
+            >
+              <Text style={styles.selectionHeaderCancel}>Cancel</Text>
+            </Pressable>
+          </View>
           <Text style={styles.selectionHeaderCount}>
             {selectedIds.size} Selected
           </Text>
-          <Pressable
-            onPress={() => setConfirmBatchDelete(true)}
-            disabled={selectedIds.size === 0}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Delete selected"
-            style={styles.selectionHeaderBtn}
-          >
-            <Text
-              style={[
-                styles.selectionHeaderDelete,
-                selectedIds.size === 0 && styles.selectionHeaderDeleteDisabled,
-              ]}
+          <View style={[styles.selectionHeaderSide, styles.selectionHeaderRight]}>
+            {/* With exactly one chosen, its own menu. A hold now starts selecting instead of
+                opening the menu, and the list and grid views have no three-dots button. */}
+            {onlySelectedDrive ? (
+              <Pressable
+                onPress={() => {
+                  const drive = onlySelectedDrive;
+                  exitSelectionMode();
+                  setKebabSheet({ drive });
+                }}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={`More options for ${rowDisplayName(onlySelectedDrive)}`}
+              >
+                <Ionicons name="ellipsis-vertical" size={20} color={theme.text} />
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={() => setConfirmBatchDelete(true)}
+              disabled={selectedIds.size === 0}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Delete selected"
             >
-              Delete
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.selectionHeaderDelete,
+                  selectedIds.size === 0 && styles.selectionHeaderDeleteDisabled,
+                ]}
+              >
+                Delete
+              </Text>
+            </Pressable>
+          </View>
         </View>
       ) : (
         <>
@@ -3136,6 +3174,25 @@ export default function MainScreen() {
             onFilterChange={setFilter}
             sort={sort}
             onSortChange={setSort}
+            trailing={
+              // One button, shaped like Filter and Sort beside it; the views drop down from it.
+              <ViewMenu
+                value={fileView}
+                onChange={setFileView}
+                modes={FILE_VIEW_MODES}
+                cover={Modal}
+                size={38}
+                color={theme.text}
+                quiet={theme.muted}
+                accent={theme.primary}
+                track={theme.cardStrong}
+                surface={theme.cardStrong}
+                // The card colours are see-through washes, so the list gets the page colour under it.
+                base={theme.bg}
+                line={theme.border}
+                style={{ borderRadius: 10, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 10 }}
+              />
+            }
           />
         </>
       )}
@@ -3147,12 +3204,19 @@ export default function MainScreen() {
         <View style={styles.listFlex}>
           <FlatList
             ref={listRef}
+            // A list cannot change its number of columns while it is on screen, so the grid is a list of its own.
+            key={fileView === "grid" ? `grid-${grid.columns}` : "rows"}
+            numColumns={fileView === "grid" ? grid.columns : 1}
+            columnWrapperStyle={
+              fileView === "grid" ? { gap: grid.gap, paddingHorizontal: grid.edge } : undefined
+            }
             data={flattenedList}
             keyExtractor={(it) => it.drive.id}
             renderItem={renderRow}
             style={styles.list}
             contentContainerStyle={[
               styles.listContent,
+              fileView === "grid" && { gap: grid.gap + 4, paddingTop: 6 },
               flattenedList.length === 0 && styles.listContentEmpty,
               // Leave clearance for the floating BottomToolbar (~80px + safe area).
               // Clearance for the floating BottomToolbar (panel ~84 + lift 20 + safe area).
@@ -3335,6 +3399,7 @@ export default function MainScreen() {
               icon: "information-circle-outline",
               label: "More info",
               onPress: () => {
+                setQrMode("info");
                 setQrDriveId(kebabDrive.id);
                 setKebabSheet(null);
               },
@@ -3415,7 +3480,7 @@ export default function MainScreen() {
             list.push({
               key: "copy",
               icon: "link-outline",
-              label: "Copy Link",
+              label: "Copy link",
               onPress: () => {
                 setKebabSheet(null);
                 void onCopyLink(shareLink);
@@ -3424,10 +3489,13 @@ export default function MainScreen() {
           }
           if (kebabCanOfferLink) {
             list.push({
+              // The key is still "qr": "share" below is Start sharing. The QR picture stays on
+              // purpose, so the line reads at a glance as "this is how I hand it to someone".
               key: "qr",
               icon: "qr-code-outline",
-              label: "Show QR",
+              label: "Share",
               onPress: () => {
+                setQrMode("share");
                 setQrDriveId(kebabDrive.id);
                 setKebabSheet(null);
               },
@@ -3453,37 +3521,30 @@ export default function MainScreen() {
               },
             });
           }
-          /** The three waiting actions, offered only while the row is in the loop, gated on the status predicate rather than a hand-written list so a new status cannot silently leave them behind. */
-          // Changing the selection is the exception, also offered when the row is ready, because that is exactly when the user has a list and no selection yet.
+          /** The one line that changes a download's state: Pause while it may still run by itself, Resume once the person paused it. */
+          // No "Retry now" and no "Stop waiting": a waiting row retries by itself, and stopping it is what Pause is.
           if (kebabIsReceivedShare && kebabWaitingStatus) {
-            if (isLoopStatus(kebabWaitingStatus)) {
+            const toggle = kebabControls.toggle;
+            if (toggle) {
               const key = kebabDrive.share?.shareKey ?? "";
               list.push({
-                key: "retry-waiting",
-                icon: "refresh-outline",
-                label: "Retry now",
+                key: "pause-resume",
+                icon: toggle === "pause" ? "pause" : "play",
+                label: toggle === "pause" ? "Pause" : "Resume",
                 onPress: () => {
                   setKebabSheet(null);
-                  void retryWaitingRow(key);
+                  haptics.actionDone();
+                  void (toggle === "pause" ? pauseRow(key) : resumeRow(key));
                 },
               });
-              list.push({
-                key: "stop-waiting",
-                icon: "close-circle-outline",
-                label: "Stop waiting",
-                tone: "danger",
-                onPress: () => {
-                  setKebabSheet(null);
-                  void stopWaitingRow(key);
-                },
-              });
-                }
+            }
             if (
               kebabDrive.share &&
               kebabDrive.share.files.length > 0 &&
               (kebabWaitingStatus === "ready" ||
                 kebabWaitingStatus === "queued" ||
-                kebabWaitingStatus === "paused")
+                kebabWaitingStatus === "paused" ||
+                kebabWaitingStatus === "stopped")
             ) {
               const share = kebabDrive.share;
               list.push({
@@ -3566,25 +3627,29 @@ export default function MainScreen() {
           }
           // ONE row, two states — not two rows with one hidden.
           //
-          // While a download is in flight the destructive row reads Cancel and
-          // calls the single cancel path 9G shipped. Once it finishes, the same
-          // row reverts to Delete. Before this, Delete was the only option on a
-          // live download, and it reached `engineStopDrive({purge:true})` —
-          // which purged the corestore out from under the running loop and
-          // then reported "Download complete". The engine-side guard added
-          // this change means Delete is no longer dangerous either way; this
-          // makes it say the right word as well.
-          list.push({
-            key: "delete",
-            icon: kebabDownloadInFlight ? "close-circle-outline" : "trash-outline",
-            label: kebabDownloadInFlight ? "Cancel" : "Delete",
-            tone: "danger",
-            onPress: () =>
-              kebabDownloadInFlight
-                ? onCancelDownload(kebabDrive)
-                : onDelete(kebabDrive),
-          });
-          return list;
+          // An unfinished download ends with Cancel; everything else ends with
+          // Delete. Cancel means "I do not want this download any more": it
+          // asks what happens to what arrived and then ends it for good. It
+          // used to stop the engine only, which the row read as a sender that
+          // went away, so the download started itself again a few seconds
+          // later. `onDelete` decides which question is asked.
+          //
+          // A received row with no record of its own (an engine drive from an
+          // older version) keeps the plain engine cancel while it is moving.
+          {
+            const unfinished = kebabControls.remove === "cancel";
+            const legacyInFlight = !kebabIsReceivedShare && kebabDownloadInFlight;
+            list.push({
+              key: "delete",
+              icon: unfinished || legacyInFlight ? "close-circle" : "trash",
+              label: unfinished || legacyInFlight ? "Cancel" : "Delete",
+              tone: "danger",
+              onPress: () =>
+                legacyInFlight ? onCancelDownload(kebabDrive) : onDelete(kebabDrive),
+            });
+          }
+          // Built above in the order the conditions happen to run; shown in the standing order.
+          return orderKebabItems(list);
         })()}
       />
 
@@ -3675,7 +3740,10 @@ export default function MainScreen() {
           <ShareQrModal
             visible={!!drive}
             link={link}
-            title={driveIsBundle ? "Folder info" : "File info"}
+            mode={qrMode}
+            title={
+              qrMode === "share" ? "Share" : driveIsBundle ? "Folder info" : "File info"
+            }
             header={
               drive
                 ? {
@@ -3713,6 +3781,9 @@ export default function MainScreen() {
             onClose={() => setQrDriveId(null)}
             onCopy={
               qrCanOfferLink && link ? () => void onCopyLink(link) : undefined
+            }
+            onSendLink={
+              qrCanOfferLink && link ? () => void onSendLink(link) : undefined
             }
             onRemove={
               drive && !isActive
@@ -3763,7 +3834,7 @@ export default function MainScreen() {
       {/* Fullscreen takeover preview. Pure black behind
        *  the media. Chrome floats over the video and auto-hides during
        *  playback; image/text/audio keep chrome visible. Dismiss is the
-       *  back arrow (or Android back button) — no tap-outside, no swipe.
+       *  back arrow, the Android back button, or a swipe up in the player.
        *  Custom video controls (no `nativeControls`) — playback toggles
        *  on any tap of the video tap-surface, mirroring the OS player. */}
       <Modal
@@ -3771,6 +3842,8 @@ export default function MainScreen() {
         transparent={false}
         animationType="fade"
         onRequestClose={closePreview}
+        supportedOrientations={playerRotation.orientations}
+        onShow={playerRotation.onShown}
       >
         {preview?.mode === "text" ? (
           <View style={styles.fsTextRoot}>
@@ -3779,7 +3852,7 @@ export default function MainScreen() {
                 {previewText || "(Empty file)"}
               </Text>
             </ScrollView>
-            <View style={[styles.fsTopBar, { paddingTop: insets.top + 4 }]}>
+            <View style={[styles.fsTopBar, { paddingTop: screenInsets.top + 4 }]}>
               <Pressable
                 style={styles.fsTopBtn}
                 onPress={closePreview}
@@ -3789,275 +3862,92 @@ export default function MainScreen() {
               >
                 <Ionicons name="arrow-back" size={24} color={theme.text} />
               </Pressable>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.fsRoot}>
-            <View style={styles.fsMediaWrap}>
-              {preview?.mode === "image" && preview?.file && (
-                <Image
-                  source={{ uri: previewUri ?? undefined }}
-                  style={styles.fsImage}
-                  resizeMode="contain"
-                />
-              )}
-              {preview?.mode === "video" && preview?.file && (
-                <VideoView
-                  player={videoPlayer}
-                  style={styles.fsVideo}
-                  allowsFullscreen={false}
-                  nativeControls={false}
-                  contentFit="contain"
-                />
-              )}
-              {preview?.mode === "audio" && preview?.file && (
-                <View style={styles.fsAudioShell}>
-                  <View style={styles.fsAudioCover}>
-                    <Ionicons name="musical-notes-outline" size={72} color="rgba(255,255,255,0.55)" />
-                  </View>
-                  <Text style={styles.fsAudioMeta} numberOfLines={1}>
-                    {baseName(preview.file.name)}
-                  </Text>
-                  <View style={styles.fsAudioControlsRow}>
-                    <Pressable
-                      style={styles.fsAudioCtrlBtn}
-                      onPress={() => onAudioSkip(-15)}
-                      accessibilityRole="button"
-                      accessibilityLabel="Skip back 15 seconds"
-                    >
-                      <Ionicons name="play-back" size={22} color="#fff" />
-                    </Pressable>
-                    <Pressable
-                      style={styles.fsAudioPlayBtn}
-                      onPress={() => {
-                        if (!audioPlayer) return;
-                        if (audioPlayer.playing) audioPlayer.pause();
-                        else {
-                          if (
-                            audioStatus.didJustFinish ||
-                            audioPlayer.currentTime >= audioPlayer.duration
-                          ) {
-                            audioPlayer.seekTo(0);
-                          }
-                          audioPlayer.play();
-                        }
-                      }}
-                      accessibilityRole="button"
-                      accessibilityLabel={audioPlayer?.playing ? "Pause" : "Play"}
-                    >
-                      <Ionicons
-                        name={audioPlayer?.playing ? "pause" : "play"}
-                        size={28}
-                        color="#000"
-                      />
-                    </Pressable>
-                    <Pressable
-                      style={styles.fsAudioCtrlBtn}
-                      onPress={() => onAudioSkip(15)}
-                      accessibilityRole="button"
-                      accessibilityLabel="Skip forward 15 seconds"
-                    >
-                      <Ionicons name="play-forward" size={22} color="#fff" />
-                    </Pressable>
-                  </View>
-                  <View style={styles.fsAudioScrubberRow}>
-                    <Pressable
-                      style={styles.fsScrubber}
-                      onLayout={(e) => setScrubWidth(e.nativeEvent.layout.width)}
-                      onPress={(e) => {
-                        if (scrubWidth <= 0) return;
-                        const x = e.nativeEvent.locationX;
-                        onAudioSeekToFraction(Math.max(0, Math.min(1, x / scrubWidth)));
-                      }}
-                      accessibilityRole="adjustable"
-                      accessibilityLabel="Audio progress"
-                    >
-                      <View style={styles.fsScrubberTrack}>
-                        <View
-                          style={[
-                            styles.fsScrubberFill,
-                            {
-                              width: `${
-                                audioDuration > 0
-                                  ? Math.max(0, Math.min(100, (audioPosition / audioDuration) * 100))
-                                  : 0
-                              }%`,
-                            },
-                          ]}
-                        />
-                      </View>
-                    </Pressable>
-                    <View style={styles.fsTimeRow}>
-                      <Text style={styles.fsTimeText}>{formatClock(audioPosition)}</Text>
-                      <Text style={styles.fsTimeText}>
-                        {audioDuration > 0 ? formatClock(audioDuration) : "—:—"}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              )}
-            </View>
-
-            {/* Video tap surface — toggles play/pause + reveals chrome.
-              *  Below the chrome icons in z-order so the icons remain
-              *  tappable when visible. */}
-            {preview?.mode === "video" && (
-              <Pressable
-                style={styles.fsTapLayer}
-                onPress={onVideoTap}
-                accessibilityRole="button"
-                accessibilityLabel={videoIsPlaying ? "Pause video" : "Play video"}
-              />
-            )}
-
-            {/* Center play overlay — only while video is paused. */}
-            {preview?.mode === "video" && !videoIsPlaying && (
-              <View pointerEvents="box-none" style={styles.fsCenterPlay}>
-                <Pressable
-                  style={styles.fsCenterPlayBtn}
-                  onPress={onVideoTap}
-                  accessibilityRole="button"
-                  accessibilityLabel="Play"
-                  hitSlop={8}
-                >
-                  <Ionicons name="play" size={36} color="rgba(255,255,255,0.92)" />
-                </Pressable>
-              </View>
-            )}
-
-            {/* Top bar holds only the back arrow; sharing lives in the
-              *  inline share button below the video.
-              *  Safe-area top inset clears the status bar so the icon is
-              *  fully tappable. Bigger touch target + hitSlop. */}
-            <Animated.View
-              pointerEvents={chromeVisible ? "box-none" : "none"}
-              style={[
-                styles.fsTopBar,
-                { opacity: chromeOpacity, paddingTop: insets.top + 4 },
-              ]}
-            >
               <Pressable
                 style={styles.fsTopBtn}
-                onPress={closePreview}
+                onPress={() => {
+                  if (preview?.file) void onShareFile(preview.file.path);
+                }}
                 accessibilityRole="button"
-                accessibilityLabel="Back"
+                accessibilityLabel="Share or open in another app"
                 hitSlop={16}
               >
-                <Ionicons name="arrow-back" size={24} color="#fff" />
+                <Ionicons name="share-outline" size={22} color={theme.text} />
               </Pressable>
-            </Animated.View>
-
-            {/* Bottom bar — scrubber + times. Video only (audio's are
-              *  inline above). Auto-hides with the top bar. */}
-            {preview?.mode === "video" && (
-              <Animated.View
-                pointerEvents={chromeVisible ? "box-none" : "none"}
-                style={[
-                  styles.fsBottomBar,
-                  {
-                    opacity: chromeOpacity,
-                    // fix: clear the gesture bar so the share
-                    // button isn't flush against the bottom edge.
-                    paddingBottom: insets.bottom + 16,
-                  },
-                ]}
-              >
-                <Pressable
-                  style={styles.fsScrubber}
-                  onLayout={(e) => setVideoScrubWidth(e.nativeEvent.layout.width)}
-                  onPress={(e) => {
-                    if (videoScrubWidth <= 0) return;
-                    const x = e.nativeEvent.locationX;
-                    onVideoSeekToFraction(
-                      Math.max(0, Math.min(1, x / videoScrubWidth)),
-                    );
-                  }}
-                  accessibilityRole="adjustable"
-                  accessibilityLabel="Video progress"
-                >
-                  <View style={styles.fsScrubberTrack}>
-                    <View
-                      style={[
-                        styles.fsScrubberFill,
-                        {
-                          width: `${
-                            videoDuration > 0
-                              ? Math.max(
-                                  0,
-                                  Math.min(
-                                    100,
-                                    (videoPosition / videoDuration) * 100,
-                                  ),
-                                )
-                              : 0
-                          }%`,
-                        },
-                      ]}
-                    />
-                  </View>
-                </Pressable>
-                <View style={styles.fsTimeRow}>
-                  <Text style={styles.fsTimeText}>{formatClock(videoPosition)}</Text>
-                  <Text style={styles.fsTimeText}>
-                    {videoDuration > 0 ? formatClock(videoDuration) : "—:—"}
-                  </Text>
-                </View>
-                {/* Share/stop-sharing toggle below the scrubber.
-                  *  Only renders for hosted drives (received synth rows
-                  *  can't activate via this path).
-                  *  - Stop sharing: deactivates inline, preview stays open
-                  *  - Share it: closes the preview and opens the main-page
-                  *    QR modal so the user can hand off the link */}
-                {previewParentDrive ? (
-                  <View style={styles.fsShareBtnRow}>
-                    <Pressable
-                      style={styles.fsShareBtn}
-                      onPress={() => {
-                        const d = previewParentDrive;
-                        if (!d) return;
-                        if (previewParentIsActive) {
-                          void (async () => {
-                            const res = await deactivateDrive(d.id);
-                            if (!res.ok) {
-                              showToast(
-                                userFacingError(res.error, "Couldn't stop that one."),
-                                "error",
-                              );
-                              return;
-                            }
-                            haptics.actionDone();
-                            showToast("Stopped sharing.");
-                            void refreshDrives();
-                          })();
-                        } else {
-                          closePreview();
-                          void onShareIt(d);
-                        }
-                      }}
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        previewParentIsActive ? "Stop sharing" : "Share it"
-                      }
-                    >
-                      <Ionicons
-                        name={
-                          previewParentIsActive
-                            ? "pause-circle-outline"
-                            : "share-outline"
-                        }
-                        size={16}
-                        color="#fff"
-                      />
-                      <Text style={styles.fsShareBtnText}>
-                        {previewParentIsActive ? "Stop sharing" : "Share it"}
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : null}
-              </Animated.View>
-            )}
+            </View>
           </View>
-        )}
+        ) : playerKind && preview?.file && previewUri ? (
+          <MediaPlayer
+            key={`${previewUri}#${preview.step ?? 0}`}
+            kind={playerKind}
+            uri={previewUri}
+            title={baseName(preview.file.name)}
+            onClose={closePreview}
+            onOpenElsewhere={() => {
+              if (preview?.file) void onShareFile(preview.file.path);
+            }}
+            // Swipe left for the next file, right for the one before; up puts the player away.
+            onNext={
+              previewHasNext ? ({ playing }) => void stepPreview(1, playing) : undefined
+            }
+            onPrevious={
+              previewHasPrevious ? ({ playing }) => void stepPreview(-1, playing) : undefined
+            }
+            autoPlay={preview.autoPlay}
+            enterFrom={preview.enterFrom ?? null}
+            // Share / stop sharing, under the bar. Only for a video the user is sharing: a
+            // received row has its own control in the list.
+            //  - Stop sharing: stops here, the player stays open
+            //  - Share it: closes the player and opens the QR code on the main page
+            footer={
+              playerKind === "video" && previewParentDrive ? (
+              <View style={styles.fsShareBtnRow}>
+                <Pressable
+                  style={styles.fsShareBtn}
+                  onPress={() => {
+                    const d = previewParentDrive;
+                    if (!d) return;
+                    if (previewParentIsActive) {
+                      void (async () => {
+                        const res = await deactivateDrive(d.id);
+                        if (!res.ok) {
+                          showToast(
+                            userFacingError(res.error, "Couldn't stop that one."),
+                            "error",
+                          );
+                          return;
+                        }
+                        haptics.actionDone();
+                        showToast("Stopped sharing.");
+                        void refreshDrives();
+                      })();
+                    } else {
+                      closePreview();
+                      void onShareIt(d);
+                    }
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    previewParentIsActive ? "Stop sharing" : "Share it"
+                  }
+                >
+                  <Ionicons
+                    name={
+                      previewParentIsActive
+                        ? "pause-circle-outline"
+                        : "share-outline"
+                    }
+                    size={16}
+                    color="#fff"
+                  />
+                  <Text style={styles.fsShareBtnText}>
+                    {previewParentIsActive ? "Stop sharing" : "Share it"}
+                  </Text>
+                </Pressable>
+              </View>
+              ) : undefined
+            }
+          />
+        ) : null}
         {/* It is the same worst case as FilePickerSheet:
             `transparent={false}`, full screen, so a toast in any lower
             window is invisible rather than merely dimmed. Two showToast
@@ -4126,20 +4016,63 @@ export default function MainScreen() {
           wording lives in `src/lib/deleteReceivedPlan.ts` so it is reachable
           from the suite; this file is not. The batch-delete confirm below is
           deliberately untouched. */}
-      <ConfirmModal
-        visible={!!pendingDelete}
-        title={describeDeleteConfirm(pendingDelete?.share ? "received" : "hosted").title}
-        body={describeDeleteConfirm(pendingDelete?.share ? "received" : "hosted").body}
-        confirmLabel="Delete"
-        cancelLabel="Keep"
-        tone="destructive"
-        onCancel={() => setPendingDelete(null)}
-        onConfirm={() => {
-          const d = pendingDelete;
-          setPendingDelete(null);
-          if (d) performDelete(d);
-        }}
-      />
+      {(() => {
+        const copy = describeDeleteConfirm(pendingDelete?.share ? "received" : "hosted", {
+          sharedFromHere:
+            !!pendingDelete && receivedShareIsAnnouncing(reshareSignalsFor(pendingDelete)),
+        });
+        return (
+          <ConfirmModal
+            visible={!!pendingDelete}
+            title={copy.title}
+            body={copy.body}
+            confirmLabel="Delete"
+            cancelLabel="Keep"
+            tone="destructive"
+            onCancel={() => setPendingDelete(null)}
+            onConfirm={() => {
+              const d = pendingDelete;
+              setPendingDelete(null);
+              if (d) performDelete(d);
+            }}
+          />
+        );
+      })()}
+
+      {/* Cancel, for a download that has not finished. It ends the download
+          for good and asks one thing: what happens to what already arrived.
+          The words live in `src/lib/downloadControls.ts`. */}
+      {(() => {
+        const copy = describeCancelConfirm(downloadControls(pendingCancel?.share).keepFinished);
+        return (
+          <ConfirmModal
+            visible={!!pendingCancel}
+            title={copy.title}
+            body={copy.body}
+            confirmLabel={copy.deleteLabel}
+            cancelLabel={copy.backLabel}
+            secondaryLabel={copy.keepLabel}
+            tone="destructive"
+            onCancel={() => setPendingCancel(null)}
+            onConfirm={() => {
+              const d = pendingCancel;
+              setPendingCancel(null);
+              if (d) performDelete(d);
+            }}
+            onSecondary={() => {
+              const key = pendingCancel?.share?.shareKey;
+              setPendingCancel(null);
+              if (!key) return;
+              haptics.actionDone();
+              // Paused first so nothing restarts it, then taken out of the queue with its finished files kept.
+              void (async () => {
+                await pauseRow(key);
+                await stopWaitingRow(key);
+              })();
+            }}
+          />
+        );
+      })()}
 
       {/* v5 multi-select: batch delete confirmation. */}
       <ConfirmModal

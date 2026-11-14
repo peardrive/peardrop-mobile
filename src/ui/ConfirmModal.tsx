@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { ToastOutlet } from "./Toast";
@@ -14,6 +15,9 @@ export type ConfirmModalProps = {
   tone?: "destructive" | "primary";
   onConfirm: () => void;
   onCancel: () => void;
+  /** A third choice between the two, for a question with two real answers and a way back. With it the buttons stack, one per line. */
+  secondaryLabel?: string | null;
+  onSecondary?: () => void;
 };
 
 /**
@@ -29,6 +33,8 @@ export default function ConfirmModal({
   tone = "destructive",
   onConfirm,
   onCancel,
+  secondaryLabel,
+  onSecondary,
 }: ConfirmModalProps) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -36,6 +42,28 @@ export default function ConfirmModal({
   const confirmStyle = tone === "destructive" ? styles.btnDestructive : styles.btnPrimary;
   const confirmTextStyle =
     tone === "destructive" ? styles.btnDestructiveText : styles.btnPrimaryText;
+
+  const stacked = !!secondaryLabel && !!onSecondary;
+  const cancelButton = (
+    <Pressable
+      style={[styles.btn, styles.btnCancel, stacked && styles.btnStacked]}
+      onPress={onCancel}
+      accessibilityRole="button"
+      accessibilityLabel={cancelLabel}
+    >
+      <Text style={styles.btnCancelText}>{cancelLabel}</Text>
+    </Pressable>
+  );
+  const confirmButton = (
+    <Pressable
+      style={[styles.btn, confirmStyle, stacked && styles.btnStacked]}
+      onPress={onConfirm}
+      accessibilityRole="button"
+      accessibilityLabel={confirmLabel}
+    >
+      <Text style={confirmTextStyle}>{confirmLabel}</Text>
+    </Pressable>
+  );
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
@@ -47,24 +75,26 @@ export default function ConfirmModal({
         <Pressable style={styles.card} onPress={() => {}}>
           <Text style={styles.title}>{title}</Text>
           {body ? <Text style={styles.body}>{body}</Text> : null}
-          <View style={styles.actions}>
-            <Pressable
-              style={[styles.btn, styles.btnCancel]}
-              onPress={onCancel}
-              accessibilityRole="button"
-              accessibilityLabel={cancelLabel}
-            >
-              <Text style={styles.btnCancelText}>{cancelLabel}</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.btn, confirmStyle]}
-              onPress={onConfirm}
-              accessibilityRole="button"
-              accessibilityLabel={confirmLabel}
-            >
-              <Text style={confirmTextStyle}>{confirmLabel}</Text>
-            </Pressable>
-          </View>
+          {stacked ? (
+            // Three choices do not fit on one line, so each gets its own: the two answers first, the way back last.
+            <View style={styles.actionsStacked}>
+              {confirmButton}
+              <Pressable
+                style={[styles.btn, styles.btnCancel, styles.btnStacked]}
+                onPress={onSecondary}
+                accessibilityRole="button"
+                accessibilityLabel={secondaryLabel ?? undefined}
+              >
+                <Text style={styles.btnCancelText}>{secondaryLabel}</Text>
+              </Pressable>
+              {cancelButton}
+            </View>
+          ) : (
+            <View style={styles.actions}>
+              {cancelButton}
+              {confirmButton}
+            </View>
+          )}
         </Pressable>
       </Pressable>
       {/* Last child on purpose: this Modal is its own Android window, so a root-level toast would
@@ -109,6 +139,14 @@ function createStyles(theme: AppTheme) {
       justifyContent: "flex-end",
       gap: 8,
       marginTop: 12,
+    },
+    actionsStacked: {
+      gap: 8,
+      marginTop: 12,
+    },
+    btnStacked: {
+      alignSelf: "stretch",
+      paddingVertical: 12,
     },
     btn: {
       paddingHorizontal: 16,

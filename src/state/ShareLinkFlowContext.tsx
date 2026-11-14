@@ -68,6 +68,7 @@ import { useToast } from "../ui/Toast";
 import { useDevMode } from "./devModeStorage";
 import RNFS from "react-native-fs";
 import { baseName } from "../lib/files";
+import { stripCollisionSuffix } from "../lib/collisionName";
 import { heldChoice, recordAutoGrab, type AutoGrabGuard } from "../lib/grabSettle";
 import { healShareFiles } from "../lib/receivedFileHealth";
 import { errorCause } from "../lib/errorMessage";
@@ -187,6 +188,12 @@ type ShareLinkFlowApi = {
   retryWaitingRow: (shareKey: string) => Promise<void>;
   /** Leave the loop. Downloaded files stay; an empty waiting row is removed. */
   stopWaitingRow: (shareKey: string) => Promise<void>;
+  /** Pause a download. It never starts again by itself; only `resumeRow` restarts it. */
+  pauseRow: (shareKey: string) => Promise<void>;
+  /** Resume a paused download with the files already chosen. */
+  resumeRow: (shareKey: string) => Promise<void>;
+  /** Every engine drive this share's download may be running on, for the callers that stop or delete it. */
+  driveIdsForShare: (shareKey: string) => string[];
   /** The open picker's view: every string, tick, percentage and button it draws comes from here and nothing else, so there is no second code path to drift. */
   pickerView: ShareView | null;
   /** Is the real record still loading behind the picker? The picker holds its tick seeding while true, so a draft cannot seed off the synthesised stand-in. */
@@ -342,6 +349,11 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       // the original manifest name is preserved so the modal's own selection checks still match.
       const candidateByBaseName = new Map<string, DownloadedItem>();
       for (const c of candidates) candidateByBaseName.set(baseName(c.name), c);
+      // A copy saved as `name (1).ext` is still that share's `name.ext`; an exact name wins.
+      for (const c of candidates) {
+        const plain = stripCollisionSuffix(c.name);
+        if (plain && !candidateByBaseName.has(plain)) candidateByBaseName.set(plain, c);
+      }
       const alreadyNames: string[] = [];
       const matchedIds: string[] = [];
       for (const name of manifestNames) {
@@ -1211,6 +1223,15 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       // The pairing the progress bridge above needs, recorded before the
       // first byte can arrive.
       if (grabKeyAtTap) bindDriveToShare(sessionDriveId, grabKeyAtTap);
+      /** The picker only has a session because a resolve reached the sender, and the row reads the sender from the record, so the record is told when. */
+      // Without it the list said the sender was away seconds after the picker had been talking to them. `touch: false`: a lookup is not progress.
+      if (grabKeyAtTap && lastResolveAt > 0) {
+        void patchShare(grabKeyAtTap, {
+          lastCheckedAt: lastResolveAt,
+          emptyChecks: 0,
+          touch: false,
+        });
+      }
       setDownloadAllBusy(true);
       setLinkError(null);
       // A new attempt is not the previous one's failure, cleared here rather than on open so a reopened picker still shows why the last grab did not start.
@@ -1467,6 +1488,7 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       armGrabToast,
       bindDriveToShare,
       noteEngineSaved,
+      lastResolveAt,
       // `linkError` was here solely for the no-session guard's `if (!linkError)`.
       // That read is gone, so the dep is too.
     ],
@@ -1844,6 +1866,67 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
     await applyRowEvent(shareKey, { type: "STOP_WAITING" });
   }, [applyRowEvent]);
 
+  /** Every engine drive a share's download may be running on: the one it is bound to now, the picker's session, and any the engine lists under its key. */
+  // The engine's list alone misses the one that matters: a received drive is absent from it until its first download has finished.
+  const driveIdsForShare = useCallback(
+    (shareKey: string): string[] => {
+      const key = String(shareKey || "").toLowerCase();
+      if (!key) return [];
+      const ids = new Set<string>();
+      for (const [id, boundKey] of driveToShareRef.current) {
+        if (boundKey === key) ids.add(id);
+      }
+      const pickerKey = lastResolvedLink ? extractKey(lastResolvedLink) : null;
+      if (sessionDriveId && pickerKey && pickerKey.toLowerCase() === key) {
+        ids.add(sessionDriveId);
+      }
+      for (const d of drives ?? []) {
+        if (d.origin === "received" && String(d.key || "").toLowerCase() === key) ids.add(d.id);
+      }
+      return [...ids];
+    },
+    [drives, lastResolvedLink, sessionDriveId],
+  );
+
+  /** Pause. The row is told first and the engine second, in that order on purpose. */
+  // Told second, the engine's stop reached the row as a sender that went away, and the loop that waits for senders started the download again.
+  const pauseRow = useCallback(
+    async (shareKey: string) => {
+      const key = String(shareKey || "").toLowerCase();
+      if (!key) return;
+      await applyRowEvent(key, { type: "USER_STOP" });
+      cancelStallRetry(key);
+      for (const id of driveIdsForShare(key)) {
+        try {
+          await cancelInFlight(id);
+        } catch (err: unknown) {
+          logStructuredError("rowstate", "could not stop the download being paused", err);
+        }
+      }
+    },
+    [applyRowEvent, cancelStallRetry, cancelInFlight, driveIdsForShare],
+  );
+
+  /** Resume a paused row: it goes back in the queue with the same files, and the sender is looked for at once. */
+  // Only a row the person paused: anything else is already being retried and has nothing to resume.
+  const resumeRow = useCallback(
+    async (shareKey: string) => {
+      const key = String(shareKey || "").toLowerCase();
+      if (!key) return;
+      const share = await loadShare(key);
+      if (!share || share.status !== "stopped") return;
+      if ((share.selection?.length ?? 0) === 0) return;
+      // An empty diff keeps the selection; the reducer sends a stopped row with files chosen back to queued.
+      await applyRowEvent(key, { type: "SELECTION_CONFIRMED", diff: {} });
+      // The guard that stops a row after grabs that did not settle starts over: the person asked again.
+      const guard = new Map(autoGrabGuardRef.current);
+      guard.delete(key);
+      autoGrabGuardRef.current = guard;
+      await waitingLoopRef.current?.retryNow(key);
+    },
+    [applyRowEvent],
+  );
+
   /** Every surface reads one percentage, from held bytes, so the picker resolves the transfer exactly as the row does. */
   // The index cannot see a received drive before its first completion, so the session id stays a live overlay.
   const pickerTransfer = useMemo(() => {
@@ -1989,6 +2072,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       consumeCompletedDownload,
       retryWaitingRow,
       stopWaitingRow,
+      pauseRow,
+      resumeRow,
+      driveIdsForShare,
       pickerView,
       pickerHydrating,
       flapHolds: flapHoldsRef.current,
@@ -2027,6 +2113,9 @@ export function ShareLinkFlowProvider({ children }: { children: React.ReactNode 
       consumeCompletedDownload,
       retryWaitingRow,
       stopWaitingRow,
+      pauseRow,
+      resumeRow,
+      driveIdsForShare,
       pickerView,
       pickerHydrating,
       // The Map identity is stable for the provider's lifetime, so it never

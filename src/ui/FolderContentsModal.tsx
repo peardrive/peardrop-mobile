@@ -5,7 +5,6 @@ import {
   Image,
   KeyboardAvoidingView,
   ListRenderItem,
-  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -13,8 +12,9 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { type IconName } from "../lib/files";
@@ -91,7 +91,7 @@ export default function FolderContentsModal({
   onOverflowPress,
 }: FolderContentsModalProps) {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const bottomToolbarClearance = insets.bottom + 20 + 84 + 12;
   const styles = useMemo(
     () => createStyles(theme, bottomToolbarClearance),

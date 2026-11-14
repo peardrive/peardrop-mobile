@@ -41,6 +41,8 @@ export type ListToolbarProps = {
   sort: SortId;
   onSortChange: (next: SortId) => void;
   placeholder?: string;
+  /** Sits after the sort button: the button that chooses the list, expanded or grid view. */
+  trailing?: React.ReactNode;
 };
 
 /**
@@ -55,6 +57,7 @@ export default function ListToolbar({
   sort,
   onSortChange,
   placeholder = "Search shares…",
+  trailing,
 }: ListToolbarProps) {
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -115,6 +118,8 @@ export default function ListToolbar({
       >
         <Ionicons name="swap-vertical" size={18} color={theme.text} />
       </Pressable>
+
+      {trailing}
 
       <BottomSheet
         visible={openMenu !== null}

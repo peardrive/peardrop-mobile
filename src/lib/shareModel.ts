@@ -1,6 +1,11 @@
 /** One model for a received share: every surface renders from this and nothing else. */
 // One percentage, from held bytes plus the active file's own, so header, file row and list row agree by construction.
 
+import {
+  describeShareState,
+  type ShareStateInput,
+  type ShareStateView,
+} from "../vendor/pearkit/ShareState/shareState";
 import { PAUSE_REASONS, type PauseReason } from "./rowLifecycle";
 import { applyRowFloor, floorSignature, type RowFloor } from "./rowFloor";
 import { isExpired, type WaitingStatus } from "./waitingStatus";
@@ -76,6 +81,9 @@ export type ShareViewFile = {
 export type ShareView = {
   readonly status: WaitingStatus | "expired";
   readonly senderOnline: boolean;
+  /** The universal state: the word, its colour, the bar and the pause button, the same in every app. */
+  readonly state: ShareStateView;
+  /** `state.label`. The list row's one line. */
   readonly rowLine: string;
   readonly header: string;
   readonly hint: string | null;
@@ -100,6 +108,8 @@ export type ShareViewInput = {
   readonly hold?: FlapHold | null;
   /** The highest percentage this row has shown for this selection. Threaded like `hold`. */
   readonly floor?: RowFloor | null;
+  /** The person pressed Stop sharing on this finished copy. A finished copy is Active otherwise. */
+  readonly sharingOff?: boolean;
 };
 
 /** How long a decided `senderOnline` / status word is held before it may flip. */
@@ -130,7 +140,9 @@ export function nextHold(
     candidate.status === "done" ||
     candidate.status === "stopped" ||
     candidate.status === "expired" ||
-    hold.status === "ready";
+    hold.status === "ready" ||
+    // Resume is the person's own tap too: a paused row answers at once.
+    hold.status === "stopped";
   if (immediate) return { ...candidate, at: now };
   if (now - hold.at < FLAP_WINDOW_MS) return hold;
   return { ...candidate, at: now };
@@ -200,24 +212,63 @@ function storedReason(raw: unknown): PauseReason | null {
 }
 
 
-/** The paused row's one line, for each reason. */
-// Three of them drop the percentage on purpose, because a figure in front of "not enough space" buries the only part of the line the user can act on.
-function pausedLine(reason: PauseReason, pct: number, gone: number): string {
-  switch (reason) {
-    case "senderOffline":
-      return `Paused · ${pct}% · sender offline`;
-    case "stalled":
-      return `Paused · ${pct}% · retrying`;
-    case "appRestarted":
-      return `Paused · ${pct}% · reconnecting`;
-    case "noSpace":
-      return "Paused · not enough space";
-    case "cantWrite":
-      return "Paused · can't save files";
-    case "filesGone": {
-      const n = Math.max(1, gone);
-      return `Paused · ${n} ${plural(n, "file", "files")} no longer shared`;
+/** The few words for a download that cannot carry on until the person does something. */
+export function attentionNote(reason: PauseReason | null, gone: number): string | null {
+  if (reason === "noSpace") return "Not enough space";
+  if (reason === "cantWrite") return "Can't save files";
+  if (reason === "filesGone") {
+    const n = Math.max(1, gone);
+    return `${n} ${plural(n, "file", "files")} no longer shared`;
+  }
+  return null;
+}
+
+/**
+ * Which of the universal states a received share is in. Only this app knows that; the word, the
+ * colour and the bar for each state come from Pearkit, so the phone and the desktop agree.
+ *
+ * - Nothing here says "paused" unless the person paused it. A download that lost its sender is
+ *   Waiting, and it becomes Starting the moment the sender is found again.
+ * - A finished copy is Active. It is Inactive only when the person switched its sharing off.
+ */
+export function receivedShareState(input: {
+  status: WaitingStatus | "expired";
+  senderOnline: boolean;
+  reason: PauseReason | null;
+  /** 0 to 100 of the chosen files, or null when nothing is chosen. */
+  pct: number | null;
+  /** Chosen files the share no longer has. */
+  goneChosen: number;
+  /** Nothing chosen and nothing saved: a row that only ever waited. */
+  nothingHere: boolean;
+  sharingOff: boolean;
+}): ShareStateInput {
+  const { status, senderOnline, reason, pct } = input;
+  switch (status) {
+    case "expired":
+      return { kind: "inactive" };
+    case "waiting":
+      // Only the link is here. There is nothing to count yet.
+      return { kind: "waiting" };
+    case "ready":
+      return { kind: "choose" };
+    case "queued":
+      return { kind: senderOnline ? "starting" : "waiting", percent: pct };
+    case "downloading":
+      return { kind: "downloading", percent: pct ?? 0 };
+    case "paused": {
+      const note = attentionNote(reason, input.goneChosen);
+      if (note) return { kind: "attention", note };
+      // No reason left on the record means the sender was found again and the download is about
+      // to move. The same when the sender can be seen right now.
+      return { kind: reason === null || senderOnline ? "starting" : "waiting", percent: pct };
     }
+    case "stopped":
+      // The person paused it. It stays put until they press Resume.
+      return { kind: "paused", percent: pct };
+    case "done":
+      if (input.nothingHere || input.sharingOff) return { kind: "inactive" };
+      return { kind: "active" };
   }
 }
 
@@ -399,24 +450,34 @@ export function shareView(input: ShareViewInput): ShareView {
   const reason = storedReason(record.pauseReason);
   const selectedBytes = Math.max(0, selectedTotal - heldBytes);
 
-  let rowLine = "";
-  let header = "";
+  const nothingHere = selection.size === 0 && !record.files.some((f) => f.isDownloaded);
+  const state = describeShareState(
+    receivedShareState({
+      status,
+      senderOnline,
+      reason,
+      pct: overallPct,
+      goneChosen: goneCount(record, selection),
+      nothingHere,
+      sharingOff: input.sharingOff === true,
+    }),
+  );
+  // The list row says the state and nothing else. The window with the files says a little more.
+  const rowLine = state.label;
+  let header = state.label;
   let hint: string | null = null;
   let button: { label: string; enabled: boolean } | null = null;
 
   switch (status) {
     case "expired":
-      rowLine = "Stopped waiting";
       header = "Stopped waiting.";
       break;
 
     case "waiting":
-      rowLine = "Waiting for sender";
       header = "Sender offline. Files appear when they're back.";
       break;
 
     case "ready":
-      rowLine = "Choose files";
       header = senderOnline
         ? "Sender online. Choose files to grab."
         : "Sender offline. Choose files now; they download when the sender is back.";
@@ -428,61 +489,37 @@ export function shareView(input: ShareViewInput): ShareView {
       break;
 
     case "queued":
-      // Two readings of one status, and the sender is what separates them: a
-      // queued row with a sender present is starting, not waiting.
-      rowLine = senderOnline ? "Starting…" : "Queued · sender offline";
-      header = rowLine;
+    case "paused":
+      if (state.kind === "waiting") {
+        header = pct > 0 ? `Waiting for the sender · ${pct}%` : "Waiting for the sender";
+      } else if (state.kind === "starting") {
+        header = "Sender found. Starting";
+      }
       hint = AFTER_GRAB_HINT;
       break;
 
-    case "downloading": {
+    case "downloading":
       // The file count appears only above one file, because a count of one reads worse than no count.
-      const tail =
-        selection.size > 1 ? ` · ${filesDone} of ${selection.size} saved` : "";
-      rowLine = `Downloading · ${pct}%${tail}`;
-      header = `Downloading · ${pct}%`;
+      if (selection.size > 1) header = `${state.label} · ${filesDone} of ${selection.size} saved`;
       hint = AFTER_GRAB_HINT;
       break;
-    }
-
-    case "paused": {
-      /** The pause reason decides this, not whether the sender looks online: that test is false during every stall. */
-      // The reducer drew the distinction at the moment of the pause, so reading the reason reads that decision.
-      rowLine = pausedLine(reason ?? "senderOffline", pct, goneCount(record, selection));
-      header = rowLine;
-      hint = AFTER_GRAB_HINT;
-      break;
-    }
 
     case "stopped":
-      // The user stopped this one. Nothing apologises and nothing retries; the
-      // picker's `Resume` is the only way on.
-      rowLine = `Stopped · ${pct}%`;
-      header = rowLine;
+      // The person paused this one. Nothing apologises and nothing retries; Resume is the only way on.
       hint = AFTER_GRAB_HINT;
       break;
 
-    case "done": {
+    case "done":
       // Nothing held and no selection is a row that stopped waiting; calling it saved would claim a file that never arrived.
-      if (selection.size === 0 && !record.files.some((f) => f.isDownloaded)) {
-        rowLine = "Stopped waiting";
-        header = "Stopped waiting.";
-        hint = DONE_HINT;
-        break;
-      }
-      const n = filesDone > 0 ? filesDone : selection.size;
-      // One file keeps today's `File · Saved`; the row prepends the type
-      // prefix, which is what `prefixWithType` below reports.
-      rowLine = n <= 1 ? "Saved" : `Saved · ${n} ${plural(n, "file", "files")}`;
-      header = "All chosen files saved.";
+      header = nothingHere ? "Stopped waiting." : "All chosen files saved.";
       hint = DONE_HINT;
       break;
-    }
   }
 
   return {
     status,
     senderOnline,
+    state,
     rowLine,
     header,
     hint,
@@ -493,9 +530,4 @@ export function shareView(input: ShareViewInput): ShareView {
     hold,
     floor: floored.floor,
   };
-}
-
-/** Does the row prepend its type prefix? Only the single-file saved case; every other line already names its own subject, so a prefix would read as two labels. */
-export function rowLineTakesTypePrefix(view: ShareView): boolean {
-  return view.status === "done" && view.rowLine === "Saved";
 }

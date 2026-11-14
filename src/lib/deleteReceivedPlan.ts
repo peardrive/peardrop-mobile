@@ -93,19 +93,30 @@ export function planReceivedDelete(args: {
 
 export type DeleteConfirmCopy = { title: string; body: string };
 
+/** The sentence for a share other people can get from this device. */
+const NO_LONGER_SHARED = "Anyone downloading it from you can no longer get it.";
+
 /** It deliberately does not promise that pasting the link again will offer the files — that depends
  *  on the sender still hosting, which this device cannot establish. */
-export function describeDeleteConfirm(kind: "received" | "hosted"): DeleteConfirmCopy {
+// `sharedFromHere`: other people can get this from this device (a share of your own, or a
+// download that is shared onward), so deleting it takes it away from them too.
+export function describeDeleteConfirm(
+  kind: "received" | "hosted",
+  opts?: { sharedFromHere?: boolean },
+): DeleteConfirmCopy {
   if (kind === "received") {
+    const base =
+      "Removes PearDrop's copy of these files from this device. " +
+      "Anything you saved to Downloads stays.";
     return {
       title: "Delete this share?",
-      body:
-        "Removes PearDrop's copy of these files from this device. " +
-        "Anything you saved to Downloads stays. Can't undo.",
+      body: opts?.sharedFromHere
+        ? `${base} ${NO_LONGER_SHARED} Can't undo.`
+        : `${base} Can't undo.`,
     };
   }
   return {
-    title: "Delete this drive?",
-    body: "Removes the data from your device. Can't undo.",
+    title: "Delete this share?",
+    body: `Removes it from PearDrop. ${NO_LONGER_SHARED} Can't undo.`,
   };
 }

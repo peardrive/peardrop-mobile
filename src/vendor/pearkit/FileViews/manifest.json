@@ -1,0 +1,45 @@
+{
+  "piece": "FileViews",
+  "from": "pearkit/src/components/FileViews",
+  "branch": "feat/media-player",
+  "commit": "dcd5b13",
+  "uncommitted": true,
+  "files": {
+    "DownloadPie.tsx": {
+      "copy": "a6b816470a0a4dd8a44504885dfa34a18796b900af7f69777c5a521adc64cc42",
+      "source": "1b21cfe78e23d5cd1f6ad25a21f733b2f5d1cf65360683891bfa64b1d1757212"
+    },
+    "FileRows.tsx": {
+      "copy": "171e906040ef0560bfa18f455e32e490564a5d889eff99a39c5e9d681f009d7c",
+      "source": "e45073321e56a24b543640a2518333fb43305774bf154653b8ee2f6c1c568514"
+    },
+    "FileViewIcon.tsx": {
+      "copy": "3c0662f9b9c242ba95bbed89bedeab360a8a1e44ad1e43a46832676ba01fad70",
+      "source": "4481a16d0d5fb88e811e0deb1c53c7337e9ae74b35edd521069866cce2e7ad74"
+    },
+    "FileViews.tsx": {
+      "copy": "0b26623bbe41fe1dceff0090fd017c39c1c83bd83afa79ac58ffc61fe3c2ae18",
+      "source": "bd6dd4c25909affaf4cef41fe909f63a5bc183b2c3feaac9a7efa7fa9b082810"
+    },
+    "README.md": {
+      "copy": "5482071935506906de6a5a8e0f6023c912158e90c391c5a6e7ea793e8a35ecfd",
+      "source": "5482071935506906de6a5a8e0f6023c912158e90c391c5a6e7ea793e8a35ecfd"
+    },
+    "ViewMenu.tsx": {
+      "copy": "5b393150f545cf9efb227c463f28d4d4520f66cb4a4278a2b77288a99e8584e2",
+      "source": "0e58bade13647a897f39704abacd8484242ae6c94ab37c63ffc4cef35af0c66d"
+    },
+    "ViewSwitcher.tsx": {
+      "copy": "1e9adb3315b67615c5d3e7abf61caa8af32f7dda5cf17f218ef8525acf3a1f5a",
+      "source": "fdaa2545eb7f73aceb3a56e4b1dae8fa3910c8bb0fc63a842d1d02b7758c7b53"
+    },
+    "fileViewLogic.test.ts": {
+      "copy": "5a24a61b0713d63ef35242e11078adf6179ab8762570bbb223ffaef6895a5083",
+      "source": "a0f67a199e4ef54fa9e103615f0a8fca0e755ad2a76151363ccc112b629434be"
+    },
+    "fileViewLogic.ts": {
+      "copy": "dd93d18a72f091051f6ff979c6c7cefb56ca6bb4817915f93f2afcb0684fbdc9",
+      "source": "38b83770ef09f7d0fcc1e0c6950621227156fc16f1ebf6cc497851ad67f7ded8"
+    }
+  }
+}

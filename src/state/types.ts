@@ -233,15 +233,18 @@ export type DriveRecord = {
    *  drive. This is what lets the UI offer to open a file elsewhere. */
   localFiles?: DriveLocalFile[];
   /**
-   * The user explicitly re-shared this received copy. Written when a
-   * received drive that holds every file in its manifest is activated with
-   * `serve: true`. This is persisted intent, not live swarm state: at boot,
-   * a received drive gets a swarm only if it is reshared and complete, and
-   * then as a server. Whether it is announcing right now is `mode`, which
-   * is what the link and QR affordances key off. Optional only so an older
-   * reply parses.
+   * A received copy the user has NOT stopped sharing. A finished download is
+   * shared onward by default; only "Stop sharing" turns this false, and it
+   * stays false across launches. This is the saved answer, not live state:
+   * `swarmMode` says whether the phone is announcing right now.
    */
   reshared?: boolean;
+  /**
+   * What the engine is doing for this drive right now: `"server"` means other
+   * people can find it here, `"client"` means it only fetches, `"none"` means
+   * no session. Absent on a reply from an older engine.
+   */
+  swarmMode?: "server" | "client" | "none";
   createdAt?: number;
   lastActivityAt?: number;
 };

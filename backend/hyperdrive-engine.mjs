@@ -21,6 +21,13 @@ import {
   selectRemovableOrphans,
   summarizeOrphans,
 } from "./drive-reuse.mjs";
+import {
+  receivedDriveIsComplete,
+  receivedKeyStopped,
+  receivedShareDecision,
+  receivedEntrySharesByDefault,
+  recordReshareAnswer,
+} from "./reshare-rule.mjs";
 import { EngineError, wrapError, failure } from "./engine-errors.mjs";
 import {
   bdebug,
@@ -852,50 +859,49 @@ function driveFileRecord(ref) {
   };
 }
 
-function localHeldNameKey(name) {
-  const base = String(name || "").split(/[\\/]/).pop() || "";
-  const dot = base.lastIndexOf(".");
-  const stem = dot > 0 ? base.slice(0, dot) : base;
-  const ext = dot > 0 ? base.slice(dot) : "";
-  return `${stem.replace(/ \(\d+\)$/, "")}${ext}`;
-}
-
 /**
- * Does this entry hold EVERY file its manifest lists? Deliberately the stricter half of
- * `receivedHoldings.ts`: a false positive seeds a copy that cannot serve what it advertises.
- */
-function receivedDriveIsComplete(entry) {
-  const files = Array.isArray(entry?.files) ? entry.files : [];
-  if (files.length === 0) return false;
-
-  const held = new Map();
-  for (const lf of Array.isArray(entry?.localFiles) ? entry.localFiles : []) {
-    // `path` is required, not just `name`: a record without a path is not a file anything can
-    // read, let alone serve. `describeHoldings` requires both for the same reason.
-    if (!lf || !lf.path) continue;
-    const key = localHeldNameKey(lf.name || lf.path);
-    held.set(key, (held.get(key) || 0) + 1);
-  }
-
-  for (const f of files) {
-    const want = localHeldNameKey(f?.displayName || f?.name || f?.key || "");
-    const n = held.get(want) || 0;
-    if (n <= 0) return false;
-    held.set(want, n - 1);
-  }
-  return true;
-}
-
-/**
- * May this RECEIVED session announce? Three independent conditions, all required: `session.serve
- * === true`, a persisted `entry.reshared === true`, and every file held. `undefined` is not `true`.
+ * May this RECEIVED session announce? Three conditions, all required: `session.serve === true`,
+ * every file held, and the user has not stopped sharing it. A finished download is shared onward
+ * by default (`reshare-rule.mjs`), so nothing here waits for the user to opt in.
  */
 function receivedDriveMayServe(session) {
   if (!session || !session.isReceiving) return false;
   if (session.serve !== true) return false;
   const entry = manifest?.drives?.[session.driveId];
-  if (!entry || entry.reshared !== true) return false;
+  if (!entry) return false;
+  if (receivedKeyStopped(manifest.drives, entry.key)) return false;
   return receivedDriveIsComplete(entry);
+}
+
+/**
+ * Stop sharing is asked of one entry and means the whole share. An old install can hold two
+ * entries for one link; this takes any OTHER live copy of it out of server mode, without a
+ * leave (which would also drop the lookups a running download depends on).
+ */
+async function demoteOtherReceivedCopies(keyHex, exceptDriveId) {
+  const key = String(keyHex || "").toLowerCase();
+  if (!key) return;
+  for (const s of activeDrives.values()) {
+    if (!s.isReceiving || s.driveId === exceptDriveId) continue;
+    if (String(s.metadata?.key || "").toLowerCase() !== key) continue;
+    if (currentSwarmMode(s) !== "server") continue;
+    s.serve = false;
+    try {
+      if (s.discovery && !s.discovery.destroyed) {
+        await s.discovery.refresh({ server: false, client: true });
+        s.swarmMode = "client";
+        binfo(
+          "engine.swarm",
+          `stop sharing: other copy drive=${s.driveId} of the same share taken out of server mode`,
+        );
+      }
+    } catch (err) {
+      bwarn(
+        "engine.swarm",
+        `stop sharing: could not demote other copy drive=${s.driveId} — ${describeError(err)}`,
+      );
+    }
+  }
 }
 
 /**
@@ -914,6 +920,13 @@ function currentSwarmMode(session) {
       `A swarm was joined without recording its mode; the reply is a guess.`,
   );
   return derived;
+}
+
+/** The same reading for the drive list, which is asked often: no warning line per call. */
+function liveSwarmModeQuiet(session) {
+  if (!session || !session.swarm) return "none";
+  if (session.swarmMode === "server" || session.swarmMode === "client") return session.swarmMode;
+  return session.isReceiving ? "client" : "server";
 }
 
 /**
@@ -1307,6 +1320,7 @@ export async function engineHydrateDrives() {
 
   let hydrated = 0;
   let failed = 0;
+  let promoted = 0;
   for (const entry of entries) {
     const targetState = normalizeState(entry.state);
     try {
@@ -1320,10 +1334,14 @@ export async function engineHydrateDrives() {
         continue;
       }
 
-      if (targetState === DriveState.INACTIVE) {
+      // A finished download rests as INACTIVE. It is shared onward by default, so it takes the full
+      // path below and gets a swarm; every other inactive entry stays light.
+      const shareDecision = receivedShareDecision(manifest.drives, entry);
+      if (targetState === DriveState.INACTIVE && !shareDecision.serve) {
         bdebug(
           "engine.hydrate",
-          `drive=${entry.driveId} light-hydrate (inactive, no swarm, no corestore)`,
+          `drive=${entry.driveId} light-hydrate (inactive, no swarm, no corestore)` +
+            ((entry.origin || "hosted") === "received" ? ` not shared: ${shareDecision.reason}` : ""),
         );
         // Light hydration: announce the entry to RN without joining the swarm or opening the
         // corestore, and clear any stale resumeError — the drive hydrated cleanly this boot.
@@ -1370,28 +1388,23 @@ export async function engineHydrateDrives() {
         files: toDriveFileRefs(entry.files),
         shareName: entry.name,
       };
-      // A received drive gets a swarm at boot ONLY if `reshared` AND complete, and then as a server.
-      // Neither half is redundant: completeness is not consent, and consent alone seeds a partial copy.
-      const reshareAtBoot =
-        isReceived &&
-        entry.reshared === true &&
-        receivedDriveIsComplete(entry);
+      // A received drive gets a swarm at boot when it is shared by default: every file held, the
+      // user has not stopped it, and it is the one copy of that link chosen to share. Then as a server.
+      const reshareAtBoot = isReceived && shareDecision.serve;
       if (isReceived && !reshareAtBoot) {
         binfo(
           "engine.hydrate",
-          `drive=${entry.driveId} hydrated WITHOUT swarm reason=` +
-            (entry.reshared === true ? "reshared-but-incomplete" : "received-origin") +
+          `drive=${entry.driveId} hydrated WITHOUT swarm reason=${shareDecision.reason}` +
             ` state=${entry.state} localFiles=${Array.isArray(entry.localFiles) ? entry.localFiles.length : 0}` +
-            `/${Array.isArray(entry.files) ? entry.files.length : 0} ` +
-            `— a received copy does not announce until the user asks it to`,
+            `/${Array.isArray(entry.files) ? entry.files.length : 0}`,
         );
       } else {
         if (reshareAtBoot) {
           session.serve = true;
           binfo(
             "engine.hydrate",
-            `drive=${entry.driveId} hydrating AS A SERVER reason=reshared-and-complete ` +
-              `files=${Array.isArray(entry.files) ? entry.files.length : 0} — re-share`,
+            `drive=${entry.driveId} hydrating AS A SERVER reason=${shareDecision.reason} ` +
+              `files=${Array.isArray(entry.files) ? entry.files.length : 0} — shared onward by default`,
           );
         }
         session.swarm = attachHostSwarm(
@@ -1401,6 +1414,12 @@ export async function engineHydrateDrives() {
       }
 
       activeDrives.set(entry.driveId, session);
+      // The entry now has a live session, so its saved state says so. Written only after the
+      // storage opened: a failure above leaves the entry exactly as it was.
+      if (targetState !== DriveState.ACTIVE) {
+        setDriveState(entry, DriveState.ACTIVE, "hydrate: finished download shared by default");
+        promoted++;
+      }
       // A successful hydrate clears any stale
       // resumeError left over from a prior boot's transient failure.
       resumeErrors.delete(entry.driveId);
@@ -1420,9 +1439,13 @@ export async function engineHydrateDrives() {
     }
   }
 
+  if (promoted > 0) {
+    try { await saveManifest(); } catch {}
+  }
   binfo(
     "engine.hydrate",
-    `hydrate done: hydrated=${hydrated} failed=${failed} considered=${entries.length}`,
+    `hydrate done: hydrated=${hydrated} failed=${failed} considered=${entries.length} ` +
+      `sharedByDefault=${promoted}`,
   );
   return { ok: true, hydrated, failed, considered: entries.length };
 }
@@ -1447,14 +1470,14 @@ export async function engineRefreshSwarm() {
       continue;
     }
     if (session.isReceiving && !receivedDriveMayServe(session)) {
-      // Flush-only for every received session but one holding all three of `session.serve`, a
-      // persisted `entry.reshared` and every file. Never weaken this without the rejoin's `server`.
+      // Flush-only for every received session but one that is sharing: `session.serve`, every file
+      // held, and not stopped by the user. Never weaken this without the rejoin's `server`.
       const rsEntry = manifest?.drives?.[session.driveId];
       bdebug(
         "engine.swarm",
         `refresh flush-only drive=${session.driveId} reason=receiver ` +
           `serveOptIn=${typeof session.serve === "boolean" ? String(session.serve) : "default"} ` +
-          `reshared=${rsEntry?.reshared === true} ` +
+          `stoppedByUser=${receivedKeyStopped(manifest?.drives, rsEntry?.key)} ` +
           `complete=${receivedDriveIsComplete(rsEntry)}`,
       );
       flushes.push(session.swarm.flush().catch((err) => {
@@ -3671,6 +3694,28 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
     duration,
   });
 
+  // A finished download is shared onward by default, so the link keeps working when the first
+  // sender is gone (`reshare-rule.mjs`). The download's own session was closed above exactly as
+  // before; the share then comes up as a host through the same call the Share button makes, so
+  // there is one way a received copy starts sharing, not two. A cancelled grab returned above, and
+  // a copy that is missing a file fails the rule here.
+  let sharing = false;
+  const shareAfter = receivedShareDecision(manifest.drives, manifest.drives[driveId]);
+  if (shareAfter.serve) {
+    try {
+      const res = await engineActivateDrive(driveId);
+      sharing = res?.ok === true && res.mode === "server";
+      binfo(
+        "engine.download",
+        `share onward drive=${driveId} ok=${res?.ok === true} mode=${res?.mode ?? "?"}`,
+      );
+    } catch (err) {
+      bwarn("engine.download", `share onward FAILED drive=${driveId} — ${describeError(err)}`);
+    }
+  } else {
+    binfo("engine.download", `not shared onward drive=${driveId} reason=${shareAfter.reason}`);
+  }
+
   return {
     ok: true,
     files: downloadedFiles,
@@ -3678,6 +3723,8 @@ export async function engineDownload(driveId, destDir, fileName, fileNames) {
     totalBytes: bytesDownloaded,
     duration,
     destDir: downloadRoot,
+    // This phone is now announcing the share.
+    sharing,
     // Peers attached when the loop finished. RN needs it to tell a stall with
     // nobody there from a stall against a peer that is simply slow.
     peersConnected: session.connectedPeerIds?.size ?? 0,
@@ -3790,7 +3837,13 @@ export function engineListDrives() {
       localFiles: entry.localFiles || [],
       // Always a boolean, never absent: `undefined` at the RN end would mean "this worklet predates
       // the field", which a Share control cannot tell from "the user has not re-shared this".
-      reshared: entry.reshared === true,
+      // For a received share: the user has not stopped it. Sharing is the default.
+      reshared:
+        (entry.origin || "hosted") === "received" &&
+        !receivedKeyStopped(manifest.drives, entry.key),
+      // What the swarm is doing right now: "server" (sharing), "client" or "none". The one live
+      // reading RN gets without making a call, so a row can say "sharing" and be right.
+      swarmMode: liveSwarmModeQuiet(activeDrives.get(entry.driveId)),
       createdAt: entry.createdAt,
       lastActivityAt: entry.lastActivityAt || entry.createdAt,
     });
@@ -3816,7 +3869,14 @@ export async function engineActivateDrive(driveId, opts) {
   const isReceiving = existing
     ? !!existing.isReceiving
     : (entry?.origin || "hosted") === "received";
-  const requested = typeof opts?.serve === "boolean" ? opts.serve : !isReceiving;
+  // No opinion from the caller: a hosted drive announces, and a received one follows the default
+  // rule — shared when every file is held and the user has not stopped it.
+  const requested =
+    typeof opts?.serve === "boolean"
+      ? opts.serve
+      : isReceiving
+        ? receivedEntrySharesByDefault(manifest.drives, entry)
+        : true;
   const requestedMode = requested ? "server" : "client";
 
   // `serve: true` is a REQUEST, refused for an incomplete copy: announcing one puts a file list on
@@ -3836,15 +3896,39 @@ export async function engineActivateDrive(driveId, opts) {
 
   /**
    * Written only for a received drive and only when the caller expressed a boolean — absent `serve`
-   * is "no opinion". A refusal writes `false`, so a stale `true` cannot re-announce a lost share.
+   * is "no opinion". A refusal writes nothing: `false` means the user stopped it, and nothing else
+   * may write it. An incomplete copy cannot announce anyway; completeness is tested at every decision.
    */
   const persistReshared = (target) => {
     if (!target || !isReceiving) return false;
     if (typeof opts?.serve !== "boolean") return false;
-    if (target.reshared === serve) return false;
-    target.reshared = serve;
-    return true;
+    if (serveRefused) return false;
+    return recordReshareAnswer(manifest.drives, target, serve);
   };
+
+  // Stop sharing means the whole share, not one entry of it.
+  if (isReceiving && opts?.serve === false) {
+    await demoteOtherReceivedCopies(entry?.key ?? existing?.metadata?.key, driveId);
+    // Nothing is running for this entry, so there is nothing to open: record the answer and say so.
+    if (!existing && entry) {
+      if (persistReshared(entry)) {
+        try { await saveManifest(); } catch {}
+      }
+      binfo("engine.state", `activate drive=${driveId} stop sharing recorded (no live session)`);
+      return {
+        ok: true,
+        driveId,
+        shareLink: entry.shareLink || (entry.key ? createShareLink(entry.key) : ""),
+        key: entry.key,
+        mode: "none",
+        previousMode: "none",
+        requestedMode,
+        already: false,
+        reusedSession: false,
+        serveRefused: null,
+      };
+    }
+  }
 
   // Ordered BEFORE the `entry` checks: a live session is proof the drive exists and its storage is
   // open, so a drive with a session can no longer reach any failure return below.
@@ -4045,7 +4129,7 @@ export async function engineActivateDrive(driveId, opts) {
     binfo(
       "engine.state",
       `activate drive=${driveId} opened storage=${entry.storagePath} mode=${mode} ` +
-        `serve=${serve} reshared=${entry.reshared === true} files=${session.files.length}`,
+        `serve=${serve} reshared=${String(entry.reshared)} files=${session.files.length}`,
     );
     return {
       ok: true,
@@ -4094,17 +4178,16 @@ export async function engineDeactivateDrive(driveId) {
     return { ok: true, alreadyInactive: true };
   }
 
-  // A re-share is not torn down by a preview closing. The refusal is narrow: received origin, a
-  // persisted `reshared === true`, and a swarm actually in server mode.
+  // A received share that is announcing is not torn down by a preview closing. The refusal is
+  // narrow: received origin and a swarm actually in server mode. Stop sharing is `serve: false`.
   const dEntry = manifest.drives?.[driveId];
   if (
     (dEntry?.origin || "hosted") === "received" &&
-    dEntry?.reshared === true &&
     currentSwarmMode(session) === "server"
   ) {
     binfo(
       "engine.state",
-      `deactivate drive=${driveId} REFUSED — a re-shared received drive is announcing; ` +
+      `deactivate drive=${driveId} REFUSED — a received share is announcing; ` +
         `a preview closing must not stop it`,
     );
     return { ok: true, refused: "reshared", driveId, mode: "server" };

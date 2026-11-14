@@ -1,12 +1,13 @@
 import type { ToastKind } from "./toastKind";
 
 /**
- * The re-share decision for a received share, and every word it says. A
- * hydrated received copy is `active` while announcing nothing, so the gates
- * key off the swarm mode rather than the row. `activate`'s `serve` is a
- * tri-state and this module never produces the absent case. Stop sharing is
- * `serve: false`, not `deactivate`, which would leave the persisted intent to
- * re-announce at the next launch. A live `activate` reply wins when present.
+ * The Share / Stop sharing control for a received share, and every word it
+ * says. A finished download is shared onward by default, so a link keeps
+ * working when the first sender is away; it stops only when the user presses
+ * Stop sharing. Whether the phone is sharing is read from the engine's live
+ * swarm mode, never from the row being "active": a received copy can be active
+ * and announce nothing. Stop sharing is `activate` with `serve: false`, not
+ * `deactivate`: only the first saves the answer for the next launch.
  */
 
 /** The three swarm modes `activate` can report. Mirrors `DriveSwarmMode`. */
@@ -103,9 +104,14 @@ export type ReshareSignals = {
   /** The engine has a live, non-failed session for this share. */
   sessionUp?: boolean | null;
   /**
-   * `mode` from the most recent `activate` reply THIS session, or `null` when
-   * this session has not called it. A live reading and the only one that can
-   * contradict the persisted pair.
+   * The engine's live swarm mode for this share, from its list of drives:
+   * `"server"` when any copy of the link is announcing. `null` when the list
+   * does not say (an older engine).
+   */
+  liveMode?: ReshareMode | null;
+  /**
+   * `mode` from an `activate` reply that the list has not caught up with yet.
+   * The caller drops it once the list has been read again.
    */
   observedMode?: ReshareMode | null;
 };
@@ -115,16 +121,18 @@ export type ReshareSignals = {
  *
  * Precedence, and the order is the substance:
  *
- *  1. **A live `activate` reply wins, in both directions.** `mode === "client"`
- *     from a real call means client-only however hopeful the stored flag is.
- *  2. Otherwise the boot rule's own two inputs — `reshared` AND `complete` —
- *     plus a live session, because the rule cannot have run for a drive that
- *     failed to hydrate.
+ *  1. A fresh `activate` reply, in both directions: it is newer than the list.
+ *  2. The engine's live mode from the list. This is what makes a download that
+ *     has just finished, or one found at launch, show as shared with nobody
+ *     having pressed anything.
+ *  3. With neither (an older engine): not stopped AND complete AND a live
+ *     session.
  *
- * Never `active`. A hydrated received drive is active and announces nothing.
+ * Never `active`. A hydrated received drive is active and may announce nothing.
  */
 export function receivedShareIsAnnouncing(s: ReshareSignals): boolean {
   if (s.observedMode) return s.observedMode === "server";
+  if (s.liveMode) return s.liveMode === "server";
   return s.reshared === true && s.complete === true && s.sessionUp === true;
 }
 

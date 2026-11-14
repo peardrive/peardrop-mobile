@@ -2,15 +2,15 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { formatBytes, formatRelativeOrDate } from "../lib/format";
@@ -86,7 +86,7 @@ export default function FilePickerSheet({
   busy = false,
 }: FilePickerSheetProps) {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   const [selected, setSelected] = useState<Set<string>>(() => new Set());

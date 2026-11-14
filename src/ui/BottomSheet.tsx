@@ -1,15 +1,15 @@
 import React, { useMemo } from "react";
 import {
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { AppModal as Modal } from "./AppModal";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useScreenInsets } from "./useScreenInsets";
 import { useAppTheme } from "../state/ThemeContext";
 import type { AppTheme } from "./themes";
 import { ToastOutlet } from "./Toast";
@@ -46,7 +46,7 @@ export default function BottomSheet({
   children,
 }: BottomSheetProps) {
   const { theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const insets = useScreenInsets();
   const styles = useMemo(() => createStyles(theme), [theme]);
   return (
     <Modal

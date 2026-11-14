@@ -4,7 +4,7 @@
  * The rings and the tinted pear sit on `surfaceSubtle`, a translucent layer
  * over `bg`. `theme.primary` measures 1.53:1 on `pear` and 1.63:1 on `paper`
  * against that composite — well under WCAG 1.4.11's 3:1 floor for non-text
- * graphics, and `paper` is the default theme.
+ * graphics, and `paper` was the default theme until 2026-11-12 (now `void`, Pear dark).
  *
  * The fallback is `primaryMuted`, NOT `text`: a black pear is legible and wrong.
  * `primaryMuted` is the brand's own deeper green on both failing themes
