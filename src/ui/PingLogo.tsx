@@ -37,6 +37,16 @@ export type PingLogoProps = {
   onLight?: boolean;
   /** How many pings can overlap. Default 6. */
   slots?: number;
+  /**
+   * How far the echo (the faint ring that leaves the outer arc and fades) travels, in dp from the
+   * arcs' centre. Unset, it goes the icon's own short way. Set it to send the echo out to the edges
+   * of a small window; it then travels in `T.echoFar` ms instead of `T.ghost`. Nothing else changes.
+   */
+  echoReach?: number;
+  /** Called on a tap, after the ping. Works with reduce motion on too (the tap is still an action). */
+  onPress?: () => void;
+  /** What a screen reader says. Default "PearDrop". */
+  label?: string;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -64,6 +74,7 @@ const T = {
   arcRise: 90,
   arcFall: 600,
   ghost: 700,
+  echoFar: 520, // the echo's trip when it is sent out to `echoReach`
   breathe: 11, // px (design) each arc moves outward when fully lit
   first: 150,
 };
@@ -76,8 +87,21 @@ type Slot = { pop: Animated.Value; lit: Animated.Value[]; ghost: Animated.Value;
 const sum = (vals: Animated.Value[]): Animated.AnimatedAddition<number> =>
   vals.slice(1).reduce((acc, v) => Animated.add(acc, v), Animated.add(vals[0]!, 0));
 
-export default function PingLogo({ size, auto = false, interactive = true, onLight = false, slots: slotCount = 6, style }: PingLogoProps) {
+export default function PingLogo({
+  size,
+  auto = false,
+  interactive = true,
+  onLight = false,
+  slots: slotCount = 6,
+  echoReach,
+  onPress,
+  label = "PearDrop",
+  style,
+}: PingLogoProps) {
   const k = size / DESIGN;
+  // The echo's final scale: the icon's own (170 design px past the outer arc), or out to `echoReach`.
+  const echoScale = echoReach ? Math.max(1, echoReach / (OUTER.rMid * k)) : 1 + 170 / OUTER.rMid;
+  const echoMs = echoReach ? T.echoFar : T.ghost;
   const { arcs: arcColors, hot: HOT, glow: GLOW } = PALETTE[onLight ? "light" : "dark"];
   const [reduceMotion, setReduceMotion] = useState(false);
   const next = useRef(0);
@@ -124,11 +148,11 @@ export default function PingLogo({ size, auto = false, interactive = true, onLig
       ),
       Animated.sequence([
         Animated.delay(OUTER.at),
-        Animated.timing(s.ghost, { toValue: 1, duration: T.ghost, easing: Easing.out(Easing.cubic), ...native }),
+        Animated.timing(s.ghost, { toValue: 1, duration: echoMs, easing: Easing.out(Easing.cubic), ...native }),
       ]),
     ]);
     s.running.start();
-  }, [slots]);
+  }, [slots, echoMs]);
 
   useEffect(() => {
     if (!auto || reduceMotion) return;
@@ -167,9 +191,10 @@ export default function PingLogo({ size, auto = false, interactive = true, onLig
   return (
     <Pressable
       onPressIn={interactive && !reduceMotion ? ping : undefined}
-      disabled={!interactive || reduceMotion}
-      accessibilityRole="image"
-      accessibilityLabel="PearDrop"
+      onPress={onPress}
+      disabled={!onPress && (!interactive || reduceMotion)}
+      accessibilityRole={onPress ? "button" : "image"}
+      accessibilityLabel={label}
       style={[box, styles.box, style]}
     >
       {/* Echo rings, one per slot, behind everything */}
@@ -182,7 +207,7 @@ export default function PingLogo({ size, auto = false, interactive = true, onLig
             {
               transformOrigin: [OUTER.cx * k, OUTER.cy * k, 0],
               opacity: s.ghost.interpolate({ inputRange: [0, 0.02, 1], outputRange: [0, 0.32, 0] }),
-              transform: [{ scale: s.ghost.interpolate({ inputRange: [0, 1], outputRange: [1, 1 + 170 / OUTER.rMid] }) }],
+              transform: [{ scale: s.ghost.interpolate({ inputRange: [0, 1], outputRange: [1, echoScale] }) }],
             },
           ]}
         >

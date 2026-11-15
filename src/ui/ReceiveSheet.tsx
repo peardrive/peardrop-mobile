@@ -23,15 +23,14 @@ import {
   RESOLVE_LOOKING_LABEL,
   resolveHintFor,
 } from "../lib/resolveHint";
-import { indicatorColor } from "../lib/indicatorColor";
-import PearSonarLite from "./PearSonarLite";
+import PingLogo from "./PingLogo";
 // The scan payload is classified before anything is claimed about it.
 // Copy lives there, not here.
 import { classifyScan, type ScanOutcome } from "../lib/scanOutcome";
 // the inline notice carries a tone — "wait" renders muted
 // with an info icon, "error" stays theme.danger.
 import type { LinkNotice } from "../lib/resolveNotice";
-import type { AppTheme } from "./themes";
+import { LIGHT_THEME_IDS, type AppTheme } from "./themes";
 import { ToastOutlet } from "./Toast";
 
 /**
@@ -97,6 +96,11 @@ export type ReceiveSheetProps = {
  * button that pulls from clipboard. The polish-round removal of
  * "Import Qrcode Image" is preserved — this modal does not surface it.
  */
+/** The logo in the looking panel: the splash's animation at a little over half its size. */
+const LOOKING_LOGO_SIZE = 96;
+/** The shortest gap between two taps that each start a fresh look (one ping period). */
+const LOOK_AGAIN_GAP_MS = 1500;
+
 export default function ReceiveSheet({
   visible,
   onClose,
@@ -122,6 +126,17 @@ export default function ReceiveSheet({
   const [scanError, setScanError] = useState<
     Extract<ScanOutcome, { kind: "rejected" }> | null
   >(null);
+  // The looking panel's size, so the logo's echo ring travels out to its edges.
+  const [lookingBox, setLookingBox] = useState<{ w: number; h: number } | null>(null);
+  // Tapping the logo looks again. One fresh look per ping period at most, so a burst of taps does not stack resolves.
+  const lastLookAgain = useRef(0);
+  const lookAgain = () => {
+    const now = Date.now();
+    if (!onRetry || now - lastLookAgain.current < LOOK_AGAIN_GAP_MS) return;
+    lastLookAgain.current = now;
+    haptics.actionDone();
+    onRetry();
+  };
 
   useEffect(() => {
     if (visible) {
@@ -291,11 +306,18 @@ export default function ReceiveSheet({
                   whenever the picker resolves. No-op on Android, which
                   unmounts the subtree outright. */}
               {visible && resolving ? (
-                <View style={styles.lookingPanel}>
-                  <PearSonarLite
-                    size={120}
-                    color={indicatorColor(theme)}
-                    label={RESOLVE_LOOKING_LABEL}
+                <View
+                  style={styles.lookingPanel}
+                  onLayout={(e) => setLookingBox({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
+                >
+                  {/* The opening logo animation, smaller. Its echo ring runs out to the panel's corners. */}
+                  <PingLogo
+                    size={LOOKING_LOGO_SIZE}
+                    auto
+                    onLight={LIGHT_THEME_IDS.includes(theme.id)}
+                    echoReach={lookingBox ? Math.hypot(lookingBox.w, lookingBox.h) / 2 : undefined}
+                    onPress={onRetry ? lookAgain : undefined}
+                    label={onRetry ? `${RESOLVE_LOOKING_LABEL}. Tap to look again.` : RESOLVE_LOOKING_LABEL}
                   />
                   <Text
                     style={styles.lookingText}

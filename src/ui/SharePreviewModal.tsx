@@ -24,8 +24,8 @@ import FileTypeIcon from "./FileTypeIcon";
 // the row as well so the two cannot drift), `ConfirmModal` (the stop confirm
 // is gone - the blocks survive a stop), `previewHint`/`previewPrimaryLabel`
 // (the button's label is the model's), `indicatorColor`/`RESOLVE_LOOKING_LABEL`
-// and `PearSonarLite` (no animation in the picker; the Receive sheet keeps its
-// pear). Each was a surface that could contradict another.
+// and the looking animation (none in the picker; the Receive sheet keeps the
+// logo). Each was a surface that could contradict another.
 import {
   DRAFT_HINT,
   draftButton,
