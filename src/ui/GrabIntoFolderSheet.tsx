@@ -91,14 +91,18 @@ export default function GrabIntoFolderSheet({
       animationType="slide"
       onRequestClose={onClose}
     >
-      <Pressable
-        style={styles.backdrop}
-        onPress={onClose}
-        accessibilityLabel="Close grab sheet"
-      >
+      <View style={styles.backdrop}>
+        {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+            pressable round the card makes it one element to VoiceOver and the test robot, and
+            on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityLabel="Close grab sheet"
+          accessibilityRole="button"
+        />
         <View
           style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}
-          onStartShouldSetResponder={() => true}
         >
           <View style={styles.handle} />
           <Text style={styles.title}>Grab into folder</Text>
@@ -188,7 +192,7 @@ export default function GrabIntoFolderSheet({
             </LinearGradient>
           </Pressable>
         </View>
-      </Pressable>
+      </View>
     </Modal>
   );
 }

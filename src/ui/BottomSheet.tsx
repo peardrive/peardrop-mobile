@@ -59,11 +59,16 @@ export default function BottomSheet({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-      <Pressable
-        style={styles.backdrop}
-        onPress={onClose}
-        accessibilityLabel="Close sheet"
-      >
+      <View style={styles.backdrop}>
+        {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+            pressable round the card makes it one element to VoiceOver and the test robot, and
+            on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityLabel="Close sheet"
+          accessibilityRole="button"
+        />
         <View
           style={[
             styles.sheet,
@@ -71,7 +76,6 @@ export default function BottomSheet({
             maxHeight != null ? ({ maxHeight } as { maxHeight: number }) : null,
             { paddingBottom: insets.bottom + 16 },
           ]}
-          onStartShouldSetResponder={() => true}
         >
           {showHandle ? <View style={styles.handle} /> : null}
           {title != null ? (
@@ -102,7 +106,7 @@ export default function BottomSheet({
           ) : null}
           {children}
         </View>
-      </Pressable>
+      </View>
       </KeyboardAvoidingView>
       {visible && <ToastOutlet />}
     </Modal>

@@ -67,12 +67,17 @@ export default function ConfirmModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
-      <Pressable
-        style={styles.backdrop}
-        onPress={onCancel}
-        accessibilityLabel={`Dismiss ${title}`}
-      >
-        <Pressable style={styles.card} onPress={() => {}}>
+      <View style={styles.backdrop}>
+        {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+            pressable round the card makes it one element to VoiceOver and the test robot, and
+            on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onCancel}
+          accessibilityLabel={`Dismiss ${title}`}
+          accessibilityRole="button"
+        />
+        <View style={styles.card}>
           <Text style={styles.title}>{title}</Text>
           {body ? <Text style={styles.body}>{body}</Text> : null}
           {stacked ? (
@@ -95,8 +100,8 @@ export default function ConfirmModal({
               {confirmButton}
             </View>
           )}
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
       {/* Last child on purpose: this Modal is its own Android window, so a root-level toast would
           paint under it. Its outlet is the last registered while open. See toastOutletSelect.ts. */}
       {visible && <ToastOutlet />}

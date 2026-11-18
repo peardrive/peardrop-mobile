@@ -95,16 +95,18 @@ export default function NameShareModal({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <Pressable
-          style={styles.backdrop}
-          onPress={onCancel}
-          accessibilityLabel="Cancel"
-        >
+        <View style={styles.backdrop}>
+          {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+              pressable round the card makes it one element to VoiceOver and the test robot, and
+              on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
           <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={onCancel}
+            accessibilityLabel="Cancel"
+            accessibilityRole="button"
+          />
+          <View
             style={styles.card}
-            onPress={() => {
-              // Absorb inner taps so tapping the card doesn't close it.
-            }}
           >
             <View style={styles.headerRow}>
               <View style={styles.headerTitleSlot} />
@@ -197,8 +199,8 @@ export default function NameShareModal({
                 <Text style={styles.confirmBtnText}>{confirmLabel}</Text>
               </Pressable>
             </View>
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
       {visible && <ToastOutlet />}
     </Modal>

@@ -44,12 +44,17 @@ export default function FolderAccessModal({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <Pressable
-        style={styles.backdrop}
-        onPress={onClose}
-        accessibilityLabel="Close folder access"
-      >
-        <Pressable style={styles.card} onPress={() => {}}>
+      <View style={styles.backdrop}>
+        {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+            pressable round the card makes it one element to VoiceOver and the test robot, and
+            on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityLabel="Close folder access"
+          accessibilityRole="button"
+        />
+        <View style={styles.card}>
           <View style={styles.titleRow}>
             <Text style={styles.title}>Folders</Text>
             <Pressable
@@ -122,8 +127,8 @@ export default function FolderAccessModal({
             To take the Android permission back as well, use your
             device&apos;s app settings.
           </Text>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
       {/* Last child on purpose: this Modal is its own Android window, so a root-level toast would
           paint under it. Its outlet is the last registered while open. See toastOutletSelect.ts. */}
       {visible && <ToastOutlet />}

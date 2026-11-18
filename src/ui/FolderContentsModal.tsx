@@ -129,16 +129,18 @@ export default function FolderContentsModal({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <Pressable
-          style={styles.backdrop}
-          onPress={onClose}
-          accessibilityLabel="Close folder contents"
-        >
+        <View style={styles.backdrop}>
+          {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+              pressable round the card makes it one element to VoiceOver and the test robot, and
+              on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
           <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={onClose}
+            accessibilityLabel="Close folder contents"
+            accessibilityRole="button"
+          />
+          <View
             style={styles.card}
-            onPress={() => {
-              // Absorb inner taps.
-            }}
           >
             <View style={styles.headerRow}>
               {onOverflowPress ? (
@@ -265,8 +267,8 @@ export default function FolderContentsModal({
                 <Text style={styles.copyBtnText}>Copy Link</Text>
               </Pressable>
             ) : null}
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
       {visible && <ToastOutlet />}
     </Modal>
@@ -300,12 +302,9 @@ function FileRow({
   );
   const thumbUri = file.previewUri ?? videoThumb;
   return (
-    <Pressable
-      style={[styles.row, file.dim && styles.rowDim]}
-      onPress={file.onPress}
-      accessibilityRole="button"
-      accessibilityLabel={`${file.name}, ${file.statusLabel}`}
-    >
+    // The row and its "open" button are SIBLINGS: a button inside the row's own button is one
+    // element to VoiceOver and the test robot, so "open" could not be reached. See _publishing/lessons.
+    <View style={[styles.row, file.dim && styles.rowDim]}>
       {file.blink ? (
         <Animated.View
           pointerEvents="none"
@@ -320,28 +319,35 @@ function FileRow({
           ]}
         />
       ) : null}
-      <View style={styles.rowThumb}>
-        {thumbUri ? (
-          <Image
-            source={{ uri: thumbUri }}
-            style={styles.rowThumbImage}
-            resizeMode="cover"
-          />
-        ) : (
-          <Ionicons name={file.iconName} size={22} color={theme.text} />
-        )}
-      </View>
-      <View style={styles.rowMain}>
-        <Text style={styles.rowName} numberOfLines={1}>
-          {file.name}
-        </Text>
-        <Text
-          style={[styles.rowStatus, { color: subColor }]}
-          numberOfLines={1}
-        >
-          {file.statusLabel}
-        </Text>
-      </View>
+      <Pressable
+        style={styles.rowTap}
+        onPress={file.onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${file.name}, ${file.statusLabel}`}
+      >
+        <View style={styles.rowThumb}>
+          {thumbUri ? (
+            <Image
+              source={{ uri: thumbUri }}
+              style={styles.rowThumbImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <Ionicons name={file.iconName} size={22} color={theme.text} />
+          )}
+        </View>
+        <View style={styles.rowMain}>
+          <Text style={styles.rowName} numberOfLines={1}>
+            {file.name}
+          </Text>
+          <Text
+            style={[styles.rowStatus, { color: subColor }]}
+            numberOfLines={1}
+          >
+            {file.statusLabel}
+          </Text>
+        </View>
+      </Pressable>
       {/* The only control a row can carry is "open", absent when there is nothing on disk — a child
           still downloading gets no control rather than one claiming the file is missing. */}
       {file.rightControl?.kind === "open" ? (
@@ -359,7 +365,7 @@ function FileRow({
           />
         </Pressable>
       ) : null}
-    </Pressable>
+    </View>
   );
 }
 
@@ -480,8 +486,15 @@ function createStyles(theme: AppTheme, bottomClearance: number) {
       flexDirection: "row",
       alignItems: "center",
       gap: 12,
-      paddingVertical: 10,
       position: "relative",
+    },
+    rowTap: {
+      flex: 1,
+      minWidth: 0,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+      paddingVertical: 10,
     },
     rowDim: { opacity: 0.6 },
     blinkOverlay: {
