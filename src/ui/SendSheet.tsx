@@ -84,16 +84,18 @@ export default function SendSheet({
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <Pressable
-        style={styles.backdrop}
-        onPress={onClose}
-        accessibilityLabel="Close Send"
-      >
+      <View style={styles.backdrop}>
+        {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+            pressable round the card makes it one element to VoiceOver and the test robot, and
+            on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
         <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+          accessibilityLabel="Close Send"
+          accessibilityRole="button"
+        />
+        <View
           style={styles.card}
-          onPress={() => {
-            // Absorb inner taps so they don't dismiss via the backdrop.
-          }}
         >
           <View style={styles.titleRow}>
             <Text style={styles.title}>Send</Text>
@@ -186,8 +188,8 @@ export default function SendSheet({
               </ScrollView>
             </>
           ) : null}
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
       {/* last child on purpose: this Modal is its own Android window,
           and a root-level toast would be painted under it (and untappable).
           While this sheet is open its outlet is the last registered, so it

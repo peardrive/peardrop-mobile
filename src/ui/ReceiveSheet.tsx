@@ -272,16 +272,18 @@ export default function ReceiveSheet({
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <Pressable
-          style={styles.backdrop}
-          onPress={onClose}
-          accessibilityLabel="Close Receive"
-        >
+        <View style={styles.backdrop}>
+          {/* The dimmed area that closes the window is a SIBLING of the card, never its parent: a
+              pressable round the card makes it one element to VoiceOver and the test robot, and
+              on iPhone stops a scroll area inside from scrolling. See ShareQrModal.tsx. */}
           <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={onClose}
+            accessibilityLabel="Close Receive"
+            accessibilityRole="button"
+          />
+          <View
             style={styles.card}
-            onPress={() => {
-              // Absorb inner taps so they don't dismiss via the backdrop.
-            }}
           >
             <View style={styles.titleRow}>
               <Text style={styles.title}>Receive</Text>
@@ -506,8 +508,8 @@ export default function ReceiveSheet({
                 ) : null}
               </View>
             ) : null}
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </KeyboardAvoidingView>
       {/* last child on purpose: this Modal is its own Android window,
           and a root-level toast would be painted under it (and untappable).
